@@ -146,4 +146,52 @@ hits="$( cd "$ROOT" && git ls-files -z 2>/dev/null \
 [[ -z "$hits" ]] && ok "no dangling /multi-review-auto references in tracked files" \
   || bad "stale /multi-review-auto references in: ${hits//$'\n'/ }"
 
+# --- marketplace.json: self-hosted catalog shape, anti-impersonation, github source ---
+MKT="${ROOT}/.claude-plugin/marketplace.json"
+if [[ -f "$MKT" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$MKT" <<'PY' && ok "marketplace.json shape + name + github source" || bad "marketplace.json failed shape/name/source checks"
+import json, re, sys
+mkt = json.load(open(sys.argv[1], encoding="utf-8"))
+# required top-level + types
+assert isinstance(mkt.get("name"), str) and mkt["name"], "top-level name"
+assert isinstance(mkt.get("description"), str) and mkt["description"], "top-level description (discoverability metadata)"
+owner = mkt.get("owner")
+assert isinstance(owner, dict) and isinstance(owner.get("name"), str) and owner["name"], "owner.name non-empty"
+plugins = mkt.get("plugins")
+assert isinstance(plugins, list) and plugins, "plugins non-empty array"
+# name: not reserved, no impersonation, no whitespace, kebab-case
+name = mkt["name"]
+RESERVED = {
+  "claude-code-marketplace","claude-code-plugins","claude-plugins-official",
+  "claude-plugins-community","claude-community","anthropic-marketplace",
+  "anthropic-plugins","agent-skills","anthropic-agent-skills",
+  "knowledge-work-plugins","life-sciences","claude-for-legal",
+  "claude-for-financial-services","financial-services-plugins",
+  "first-party-plugins","healthcare",
+}
+assert name not in RESERVED, "reserved name"
+assert "anthropic" not in name and not name.startswith("claude") and not name.startswith("official-claude"), "impersonation pattern"
+assert not re.search(r"\s", name), "whitespace in name"
+assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name), "kebab-case name"
+# every entry has a name + source
+for p in plugins:
+    assert isinstance(p.get("name"), str) and p["name"], "entry name"
+    assert p.get("source") is not None, "entry source"
+# the multi-review entry's source is the documented github object
+entry = next((p for p in plugins if p.get("name") == "multi-review"), None)
+assert entry is not None, "multi-review entry present"
+src = entry["source"]
+assert isinstance(src, dict) and src.get("source") == "github" and src.get("repo") == "agrology/multi-review", "source is github object for agrology/multi-review"
+# discoverability metadata present (byte-exact equality with plugin.json is enforced in Task 2's guard)
+assert isinstance(entry.get("description"), str) and entry["description"], "entry description non-empty"
+assert isinstance(entry.get("keywords"), list) and entry["keywords"], "entry keywords non-empty array"
+PY
+  else
+    ok "marketplace.json present (python3 absent; skipped deep validation)"
+  fi
+else
+  bad "marketplace.json missing at .claude-plugin/marketplace.json"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

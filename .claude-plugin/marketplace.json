@@ -1,0 +1,14 @@
+{
+  "name": "agrology",
+  "owner": { "name": "Agrology" },
+  "description": "Agrology's Claude Code plugins.",
+  "plugins": [
+    {
+      "name": "multi-review",
+      "source": { "source": "github", "repo": "agrology/multi-review" },
+      "description": "Human-gated star review: Claude (the neutral primary) fans a spec/plan/PR out to N independent secondary reviewers (fable always, plus cross-vendor codex/gemini), adjudicates their findings, and converges — always ending at a human approval gate.",
+      "category": "code-review",
+      "keywords": ["code-review", "design-review", "spec-review", "pull-request", "multi-agent", "human-in-the-loop"]
+    }
+  ]
+}
