@@ -60,6 +60,26 @@ out="$(bash "$SUT" resolve-set --reviewers gemini 2>/dev/null)"
 bash "$SUT" resolve-set --reviewers >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "resolve-set: --reviewers with no value -> usage exit 2" || bad "resolve-set no-value exit (got $rc)"
 
+# --- reviewer-helper injection seam (Task 1) ---
+# A stub helper lets availability tests below be deterministic (no real CLIs on PATH).
+STUB="${WORK}/stub-reviewer.sh"
+cat > "$STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+sub="${1:-}"; shift || true
+id=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--reviewer" ]] && { id="${2:-}"; shift 2; continue; }; shift; done
+case "$sub" in
+  resolve) case "$id" in codex|fable|gemini) echo "${id}|vendor|kind|model|no"; exit 0;; *) exit 1;; esac ;;
+  check)   case "$id" in codex|fable) exit 0;; *) exit 1;; esac ;;   # gemini resolves but is unavailable
+  *) exit 2 ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+# Seam honored: the stub resolves codex to vendor "vendor"; the REAL registry resolves codex to
+# "openai". Reading back "vendor" proves resolve-set used the injected stub, not the real helper.
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --reviewers codex 2>/dev/null | cut -d'|' -f2)"
+[[ "$out" == "vendor" ]] && ok "seam: MULTI_REVIEW_REVIEWER_SH overrides helper path" || bad "seam override (got '$out')"
+
 # --- resolve-set --fable-floor (Phase 2, dormant) ---
 # named set gains fable, appended last, deduped
 out="$(bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"

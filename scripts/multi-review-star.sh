@@ -89,7 +89,8 @@ cmd_mode() { # <doc> -> "star" or defer (empty, exit 1)
 }
 
 STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REVIEWER_SH="${STAR_DIR}/multi-review-reviewer.sh"
+# Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
+REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
 
 # parse_set [--reviewers csv] -> echoes the raw id list (space-separated), flag>env precedence
 parse_set() {
