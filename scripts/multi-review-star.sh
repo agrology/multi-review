@@ -127,11 +127,14 @@ cmd_resolve_set() {
     case " $seen " in *" $id "*) continue ;; esac
     if ! row="$("$REVIEWER_SH" resolve --reviewer "$id" 2>/dev/null)"; then
       if [[ "$src" == "pref" ]]; then
+        # Record the dropped id so a duplicate in the pref is skipped, not re-dropped (one notice).
+        seen="$seen $id"
         echo "multi-review-star: pref reviewer '$id' unknown — dropping" >&2; continue
       fi
       set +f; die "unknown reviewer provider in set: ${id}" 2
     fi
     if [[ "$src" == "pref" ]] && ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then
+      seen="$seen $id"
       echo "multi-review-star: pref reviewer '$id' unavailable in this repo — dropping (pref unchanged)" >&2
       continue
     fi

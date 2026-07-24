@@ -145,6 +145,12 @@ err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --
 printf '%s' "$err" | grep -q "pref reviewer 'bogus'" && printf '%s' "$err" | grep -qi 'unknown' && printf '%s' "$err" | grep -qi 'dropping' \
   && ok "pref: unknown-drop notice pinned (id + 'unknown' + 'dropping')" || bad "pref unknown-notice text (got '$err')"
 
+# a duplicated bad id in the pref drops ONCE, not once per occurrence (dedup on drop; PR#13 fable-rd1-r2)
+printf 'bogus,bogus\n' > "$PREF"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>&1 >/dev/null)"
+n="$(printf '%s\n' "$err" | grep -c "pref reviewer 'bogus'")"
+[[ "$n" -eq 1 ]] && ok "pref: duplicate bad id notice deduped (once)" || bad "pref dup-notice count (got $n)"
+
 # unknown flag is rejected (parity with remember-set), not silently swallowed (fable-rd2-r2)
 MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --bogus-flag >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "resolve-set: unknown flag -> exit 2" || bad "resolve-set unknown flag not rejected"
