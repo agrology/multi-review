@@ -239,7 +239,15 @@ cmd_command() { # <doc> --reviewer <id> -> NUL-delimited argv
       # to prompt, so file-modification tools are disabled: observed live, the reviewer emitted
       # its findings as prose and never touched the doc, leaving the marker unflipped. Chosen
       # over `yolo` deliberately — `auto_edit` approves edit tools only, never shell.
-      printf '%s\0' "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt" ;;
+      # Opt-in auto-trust (MULTI_REVIEW_GEMINI_AUTOTRUST=1) scopes GEMINI_CLI_TRUST_WORKSPACE=true to
+      # THIS dispatch via an `env` prefix, so users needn't set it in their profile. Default
+      # (unset/≠1) is byte-identical to before. SECURITY: trusting a workspace lets the CLI honor its
+      # .env / settings and auto-edit — opt-in only, never a cloned/untrusted repo (see README).
+      if [[ "${MULTI_REVIEW_GEMINI_AUTOTRUST:-}" == "1" ]]; then
+        printf '%s\0' "env" "GEMINI_CLI_TRUST_WORKSPACE=true" "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt"
+      else
+        printf '%s\0' "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt"
+      fi ;;
     *)
       die "no shell command defined for reviewer provider '${id}'" 2 ;;
   esac

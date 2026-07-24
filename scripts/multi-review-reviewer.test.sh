@@ -535,6 +535,27 @@ out="$(cd "$CREPO/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer 
 ( cd "$CREPO" && PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?
 [[ $rc -eq 1 ]] && ok "check codex: CLI absent still exit 1" || bad "codex absent rc=$rc (want 1)"
 
+# --- command: opt-in gemini auto-trust (Task 3) ---
+unset MULTI_REVIEW_GEMINI_AUTOTRUST         # the default-argv case must not inherit an ambient value
+DAT="${WORK}/at.md"; printf '# d\n' > "$DAT"
+# default (unset) -> argv[0] gemini, 7 NULs (byte-identical to today)
+bash "$SUT" command "$DAT" --reviewer gemini > "${WORK}/at0.bin" 2>/dev/null
+first=""; IFS= read -r -d '' first < "${WORK}/at0.bin"
+n0="$(tr -dc '\0' < "${WORK}/at0.bin" | wc -c | tr -d ' ')"
+[[ "$first" == "gemini" && "$n0" == "7" ]] && ok "command gemini: default argv unchanged (gemini, 7 NUL)" || bad "default argv first='$first' nul=$n0"
+
+# autotrust=1 -> argv prefixed with env GEMINI_CLI_TRUST_WORKSPACE=true, 9 NULs
+MULTI_REVIEW_GEMINI_AUTOTRUST=1 bash "$SUT" command "$DAT" --reviewer gemini > "${WORK}/at1.bin" 2>/dev/null
+argv=(); while IFS= read -r -d '' a; do argv+=("$a"); done < "${WORK}/at1.bin"
+n1="$(tr -dc '\0' < "${WORK}/at1.bin" | wc -c | tr -d ' ')"
+[[ "${argv[0]}" == "env" && "${argv[1]}" == "GEMINI_CLI_TRUST_WORKSPACE=true" && "${argv[2]}" == "gemini" && "$n1" == "9" ]] \
+  && ok "command gemini: autotrust=1 prefixes 'env GEMINI_CLI_TRUST_WORKSPACE=true'" || bad "autotrust argv: ${argv[0]}/${argv[1]}/${argv[2]} nul=$n1"
+
+# autotrust set to something other than 1 -> unchanged
+MULTI_REVIEW_GEMINI_AUTOTRUST=yes bash "$SUT" command "$DAT" --reviewer gemini > "${WORK}/at2.bin" 2>/dev/null
+first=""; IFS= read -r -d '' first < "${WORK}/at2.bin"
+[[ "$first" == "gemini" ]] && ok "command gemini: autotrust!=1 leaves argv unchanged" || bad "autotrust!=1 first='$first'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
