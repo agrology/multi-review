@@ -18,6 +18,48 @@ e.g. `codex,gemini`) in addition to the doc path or PR ref, in any order. Extrac
 Classification and doc resolution below use `<positional>` only — never the raw `$ARGUMENTS` —
 so a trailing flag can never corrupt PR-ref matching or a doc path.
 
+### Reviewers named in prose (natural language)
+
+Reviewers may be named in **prose** — "with codex and gemini", "just codex" — not only as
+`--reviewers`. Normalize either form into the reviewer set (comma-joined provider ids) before §2;
+a prose mention and `--reviewers codex,gemini` are equivalent inputs.
+
+**Criterion for "explicitly named":** because the prose set also drives the pref write-back (§2),
+the bar is deliberately narrow — treat prose as a reviewer choice **only when the user's request
+for *this* review names the reviewers as its reviewer set** (an imperative like "multi-review the
+spec with codex and gemini"). A reviewer mentioned in passing, in a question, or about a *past* run
+("like last time with codex?") is **not** a choice: do not normalize it, and do not write the
+pref. When it is genuinely ambiguous whether a name is this run's choice, **ask rather than guess**.
+
+**Three intents** — do not conflate them (they drive different §2 write-back actions):
+
+| user phrasing (this run) | intent | this run's set | §2 write-back |
+|---|---|---|---|
+| "multi-review the spec with codex and gemini" | named extras | codex,gemini (+fable) | `remember-set --reviewers codex,gemini` |
+| "multi-review with just codex this time" | one-off | codex (+fable) | none |
+| "just fable this once" | one-off | fable only | none |
+| "forget the reviewers" / "fable-only from now on" | revoke | fable only | `remember-set --clear` |
+| "like last time with codex?" (a question about a past run) | not a choice | (per pref/env) | none |
+| ambiguous whether it's this run's choice | ask (default to one-off) | (per ask) | none until clarified |
+
+The phrase "this time" / "just this once" is the signal that scopes a naming to a **one-off**
+(resolve for this run, leave the pref alone) rather than a persistent choice or a revoke.
+
+**A one-off ignores the pref for this run (fable-rd1-r1).** A one-off explicitly scopes to *this*
+run, so it must NOT inherit the remembered combo — resolve it in §2 **without** `--pref-file`
+(passing `--reviewers <ids>` for a named one-off, or nothing at all for "just fable this once",
+which then floors to fable only). Omitting `--pref-file` is the ONLY way to force fable-only against
+a stored pref: `resolve-set` treats an empty `--reviewers` as absent and would otherwise fall
+through to the pref.
+
+**Standalone revoke — no review (codex-rd1-r1).** If the request is *purely* to forget the
+remembered combo ("forget the reviewers", "reset to fable-only from now on") with **no doc or PR to
+review**, do NOT resolve a doc or arm anything: run
+`${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh remember-set --pref-file
+.multi-review/reviewers.pref --clear`, confirm "remembered reviewers cleared — bare runs will use
+fable only," and STOP. Only when the same turn *also* asks for a review does the revoke fold into
+the §2 write-back instead.
+
 ### Classify (doc path vs. PR)
 
 Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh parse "<positional>"`.
@@ -67,13 +109,35 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    - Exits 1 (no star hint yet — a fresh local doc, or a just-ingested PR scratch) → fall
      through to step 2.
 2. **Fresh-request check:** run
-   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-set --fable-floor`, appending
-   `--reviewers <csv>` when §1 extracted the flag (omit it otherwise, so `MULTI_REVIEW_REVIEWERS`
-   applies).
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-set --fable-floor --pref-file
+   .multi-review/reviewers.pref`, appending `--reviewers <csv>` when §1 extracted a set (flag or
+   prose). Precedence is flag/prose → `MULTI_REVIEW_REVIEWERS` → the pref → fable-only; the pref is
+   consulted **only** when neither a named set nor the env supplied one.
+   - **One-off exception (§1, fable-rd1-r1):** when the §1 intent is a **one-off override**, OMIT
+     `--pref-file` from this call, so the remembered combo does not leak into a run the user scoped
+     to just this once (this is required for "just fable this once" to actually resolve fable-only —
+     an empty `--reviewers` alone would fall through to the pref).
    - **Exit 0** → the resolved set, one `id|vendor|kind|model|has-skill` row per line. `fable` is
      always present (the `--fable-floor` union), so the set is never empty. These are the
      secondaries for the whole run.
-   - **Any non-zero exit** (an unknown provider id named in the set) → report the message and STOP.
+   - **Capture `resolve-set`'s stderr.** When it prints a `pref reviewer '<id>' … dropping` line
+     (a stale/unavailable remembered reviewer self-healed away), **relay it at arm time** (§3) so a
+     silently narrowed combo is visible.
+   - **Any non-zero exit** (an unknown provider id in a *named* set / env, or a typo'd flag) →
+     report the message and STOP. (A stale id in the pref never reaches here — it is dropped with
+     a notice, not an error.)
+
+3. **Write-back (persist the choice) — do this once, right after arming a fresh review (§3):**
+   act on the §1 intent, with the pref at `.multi-review/reviewers.pref`:
+   - **named extras** → `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh remember-set
+     --pref-file .multi-review/reviewers.pref --reviewers <csv>`;
+   - **explicit revoke** → same with `--clear` instead of `--reviewers`;
+   - **one-off override, a bare run, or a set resolved from env/pref** → no write, no clear.
+
+   Write-back is best-effort and **non-fatal** — the run has already armed and proceeds regardless
+   — but it is **not silent**: relay `remember-set`'s stderr to the engineer. In particular the
+   env-shadow notice (`MULTI_REVIEW_REVIEWERS is set … not writing pref`), so the engineer never
+   believes a combo was saved when env will shadow it. Resume runs (step 1) never write.
 
 ## 3. Star review — arm, fan-out, primary turn, terminal gate
 
@@ -96,7 +160,15 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
   - **If `<doc>` has no `## Review` heading yet** (a fresh local spec/plan doc; PR scratch files
     already have one), append one now, with nothing under it — `merge` appends findings after the
     LAST `## Review` heading, so a doc with none would silently lose every merged finding.
-  - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)."
+  - **Perform the §2 step 3 write-back now** (persist named extras, `--clear` a revoke, or nothing
+    for a one-off/bare run), relaying any `remember-set` stderr (esp. the env-shadow notice).
+  - **Relay pref drops.** If §2's `resolve-set` emitted any `pref reviewer '<id>' … dropping` line
+    on stderr, surface it in the armed message — a remembered reviewer dropped for two reasons,
+    each a stable `pref reviewer … dropping` line: `unknown — dropping` (stale, registry-removed)
+    and `unavailable in this repo — dropping` (registered but not set up). So a self-healed, quietly
+    narrowed combo is visible, mirroring a dispatch quarantine.
+  - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)"
+    — and append any dropped-reviewer relay, e.g. "`gemini` dropped: unavailable in this repo".
 
 ### Branch on the marker
 

@@ -3,6 +3,7 @@
 # Sibling to core.sh/peer.sh; owns ONLY star's grammar/merge/convergence/summary. Subcommands:
 #   mode <doc>              -> "star" | (defer: empty, exit 1)
 #   resolve-set [--reviewers csv]
+#   remember-set --pref-file <path> (--reviewers <csv> | --clear)
 #   available
 #   open-findings <doc>
 #   observations <doc>
@@ -89,42 +90,58 @@ cmd_mode() { # <doc> -> "star" or defer (empty, exit 1)
 }
 
 STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REVIEWER_SH="${STAR_DIR}/multi-review-reviewer.sh"
+# Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
+REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
 
-# parse_set [--reviewers csv] -> echoes the raw id list (space-separated), flag>env precedence
-parse_set() {
-  local csv=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --reviewers) [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  if [[ -n "$csv" ]]; then
-    printf '%s' "$csv" | tr ',' ' '
-  else
-    printf '%s' "${MULTI_REVIEW_REVIEWERS:-}"
-  fi
-}
-
+# resolve-set [--fable-floor] [--reviewers csv] [--pref-file path]
+# Source precedence: --reviewers(non-empty) > MULTI_REVIEW_REVIEWERS(non-empty) > pref-file(non-empty).
+# Pref source ONLY: strip literal fable, drop unknown/unavailable ids with a notice (degrade, never
+# hard-fail, never rewrite the pref). Flag/env: unknown id is a hard exit-2 usage error.
 cmd_resolve_set() {
-  local raw seen="" id row out="" fable_floor=0 args=()
-  # peel --fable-floor out of the args passed to parse_set (parse_set ignores unknown flags,
-  # but we must consume it here so it doesn't reach an id slot)
+  local fable_floor=0 csv="" pref_file="" src="" raw="" seen="" id row out=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --fable-floor) fable_floor=1; shift ;;
-      *) args+=("$1"); shift ;;
+      --reviewers)   [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; shift 2 ;;
+      --pref-file)   [[ $# -ge 2 ]] || die "--pref-file requires a value" 2; pref_file="$2"; shift 2 ;;
+      # Reject unknown args (parity with remember-set) so a typo'd flag can't silently disable the
+      # pref feature instead of surfacing (fable-rd2-r2).
+      *) die "resolve-set: unexpected argument: $1" 2 ;;
     esac
   done
-  raw="$(parse_set ${args[@]+"${args[@]}"})" || exit $?
+  # Every source is comma-OR-space tolerant: `tr ',' ' '` on all three, so a csv env value
+  # ("codex,gemini") splits the same as the flag and pref (fable-rd1-r1).
+  if [[ -n "$csv" ]]; then
+    raw="$(printf '%s' "$csv" | tr ',' ' ')"; src="flag"
+  elif [[ -n "${MULTI_REVIEW_REVIEWERS:-}" ]]; then
+    raw="$(printf '%s' "${MULTI_REVIEW_REVIEWERS}" | tr ',' ' ')"; src="env"
+  elif [[ -n "$pref_file" && -s "$pref_file" ]]; then
+    raw="$(tr ',' ' ' < "$pref_file")"; src="pref"
+  else
+    raw=""; src="none"
+  fi
+  set -f                               # no globbing: a '*' in the pref/csv must not expand to filenames (fable-rd3-r5)
   for id in $raw; do
+    # pref normalization: a hand-added literal fable is never a stored extra (it is floored).
+    [[ "$src" == "pref" && "$id" == "fable" ]] && continue
     case " $seen " in *" $id "*) continue ;; esac
+    if ! row="$("$REVIEWER_SH" resolve --reviewer "$id" 2>/dev/null)"; then
+      if [[ "$src" == "pref" ]]; then
+        # Record the dropped id so a duplicate in the pref is skipped, not re-dropped (one notice).
+        seen="$seen $id"
+        echo "multi-review-star: pref reviewer '$id' unknown — dropping" >&2; continue
+      fi
+      set +f; die "unknown reviewer provider in set: ${id}" 2
+    fi
+    if [[ "$src" == "pref" ]] && ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then
+      seen="$seen $id"
+      echo "multi-review-star: pref reviewer '$id' unavailable in this repo — dropping (pref unchanged)" >&2
+      continue
+    fi
     seen="$seen $id"
-    row="$("$REVIEWER_SH" resolve --reviewer "$id" 2>/dev/null)" \
-      || die "unknown reviewer provider in set: ${id}" 2
     out="${out}${row}"$'\n'
   done
+  set +f
   if (( fable_floor )); then
     case " $seen " in *" fable "*) : ;; *)
       row="$("$REVIEWER_SH" resolve --reviewer fable 2>/dev/null)" || die "fable unavailable" 2
@@ -626,11 +643,58 @@ cmd_gate_summary() {
   fi
 }
 
+# remember-set --pref-file <path> (--reviewers <csv> | --clear)
+# Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
+# (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
+# full-replace; an explicitly-empty set -> no-op; a non-empty MULTI_REVIEW_REVIEWERS shadows the
+# pref so the write is a no-op + notice. --clear: delete the pref (deliberate revoke), ignoring the
+# env guard. Exactly one of --reviewers/--clear is required (codex-rd1-r2/r3).
+cmd_remember_set() {
+  local pref="" csv="" have_reviewers=0 clear=0 id seen="" out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pref-file) [[ $# -ge 2 ]] || die "--pref-file requires a value" 2; pref="$2"; shift 2 ;;
+      --reviewers) [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; have_reviewers=1; shift 2 ;;
+      --clear)     clear=1; shift ;;
+      *) die "remember-set: unexpected argument: $1" 2 ;;
+    esac
+  done
+  [[ -n "$pref" ]] || die "remember-set requires --pref-file <path>" 2
+  # Exactly one of --reviewers / --clear, keyed on flag PRESENCE (not csv value) so that both
+  # "neither given" and "--clear --reviewers ''" are rejected (codex-rd1-r2, codex-rd1-r3).
+  (( have_reviewers + clear == 1 )) \
+    || die "remember-set requires exactly one of --reviewers <csv> or --clear" 2
+  if (( clear )); then
+    rm -f "$pref"                      # deliberate revoke; ignores the env guard by design
+    return 0
+  fi
+  # Env-shadow guard: a non-empty MULTI_REVIEW_REVIEWERS shadows the pref on every later bare run,
+  # so writing it would be a dead write. "Set" = non-empty (an exported "" is treated as unset).
+  if [[ -n "${MULTI_REVIEW_REVIEWERS:-}" ]]; then
+    echo "multi-review-star: MULTI_REVIEW_REVIEWERS is set — it shadows the remembered combo on bare runs; not writing pref (unset it to use the pref)" >&2
+    return 0
+  fi
+  set -f                               # no globbing on a '*' in the csv (fable-rd3-r5)
+  for id in $(printf '%s' "$csv" | tr ',' ' '); do
+    [[ "$id" == "fable" ]] && continue
+    case " $seen " in *" $id "*) continue ;; esac
+    "$REVIEWER_SH" resolve --reviewer "$id" >/dev/null 2>&1 \
+      || { set +f; die "remember-set: unknown reviewer provider: ${id}" 2; }
+    seen="$seen $id"; out="${out}${id},"
+  done
+  set +f
+  out="${out%,}"
+  [[ -n "$out" ]] || return 0          # empty extras -> no-op: never create or truncate
+  mkdir -p "$(dirname "$pref")"
+  printf '%s\n' "$out" > "$pref"
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     mode) cmd_mode "$@" ;;
     resolve-set) cmd_resolve_set "$@" ;;
+    remember-set) cmd_remember_set "$@" ;;
     available) cmd_available "$@" ;;
     open-findings) cmd_open_findings "$@" ;;
     observations) cmd_observations "$@" ;;

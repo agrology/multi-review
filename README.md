@@ -45,6 +45,14 @@ add (below) — `fable` needs none.
 /multi-review https://github.com/owner/repo/pull/42 --reviewers codex,gemini
 ```
 
+- **You don't have to type the path.** Just say "multi-review the spec / the plan / this PR" —
+  it resolves to the doc in context, or the newest dated doc under `MULTI_REVIEW_DOC_DIRS`.
+- **Name reviewers in plain language.** "multi-review the spec with codex and gemini" is
+  equivalent to `--reviewers codex,gemini`.
+- **The combo is remembered per repo.** The last explicitly-named set is saved to
+  `.multi-review/reviewers.pref`; a later bare run reuses it (self-healing — a reviewer that
+  isn't set up is dropped for that run with a notice, not an error). Say "forget the reviewers"
+  to reset to fable-only.
 - PR refs also accept `owner/repo#n` and, in the current repo, `#n`.
 - The set is always **`(--reviewers) ∪ {fable}`** — `fable` can't be removed.
 - Local docs are found under `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans`); pass an
@@ -76,6 +84,13 @@ are gitignored). The free tier's daily cap will exhaust a multi-round review.
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.5`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |
 | `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans` | where bare-name local docs are resolved |
+
+The last explicitly-named reviewer combo is remembered per repo in **`.multi-review/reviewers.pref`**
+(gitignored). It is written when reviewers are named (flag or prose) — **except** when
+`MULTI_REVIEW_REVIEWERS` is set, which would shadow the pref anyway, so the write is skipped with a
+notice. It sits **below** `MULTI_REVIEW_REVIEWERS` in precedence, and self-heals — a remembered
+reviewer that isn't available in the repo is dropped on read (with a notice), never poisoning the
+run. Reset it with a "forget the reviewers" request.
 
 ## How it works
 

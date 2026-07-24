@@ -60,6 +60,101 @@ out="$(bash "$SUT" resolve-set --reviewers gemini 2>/dev/null)"
 bash "$SUT" resolve-set --reviewers >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "resolve-set: --reviewers with no value -> usage exit 2" || bad "resolve-set no-value exit (got $rc)"
 
+# --- reviewer-helper injection seam (Task 1) ---
+# A stub helper lets availability tests below be deterministic (no real CLIs on PATH).
+STUB="${WORK}/stub-reviewer.sh"
+cat > "$STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+sub="${1:-}"; shift || true
+id=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--reviewer" ]] && { id="${2:-}"; shift 2; continue; }; shift; done
+case "$sub" in
+  resolve) case "$id" in codex|fable|gemini) echo "${id}|vendor|kind|model|no"; exit 0;; *) exit 1;; esac ;;
+  check)   case "$id" in codex|fable) exit 0;; *) exit 1;; esac ;;   # gemini resolves but is unavailable
+  *) exit 2 ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+# Seam honored: the stub resolves codex to vendor "vendor"; the REAL registry resolves codex to
+# "openai". Reading back "vendor" proves resolve-set used the injected stub, not the real helper.
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --reviewers codex 2>/dev/null | cut -d'|' -f2)"
+[[ "$out" == "vendor" ]] && ok "seam: MULTI_REVIEW_REVIEWER_SH overrides helper path" || bad "seam override (got '$out')"
+
+# --- resolve-set --pref-file (Task 2) ---
+# These "flag+env empty" cases require env genuinely unset; a dev who exports MULTI_REVIEW_REVIEWERS
+# would otherwise see env shadow the pref and the tests fail spuriously (fable-rd2-r1).
+unset MULTI_REVIEW_REVIEWERS
+# pref used only when flag AND env are both empty; result = pref extras + fable (floored)
+PREF="${WORK}/reviewers.pref"; printf 'codex\n' > "$PREF"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex fable " ]] && ok "pref: used when flag+env empty" || bad "pref used (got '$out')"
+
+# flag beats pref
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers gemini --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "gemini fable " ]] && ok "pref: flag beats pref" || bad "pref flag-beats (got '$out')"
+
+# env beats pref (non-empty)
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "gemini fable " ]] && ok "pref: env beats pref" || bad "pref env-beats (got '$out')"
+
+# empty-string env is treated as unset -> falls through to pref
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex fable " ]] && ok "pref: empty env is unset, falls to pref" || bad "pref empty-env (got '$out')"
+
+# a CSV env value splits like the flag (fable-rd1-r1) — not one unknown "codex,gemini" token.
+# env source is not availability-filtered (that is pref-only), so both ids survive + fable floored.
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="codex,gemini" bash "$SUT" resolve-set --fable-floor 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex gemini fable " ]] && ok "pref: csv env value splits (not one token)" || bad "csv env split (got '$out')"
+
+# read-path normalization: whitespace, duplicates, a literal 'fable', blank lines
+printf '  codex , codex \n\nfable,gemini\n' > "$PREF"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+# gemini resolves but STUB check fails it -> dropped; codex kept; fable floored; literal fable stripped; dup collapsed
+[[ "$out" == "codex fable " ]] && ok "pref: normalize (trim/dedup/strip-fable) + drop unavailable" || bad "pref normalize (got '$out')"
+
+# availability drop is non-destructive: pref file unchanged after the run
+grep -q 'gemini' "$PREF" && ok "pref: unavailable drop does not rewrite pref" || bad "pref rewritten on drop"
+
+# registry-unknown id in pref degrades (dropped, not exit 2); bad id alone -> fable-only.
+# Capture resolve-set's OWN exit (not the trailing pipe's) so the exit-0 assertion is real (fable-rd1-r3).
+printf 'bogus\n' > "$PREF"
+rows="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null)"; rc=$?
+out="$(printf '%s' "$rows" | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "fable " && $rc -eq 0 ]] && ok "pref: unknown id degrades to fable-only (exit 0)" || bad "pref unknown-degrade (out='$out' rc=$rc)"
+
+# contrast: unknown id in an EXPLICIT flag still hard-fails exit 2
+MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers bogus --pref-file "$PREF" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "pref: unknown in flag still exit 2" || bad "flag unknown should exit 2"
+
+# absent pref file (the common fresh-repo bare run): -s false -> fable-only, exit 0, no error (fable-rd2-r4)
+ABS="${WORK}/does-not-exist.pref"; rm -f "$ABS"
+rows="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$ABS" 2>/dev/null)"; rc=$?
+out="$(printf '%s' "$rows" | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "fable " && $rc -eq 0 ]] && ok "pref: absent pref file -> fable-only (exit 0)" || bad "pref absent-file (out='$out' rc=$rc)"
+
+# both drop-notice texts are pinned, so Task 5's arm-time relay keys on the shared "pref reviewer
+# … dropping" token; a reword can't break the relay unnoticed (fable-rd2-r3, fable-rd3-r1).
+# (a) unavailable id (registered but STUB check fails):
+printf 'gemini\n' > "$PREF"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>&1 >/dev/null)"
+printf '%s' "$err" | grep -q "pref reviewer 'gemini'" && printf '%s' "$err" | grep -qi 'unavailable' && printf '%s' "$err" | grep -qi 'dropping' \
+  && ok "pref: unavailable-drop notice pinned (id + 'unavailable' + 'dropping')" || bad "pref unavail-notice text (got '$err')"
+# (b) registry-unknown id (STUB resolve fails):
+printf 'bogus\n' > "$PREF"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>&1 >/dev/null)"
+printf '%s' "$err" | grep -q "pref reviewer 'bogus'" && printf '%s' "$err" | grep -qi 'unknown' && printf '%s' "$err" | grep -qi 'dropping' \
+  && ok "pref: unknown-drop notice pinned (id + 'unknown' + 'dropping')" || bad "pref unknown-notice text (got '$err')"
+
+# a duplicated bad id in the pref drops ONCE, not once per occurrence (dedup on drop; PR#13 fable-rd1-r2)
+printf 'bogus,bogus\n' > "$PREF"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>&1 >/dev/null)"
+n="$(printf '%s\n' "$err" | grep -c "pref reviewer 'bogus'")"
+[[ "$n" -eq 1 ]] && ok "pref: duplicate bad id notice deduped (once)" || bad "pref dup-notice count (got $n)"
+
+# unknown flag is rejected (parity with remember-set), not silently swallowed (fable-rd2-r2)
+MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --bogus-flag >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "resolve-set: unknown flag -> exit 2" || bad "resolve-set unknown flag not rejected"
+
 # --- resolve-set --fable-floor (Phase 2, dormant) ---
 # named set gains fable, appended last, deduped
 out="$(bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
@@ -588,6 +683,82 @@ out="$(bash "$SUT" compose-inline "$BIG_DOC" 2>/dev/null)"; rc=$?
 printf '%s\n' "$out" | grep -qE '^scripts/foo\.sh'$'\t''42'$'\t'$'\t' \
   && ok "compose-inline: large doc still emits the anchored finding's TSV" \
   || bad "compose-inline large doc tsv (got '$out')"
+
+# --- remember-set --reviewers (Task 3) ---
+# Write tests need env genuinely unset: once Task 4's env-shadow guard exists, an exported
+# MULTI_REVIEW_REVIEWERS would turn every write into a no-op and fail these (fable-rd2-r1).
+unset MULTI_REVIEW_REVIEWERS
+RS="${WORK}/rs.pref"; rm -f "$RS"
+# writes normalized csv and creates the parent dir
+RS2="${WORK}/nested/deep/rs.pref"
+bash "$SUT" remember-set --pref-file "$RS2" --reviewers codex,gemini >/dev/null 2>&1
+[[ "$(cat "$RS2" 2>/dev/null)" == "codex,gemini" ]] && ok "remember-set: writes csv + creates dir" || bad "remember-set write (got '$(cat "$RS2" 2>/dev/null)')"
+
+# strips fable + dedups
+bash "$SUT" remember-set --pref-file "$RS" --reviewers fable,codex,codex,gemini >/dev/null 2>&1
+[[ "$(cat "$RS")" == "codex,gemini" ]] && ok "remember-set: strips fable + dedups" || bad "remember-set strip (got '$(cat "$RS")')"
+
+# registry-unknown id -> exit 2, pref untouched
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --reviewers codex,bogus >/dev/null 2>&1
+rc=$?; [[ $rc -eq 2 && "$(cat "$RS")" == "codex" ]] && ok "remember-set: unknown id exit 2, pref untouched" || bad "remember-set unknown (rc=$rc, pref='$(cat "$RS")')"
+
+# empty extras (fable-only after stripping) -> no-op, existing file unchanged
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --reviewers fable >/dev/null 2>&1
+[[ "$(cat "$RS")" == "codex" ]] && ok "remember-set: empty extras is no-op (unchanged)" || bad "remember-set empty no-op (got '$(cat "$RS")')"
+
+# empty extras with no pre-existing file -> no file created
+RS3="${WORK}/none.pref"; rm -f "$RS3"
+bash "$SUT" remember-set --pref-file "$RS3" --reviewers "" >/dev/null 2>&1
+[[ ! -e "$RS3" ]] && ok "remember-set: empty extras creates nothing" || bad "remember-set empty created a file"
+
+# overwrite is a full replace, not a merge
+printf 'codex,gemini\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --reviewers codex >/dev/null 2>&1
+[[ "$(cat "$RS")" == "codex" ]] && ok "remember-set: overwrite replaces (no merge)" || bad "remember-set overwrite (got '$(cat "$RS")')"
+
+# OMITTING --reviewers entirely is a usage error (distinct from an explicit empty set)
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" >/dev/null 2>&1
+rc=$?; [[ $rc -eq 2 && "$(cat "$RS")" == "codex" ]] && ok "remember-set: omitted --reviewers is exit 2" || bad "remember-set omit (rc=$rc, pref='$(cat "$RS")')"
+
+# --- remember-set --clear + env-shadow guard (Task 4) ---
+# --clear deletes an existing pref
+printf 'codex,gemini\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
+[[ ! -e "$RS" ]] && ok "remember-set --clear: deletes pref" || bad "clear did not delete"
+
+# --clear on absent pref is success (idempotent)
+bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
+[[ $? -eq 0 && ! -e "$RS" ]] && ok "remember-set --clear: idempotent on absent" || bad "clear absent not idempotent"
+
+# --clear and --reviewers are mutually exclusive (keyed on flag presence, not value)
+bash "$SUT" remember-set --pref-file "$RS" --clear --reviewers codex >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "remember-set: --clear + --reviewers exit 2" || bad "clear+reviewers not exit 2"
+# even --clear --reviewers "" (empty value) is rejected — presence, not emptiness (codex-rd1-r3)
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --clear --reviewers "" >/dev/null 2>&1
+[[ $? -eq 2 && "$(cat "$RS")" == "codex" ]] && ok "remember-set: --clear --reviewers '' exit 2, pref untouched" || bad "clear+empty-reviewers not rejected"
+
+# env-shadow guard: non-empty env -> --reviewers is a no-op, existing pref untouched
+printf 'codex\n' > "$RS"
+MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --reviewers codex,gemini 2>/dev/null
+[[ "$(cat "$RS")" == "codex" ]] && ok "remember-set: env set -> write no-op (pref untouched)" || bad "env-shadow wrote anyway (got '$(cat "$RS")')"
+
+# env-shadow guard emits a stderr notice
+err="$(MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --reviewers codex 2>&1 >/dev/null)"
+printf '%s' "$err" | grep -q 'MULTI_REVIEW_REVIEWERS' && ok "remember-set: env-shadow stderr notice" || bad "env-shadow no notice (got '$err')"
+
+# empty-string env does NOT trip the guard -> write proceeds
+printf 'codex\n' > "$RS"
+MULTI_REVIEW_REVIEWERS="" bash "$SUT" remember-set --pref-file "$RS" --reviewers gemini >/dev/null 2>&1
+[[ "$(cat "$RS")" == "gemini" ]] && ok "remember-set: empty env does not trip guard" || bad "empty env tripped guard (got '$(cat "$RS")')"
+
+# --clear ignores the env-shadow guard (clears even when env is set)
+printf 'codex\n' > "$RS"
+MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
+[[ ! -e "$RS" ]] && ok "remember-set --clear: ignores env guard" || bad "clear blocked by env guard"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
