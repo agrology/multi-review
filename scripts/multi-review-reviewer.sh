@@ -399,14 +399,72 @@ cmd_verify_vendor() { # --baseline <snap> <doc> --reviewer <id>
   return 0
 }
 
+# doctor — per-provider readiness report (never a gate: exit 0 if the report ran). For gemini it
+# also runs a bounded LIVE probe; the probe's raw output is discarded (may contain paths/auth).
+cmd_doctor() {
+  local id rr; rr="$(repo_root)"
+  for id in codex fable gemini; do
+    local hints rc
+    hints="$(cmd_check --reviewer "$id" 2>&1 >/dev/null)"; rc=$?
+    if [[ $rc -ne 0 ]]; then
+      echo "✗ ${id}: ${hints}"            # hard gate (CLI absent)
+      continue
+    fi
+    if [[ "$id" == "gemini" ]]; then
+      # The live probe is AUTHORITATIVE for gemini: it proves auth+trust end-to-end, so a green
+      # probe means ready even if a static hint (e.g. the env-var-only trust check) fired falsely on
+      # an interactively-trusted workspace — and static hints never contradict a passing probe.
+      if gemini_live_probe; then
+        echo "✓ gemini: ready (${GEMINI_PROBE_MSG})"
+      else
+        echo "✗ gemini: ${GEMINI_PROBE_MSG}"
+        [[ -n "$hints" ]] && printf '%s\n' "$hints" | sed 's/^/    likely cause: /'
+      fi
+    elif [[ -n "$hints" ]]; then
+      echo "△ ${id}: needs setup"
+      printf '%s\n' "$hints" | sed 's/^/    /'
+    else
+      echo "✓ ${id}: ready"
+    fi
+  done
+  return 0
+}
+
+# Bounded live probe. Returns 0 on auth OK / non-zero otherwise, and sets GEMINI_PROBE_MSG. Never
+# prints the CLI's own output (captured to a temp file, discarded — redaction). Bash 3.2: no
+# timeout(1), so poll a background job then escalate TERM→KILL (KILL can't be caught, so the wait
+# can't hang) and reap direct children.
+GEMINI_PROBE_MSG=""
+gemini_live_probe() {
+  local model out pid waited bound
+  model="$(provider_row gemini | cut -d'|' -f4)"
+  bound="${MULTI_REVIEW_PROBE_TIMEOUT:-30}"
+  out="$(mktemp)"
+  ( gemini -m "$model" -p "reply with OK" >"$out" 2>&1 ) & pid=$!
+  waited=0
+  while kill -0 "$pid" 2>/dev/null && (( waited < bound )); do sleep 1; waited=$((waited+1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null; sleep 1
+    kill -KILL "$pid" 2>/dev/null              # KILL is uncatchable → the wait below returns
+    pkill -KILL -P "$pid" 2>/dev/null || true  # reap direct children the CLI may have spawned
+    wait "$pid" 2>/dev/null
+    rm -f "$out"; GEMINI_PROBE_MSG="live probe timed out after ${bound}s"; return 1
+  fi
+  if wait "$pid"; then
+    rm -f "$out"; GEMINI_PROBE_MSG="live probe: auth OK"; return 0
+  fi
+  rm -f "$out"; GEMINI_PROBE_MSG="live probe failed (auth/trust?) — run 'gemini -p test' to see the CLI's own error"; return 1
+}
+
 # --- dispatch -------------------------------------------------------------
-sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|verify-vendor|vendor-of-model> [args]" 2
+sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|doctor|verify-vendor|vendor-of-model> [args]" 2
 shift
 case "$sub" in
   resolve) cmd_resolve "$@" ;;
   check)   cmd_check "$@" ;;
   prompt)  cmd_prompt "$@" ;;
   command) cmd_command "$@" ;;
+  doctor)  cmd_doctor "$@" ;;
   verify-vendor) cmd_verify_vendor "$@" ;;
   vendor-of-model) cmd_vendor_of_model "$@" ;;
   *)       die "unknown subcommand: $sub" 2 ;;

@@ -556,6 +556,40 @@ MULTI_REVIEW_GEMINI_AUTOTRUST=yes bash "$SUT" command "$DAT" --reviewer gemini >
 first=""; IFS= read -r -d '' first < "${WORK}/at2.bin"
 [[ "$first" == "gemini" ]] && ok "command gemini: autotrust!=1 leaves argv unchanged" || bad "autotrust!=1 first='$first'"
 
+# --- doctor (Task 4) ---
+unset GEMINI_API_KEY GEMINI_CLI_TRUST_WORKSPACE MULTI_REVIEW_GEMINI_AUTOTRUST
+DREPO="${WORK}/drepo"; mkdir -p "$DREPO"; ( cd "$DREPO" && git init -q )
+# stub gemini that replies instantly (probe -> OK) and codex present
+DBIN="${WORK}/dbin"; mkdir -p "$DBIN"
+printf '#!/usr/bin/env bash\necho OK\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+printf '#!/usr/bin/env bash\n:\n' > "$DBIN/codex"; chmod +x "$DBIN/codex"
+
+# report EXITS 0 even with unconfigured providers, and lists every provider
+out="$(cd "$DREPO" && HOME="$DREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"; rc=$?
+[[ $rc -eq 0 ]] && ok "doctor: exits 0 even with unconfigured providers (report, not gate)" || bad "doctor rc=$rc (want 0)"
+grep -q 'gemini' <<<"$out" && grep -q 'codex' <<<"$out" && grep -q 'fable' <<<"$out" \
+  && ok "doctor: lists every provider" || bad "doctor missing a provider: '$out'"
+grep -qi 'fable.*ready\|✓ fable' <<<"$out" && ok "doctor: fable shows ready" || bad "doctor fable line: '$out'"
+# gemini probe is AUTHORITATIVE: even fully unconfigured, a PASSING probe -> ready, static hints
+# suppressed (no contradictory "needs setup" for gemini) — codex-rd1-r2, fable-rd1-r5.
+grep -qi 'gemini: ready' <<<"$out" && ok "doctor: passing probe -> gemini ready despite static hints" || bad "doctor gemini not ready: '$out'"
+grep -qiE '△ gemini|gemini: needs setup' <<<"$out" && bad "doctor: gemini showed 'needs setup' despite a passing probe" || ok "doctor: no contradictory gemini needs-setup line"
+
+# probe FAILS + unconfigured -> ✗ gemini with static hints shown as 'likely cause'
+printf '#!/usr/bin/env bash\nexit 1\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qi 'likely cause' <<<"$out" && grep -qi 'trust\|API key' <<<"$out" \
+  && ok "doctor: failing probe surfaces static hints as likely cause" || bad "doctor no likely-cause: '$out'"
+
+# a slow stub + tiny timeout -> probe reports timed out, doctor still exits 0 (no hang)
+printf '#!/usr/bin/env bash\nsleep 3\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=1 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"; rc=$?
+[[ $rc -eq 0 ]] && grep -qi 'timed out' <<<"$out" && ok "doctor: probe honors the bounded timeout (no hang)" || bad "doctor timeout (rc=$rc): '$out'"
+# probe output is never echoed (redaction): stub prints a marker; doctor must not surface it
+printf '#!/usr/bin/env bash\necho SENSITIVE_PROBE_STDOUT; exit 1\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qF 'SENSITIVE_PROBE_STDOUT' <<<"$out" && bad "doctor leaked raw probe output" || ok "doctor: probe output is redacted on failure"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
