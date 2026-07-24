@@ -3,6 +3,7 @@
 # Sibling to core.sh/peer.sh; owns ONLY star's grammar/merge/convergence/summary. Subcommands:
 #   mode <doc>              -> "star" | (defer: empty, exit 1)
 #   resolve-set [--reviewers csv]
+#   remember-set --pref-file <path> --reviewers <csv>
 #   available
 #   open-findings <doc>
 #   observations <doc>
@@ -639,11 +640,43 @@ cmd_gate_summary() {
   fi
 }
 
+# remember-set --pref-file <path> --reviewers <csv>
+# Persist the user's explicit extra-reviewer choice. Registry-validate (NOT availability — the read
+# path in resolve-set handles availability). Strip fable, dedup, full-replace. --reviewers is
+# REQUIRED here (Task 4 adds the alternative --clear). An explicitly-empty set (only fable after
+# stripping, or --reviewers "") -> no-op; OMITTING --reviewers is a usage error (codex-rd1-r2).
+cmd_remember_set() {
+  local pref="" csv="" have_reviewers=0 id seen="" out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pref-file) [[ $# -ge 2 ]] || die "--pref-file requires a value" 2; pref="$2"; shift 2 ;;
+      --reviewers) [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; have_reviewers=1; shift 2 ;;
+      *) die "remember-set: unexpected argument: $1" 2 ;;
+    esac
+  done
+  [[ -n "$pref" ]] || die "remember-set requires --pref-file <path>" 2
+  (( have_reviewers )) || die "remember-set requires --reviewers <csv>" 2
+  set -f                               # no globbing on a '*' in the csv (fable-rd3-r5)
+  for id in $(printf '%s' "$csv" | tr ',' ' '); do
+    [[ "$id" == "fable" ]] && continue
+    case " $seen " in *" $id "*) continue ;; esac
+    "$REVIEWER_SH" resolve --reviewer "$id" >/dev/null 2>&1 \
+      || { set +f; die "remember-set: unknown reviewer provider: ${id}" 2; }
+    seen="$seen $id"; out="${out}${id},"
+  done
+  set +f
+  out="${out%,}"
+  [[ -n "$out" ]] || return 0          # empty extras -> no-op: never create or truncate
+  mkdir -p "$(dirname "$pref")"
+  printf '%s\n' "$out" > "$pref"
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     mode) cmd_mode "$@" ;;
     resolve-set) cmd_resolve_set "$@" ;;
+    remember-set) cmd_remember_set "$@" ;;
     available) cmd_available "$@" ;;
     open-findings) cmd_open_findings "$@" ;;
     observations) cmd_observations "$@" ;;

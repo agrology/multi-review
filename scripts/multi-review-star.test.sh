@@ -678,6 +678,45 @@ printf '%s\n' "$out" | grep -qE '^scripts/foo\.sh'$'\t''42'$'\t'$'\t' \
   && ok "compose-inline: large doc still emits the anchored finding's TSV" \
   || bad "compose-inline large doc tsv (got '$out')"
 
+# --- remember-set --reviewers (Task 3) ---
+# Write tests need env genuinely unset: once Task 4's env-shadow guard exists, an exported
+# MULTI_REVIEW_REVIEWERS would turn every write into a no-op and fail these (fable-rd2-r1).
+unset MULTI_REVIEW_REVIEWERS
+RS="${WORK}/rs.pref"; rm -f "$RS"
+# writes normalized csv and creates the parent dir
+RS2="${WORK}/nested/deep/rs.pref"
+bash "$SUT" remember-set --pref-file "$RS2" --reviewers codex,gemini >/dev/null 2>&1
+[[ "$(cat "$RS2" 2>/dev/null)" == "codex,gemini" ]] && ok "remember-set: writes csv + creates dir" || bad "remember-set write (got '$(cat "$RS2" 2>/dev/null)')"
+
+# strips fable + dedups
+bash "$SUT" remember-set --pref-file "$RS" --reviewers fable,codex,codex,gemini >/dev/null 2>&1
+[[ "$(cat "$RS")" == "codex,gemini" ]] && ok "remember-set: strips fable + dedups" || bad "remember-set strip (got '$(cat "$RS")')"
+
+# registry-unknown id -> exit 2, pref untouched
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --reviewers codex,bogus >/dev/null 2>&1
+rc=$?; [[ $rc -eq 2 && "$(cat "$RS")" == "codex" ]] && ok "remember-set: unknown id exit 2, pref untouched" || bad "remember-set unknown (rc=$rc, pref='$(cat "$RS")')"
+
+# empty extras (fable-only after stripping) -> no-op, existing file unchanged
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --reviewers fable >/dev/null 2>&1
+[[ "$(cat "$RS")" == "codex" ]] && ok "remember-set: empty extras is no-op (unchanged)" || bad "remember-set empty no-op (got '$(cat "$RS")')"
+
+# empty extras with no pre-existing file -> no file created
+RS3="${WORK}/none.pref"; rm -f "$RS3"
+bash "$SUT" remember-set --pref-file "$RS3" --reviewers "" >/dev/null 2>&1
+[[ ! -e "$RS3" ]] && ok "remember-set: empty extras creates nothing" || bad "remember-set empty created a file"
+
+# overwrite is a full replace, not a merge
+printf 'codex,gemini\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --reviewers codex >/dev/null 2>&1
+[[ "$(cat "$RS")" == "codex" ]] && ok "remember-set: overwrite replaces (no merge)" || bad "remember-set overwrite (got '$(cat "$RS")')"
+
+# OMITTING --reviewers entirely is a usage error (distinct from an explicit empty set)
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" >/dev/null 2>&1
+rc=$?; [[ $rc -eq 2 && "$(cat "$RS")" == "codex" ]] && ok "remember-set: omitted --reviewers is exit 2" || bad "remember-set omit (rc=$rc, pref='$(cat "$RS")')"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
