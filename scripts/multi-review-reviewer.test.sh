@@ -513,6 +513,28 @@ grep -qF 'fake-secret-value' <<<"$out" && bad "check leaked the key value" || ok
 out="$(bash "$SUT" check --reviewer fable 2>&1)"; rc=$?
 [[ $rc -eq 0 && -z "$out" ]] && ok "check fable: exit 0, no output (unchanged)" || bad "check fable rc=$rc out='$out'"
 
+# --- advisory check: codex skill dir (Task 2) ---
+CBIN="${WORK}/cbin"; mkdir -p "$CBIN"; printf '#!/usr/bin/env bash\n:\n' > "$CBIN/codex"; chmod +x "$CBIN/codex"
+CREPO="${WORK}/crepo"; mkdir -p "$CREPO"; ( cd "$CREPO" && git init -q )
+
+# no skill dir -> exit 0 + hint
+out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && grep -qi 'skill' <<<"$out" && ok "check codex: skill-missing hint (exit 0)" || bad "codex skill hint (rc=$rc, out='$out')"
+
+# skill dir present -> no hint
+mkdir -p "$CREPO/.agents/skills/multi-review"
+out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
+[[ -z "$out" ]] && ok "check codex: no hint when skill present" || bad "codex spurious hint: '$out'"
+
+# repo-root resolution: from a SUBDIR with the skill at the root -> still no hint
+mkdir -p "$CREPO/sub/dir"
+out="$(cd "$CREPO/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
+[[ -z "$out" ]] && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir false-hint: '$out'"
+
+# CLI absent -> exit 1 (unchanged)
+( cd "$CREPO" && PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?
+[[ $rc -eq 1 ]] && ok "check codex: CLI absent still exit 1" || bad "codex absent rc=$rc (want 1)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

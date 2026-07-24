@@ -120,7 +120,10 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
       return 0 ;;                       # in-harness; nothing external to probe
     codex)
       command -v codex >/dev/null 2>&1 \
-        || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1 ;;
+        || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1
+      [[ -d "$(repo_root)/.agents/skills/multi-review" ]] \
+        || hint codex "reviewer skill not found — copy .agents/skills/multi-review/ into your repo root"
+      ;;
     gemini)
       command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
       local rr; rr="$(repo_root)"
