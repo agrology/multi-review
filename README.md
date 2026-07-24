@@ -18,14 +18,14 @@ flowchart TB
   A["/multi-review &lt;doc | PR&gt; --reviewers codex,gemini"] --> P
   subgraph R["each round · up to MULTI_REVIEW_MAX_ROUNDS (default 5)"]
     direction TB
-    P["Claude · primary<br/>(neutral — adjudicates, never authors findings)"]
+    P["Claude · primary<br/>(neutral — adjudicates,<br/>never authors findings)"]
     P -- blind copy --> F["fable · always"]
     P -- blind copy --> C["codex"]
     P -- blind copy --> G["gemini"]
     F & C & G -- findings --> M["merge + verify-vendor<br/>(impostor → quarantine, not fail)"]
-    M --> J["primary agrees / disputes each"]
+    M --> J["primary agrees /<br/>disputes each"]
+    J -- "new findings →<br/>re-fan-out" --> P
   end
-  J -- "round surfaced new findings → re-fan-out" --> R
   J -- "round went dry → converge" --> H["HUMAN GATE<br/>+ warn if no cross-vendor reviewer"]
   H -- "PR only, on approval" --> Pub["one neutral gh pr review"]
 ```
