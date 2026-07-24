@@ -3,7 +3,7 @@
 # Sibling to core.sh/peer.sh; owns ONLY star's grammar/merge/convergence/summary. Subcommands:
 #   mode <doc>              -> "star" | (defer: empty, exit 1)
 #   resolve-set [--reviewers csv]
-#   remember-set --pref-file <path> --reviewers <csv>
+#   remember-set --pref-file <path> (--reviewers <csv> | --clear)
 #   available
 #   open-findings <doc>
 #   observations <doc>
@@ -640,22 +640,37 @@ cmd_gate_summary() {
   fi
 }
 
-# remember-set --pref-file <path> --reviewers <csv>
-# Persist the user's explicit extra-reviewer choice. Registry-validate (NOT availability — the read
-# path in resolve-set handles availability). Strip fable, dedup, full-replace. --reviewers is
-# REQUIRED here (Task 4 adds the alternative --clear). An explicitly-empty set (only fable after
-# stripping, or --reviewers "") -> no-op; OMITTING --reviewers is a usage error (codex-rd1-r2).
+# remember-set --pref-file <path> (--reviewers <csv> | --clear)
+# Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
+# (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
+# full-replace; an explicitly-empty set -> no-op; a non-empty MULTI_REVIEW_REVIEWERS shadows the
+# pref so the write is a no-op + notice. --clear: delete the pref (deliberate revoke), ignoring the
+# env guard. Exactly one of --reviewers/--clear is required (codex-rd1-r2/r3).
 cmd_remember_set() {
-  local pref="" csv="" have_reviewers=0 id seen="" out=""
+  local pref="" csv="" have_reviewers=0 clear=0 id seen="" out=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --pref-file) [[ $# -ge 2 ]] || die "--pref-file requires a value" 2; pref="$2"; shift 2 ;;
       --reviewers) [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; have_reviewers=1; shift 2 ;;
+      --clear)     clear=1; shift ;;
       *) die "remember-set: unexpected argument: $1" 2 ;;
     esac
   done
   [[ -n "$pref" ]] || die "remember-set requires --pref-file <path>" 2
-  (( have_reviewers )) || die "remember-set requires --reviewers <csv>" 2
+  # Exactly one of --reviewers / --clear, keyed on flag PRESENCE (not csv value) so that both
+  # "neither given" and "--clear --reviewers ''" are rejected (codex-rd1-r2, codex-rd1-r3).
+  (( have_reviewers + clear == 1 )) \
+    || die "remember-set requires exactly one of --reviewers <csv> or --clear" 2
+  if (( clear )); then
+    rm -f "$pref"                      # deliberate revoke; ignores the env guard by design
+    return 0
+  fi
+  # Env-shadow guard: a non-empty MULTI_REVIEW_REVIEWERS shadows the pref on every later bare run,
+  # so writing it would be a dead write. "Set" = non-empty (an exported "" is treated as unset).
+  if [[ -n "${MULTI_REVIEW_REVIEWERS:-}" ]]; then
+    echo "multi-review-star: MULTI_REVIEW_REVIEWERS is set — it shadows the remembered combo on bare runs; not writing pref (unset it to use the pref)" >&2
+    return 0
+  fi
   set -f                               # no globbing on a '*' in the csv (fable-rd3-r5)
   for id in $(printf '%s' "$csv" | tr ',' ' '); do
     [[ "$id" == "fable" ]] && continue

@@ -717,6 +717,43 @@ printf 'codex\n' > "$RS"
 bash "$SUT" remember-set --pref-file "$RS" >/dev/null 2>&1
 rc=$?; [[ $rc -eq 2 && "$(cat "$RS")" == "codex" ]] && ok "remember-set: omitted --reviewers is exit 2" || bad "remember-set omit (rc=$rc, pref='$(cat "$RS")')"
 
+# --- remember-set --clear + env-shadow guard (Task 4) ---
+# --clear deletes an existing pref
+printf 'codex,gemini\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
+[[ ! -e "$RS" ]] && ok "remember-set --clear: deletes pref" || bad "clear did not delete"
+
+# --clear on absent pref is success (idempotent)
+bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
+[[ $? -eq 0 && ! -e "$RS" ]] && ok "remember-set --clear: idempotent on absent" || bad "clear absent not idempotent"
+
+# --clear and --reviewers are mutually exclusive (keyed on flag presence, not value)
+bash "$SUT" remember-set --pref-file "$RS" --clear --reviewers codex >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "remember-set: --clear + --reviewers exit 2" || bad "clear+reviewers not exit 2"
+# even --clear --reviewers "" (empty value) is rejected — presence, not emptiness (codex-rd1-r3)
+printf 'codex\n' > "$RS"
+bash "$SUT" remember-set --pref-file "$RS" --clear --reviewers "" >/dev/null 2>&1
+[[ $? -eq 2 && "$(cat "$RS")" == "codex" ]] && ok "remember-set: --clear --reviewers '' exit 2, pref untouched" || bad "clear+empty-reviewers not rejected"
+
+# env-shadow guard: non-empty env -> --reviewers is a no-op, existing pref untouched
+printf 'codex\n' > "$RS"
+MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --reviewers codex,gemini 2>/dev/null
+[[ "$(cat "$RS")" == "codex" ]] && ok "remember-set: env set -> write no-op (pref untouched)" || bad "env-shadow wrote anyway (got '$(cat "$RS")')"
+
+# env-shadow guard emits a stderr notice
+err="$(MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --reviewers codex 2>&1 >/dev/null)"
+printf '%s' "$err" | grep -q 'MULTI_REVIEW_REVIEWERS' && ok "remember-set: env-shadow stderr notice" || bad "env-shadow no notice (got '$err')"
+
+# empty-string env does NOT trip the guard -> write proceeds
+printf 'codex\n' > "$RS"
+MULTI_REVIEW_REVIEWERS="" bash "$SUT" remember-set --pref-file "$RS" --reviewers gemini >/dev/null 2>&1
+[[ "$(cat "$RS")" == "gemini" ]] && ok "remember-set: empty env does not trip guard" || bad "empty env tripped guard (got '$(cat "$RS")')"
+
+# --clear ignores the env-shadow guard (clears even when env is set)
+printf 'codex\n' > "$RS"
+MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
+[[ ! -e "$RS" ]] && ok "remember-set --clear: ignores env guard" || bad "clear blocked by env guard"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
