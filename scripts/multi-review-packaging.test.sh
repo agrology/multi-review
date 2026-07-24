@@ -194,4 +194,31 @@ else
   bad "marketplace.json missing at .claude-plugin/marketplace.json"
 fi
 
+# --- cross-manifest sync: marketplace entry ↔ plugin.json cannot drift ---
+if [[ -f "$MKT" && -f "$MAN" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$MKT" "$MAN" <<'PY' && ok "marketplace↔plugin sync (name/description/keywords) + repository=homepage" || bad "cross-manifest sync failed"
+import json, sys
+mkt = json.load(open(sys.argv[1], encoding="utf-8"))
+plug = json.load(open(sys.argv[2], encoding="utf-8"))
+# select the entry by equality against plugin.json's name (not a hardcoded literal)
+entry = next((p for p in mkt["plugins"] if p.get("name") == plug.get("name")), None)
+assert entry is not None, "an entry's name equals plugin.json name"
+assert entry.get("description") == plug.get("description"), "description drift between manifests"
+ek, pk = entry.get("keywords"), plug.get("keywords")
+assert isinstance(ek, list) and isinstance(pk, list), "keywords present as arrays in both manifests"
+assert sorted(ek) == sorted(pk), "keywords drift between manifests (order-insensitive)"
+CANON = "https://github.com/agrology/multi-review"
+assert plug.get("repository") == CANON, "plugin.json repository != canonical URL"
+assert plug.get("homepage") == CANON, "plugin.json homepage != canonical URL"
+# entry source repo also points at the canonical repo (catches a drifted source)
+assert entry["source"].get("repo") == "agrology/multi-review", "entry source repo != agrology/multi-review"
+PY
+  else
+    ok "cross-manifest sync (python3 absent; skipped)"
+  fi
+else
+  bad "cross-manifest sync could not run — marketplace.json or plugin.json missing (this is a FAILURE, not a skip)"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

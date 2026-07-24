@@ -1,8 +1,19 @@
 {
   "name": "multi-review",
-  "description": "Human-gated multi-review review: a Claude author agent and an external reviewer agent converge on a spec/plan/PR doc through bounded rounds, ending at a human approval gate.",
+  "description": "Human-gated star review: Claude (the neutral primary) fans a spec/plan/PR out to N independent secondary reviewers (fable always, plus cross-vendor codex/gemini), adjudicates their findings, and converges — always ending at a human approval gate.",
   "version": "1.1.0",
-  "author": { "name": "Agrology" },
+  "author": {
+    "name": "Agrology"
+  },
   "homepage": "https://github.com/agrology/multi-review",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "repository": "https://github.com/agrology/multi-review",
+  "keywords": [
+    "code-review",
+    "design-review",
+    "spec-review",
+    "pull-request",
+    "multi-agent",
+    "human-in-the-loop"
+  ]
 }
