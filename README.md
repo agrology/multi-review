@@ -86,10 +86,11 @@ are gitignored). The free tier's daily cap will exhaust a multi-round review.
 | `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans` | where bare-name local docs are resolved |
 
 The last explicitly-named reviewer combo is remembered per repo in **`.multi-review/reviewers.pref`**
-(gitignored). It is written only when reviewers are named (flag or prose), sits **below**
-`MULTI_REVIEW_REVIEWERS` in precedence, and self-heals — a remembered reviewer that isn't available
-in the repo is dropped on read (with a notice), never poisoning the run. Reset it with a "forget
-the reviewers" request.
+(gitignored). It is written when reviewers are named (flag or prose) — **except** when
+`MULTI_REVIEW_REVIEWERS` is set, which would shadow the pref anyway, so the write is skipped with a
+notice. It sits **below** `MULTI_REVIEW_REVIEWERS` in precedence, and self-heals — a remembered
+reviewer that isn't available in the repo is dropped on read (with a notice), never poisoning the
+run. Reset it with a "forget the reviewers" request.
 
 ## How it works
 

@@ -33,17 +33,32 @@ pref. When it is genuinely ambiguous whether a name is this run's choice, **ask 
 
 **Three intents** — do not conflate them (they drive different §2 write-back actions):
 
-| user phrasing (this run) | intent | §2 write-back |
-|---|---|---|
-| "multi-review the spec with codex and gemini" | named extras | `remember-set --reviewers codex,gemini` |
-| "multi-review with just codex this time" | one-off | none (resolve codex for this run only) |
-| "just fable this once" | one-off | none (fable-only run; pref untouched) |
-| "forget the reviewers" / "fable-only from now on" | revoke | `remember-set --clear` |
-| "like last time with codex?" (a question about a past run) | not a choice | none |
-| ambiguous whether it's this run's choice | ask (default to one-off) | none until clarified |
+| user phrasing (this run) | intent | this run's set | §2 write-back |
+|---|---|---|---|
+| "multi-review the spec with codex and gemini" | named extras | codex,gemini (+fable) | `remember-set --reviewers codex,gemini` |
+| "multi-review with just codex this time" | one-off | codex (+fable) | none |
+| "just fable this once" | one-off | fable only | none |
+| "forget the reviewers" / "fable-only from now on" | revoke | fable only | `remember-set --clear` |
+| "like last time with codex?" (a question about a past run) | not a choice | (per pref/env) | none |
+| ambiguous whether it's this run's choice | ask (default to one-off) | (per ask) | none until clarified |
 
-The phrase "this time" / "just this once" is the signal that scopes a naming to a one-off (resolve
-for this run, leave the pref alone) rather than a persistent choice or a revoke.
+The phrase "this time" / "just this once" is the signal that scopes a naming to a **one-off**
+(resolve for this run, leave the pref alone) rather than a persistent choice or a revoke.
+
+**A one-off ignores the pref for this run (fable-rd1-r1).** A one-off explicitly scopes to *this*
+run, so it must NOT inherit the remembered combo — resolve it in §2 **without** `--pref-file`
+(passing `--reviewers <ids>` for a named one-off, or nothing at all for "just fable this once",
+which then floors to fable only). Omitting `--pref-file` is the ONLY way to force fable-only against
+a stored pref: `resolve-set` treats an empty `--reviewers` as absent and would otherwise fall
+through to the pref.
+
+**Standalone revoke — no review (codex-rd1-r1).** If the request is *purely* to forget the
+remembered combo ("forget the reviewers", "reset to fable-only from now on") with **no doc or PR to
+review**, do NOT resolve a doc or arm anything: run
+`${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh remember-set --pref-file
+.multi-review/reviewers.pref --clear`, confirm "remembered reviewers cleared — bare runs will use
+fable only," and STOP. Only when the same turn *also* asks for a review does the revoke fold into
+the §2 write-back instead.
 
 ### Classify (doc path vs. PR)
 
@@ -98,6 +113,10 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    .multi-review/reviewers.pref`, appending `--reviewers <csv>` when §1 extracted a set (flag or
    prose). Precedence is flag/prose → `MULTI_REVIEW_REVIEWERS` → the pref → fable-only; the pref is
    consulted **only** when neither a named set nor the env supplied one.
+   - **One-off exception (§1, fable-rd1-r1):** when the §1 intent is a **one-off override**, OMIT
+     `--pref-file` from this call, so the remembered combo does not leak into a run the user scoped
+     to just this once (this is required for "just fable this once" to actually resolve fable-only —
+     an empty `--reviewers` alone would fall through to the pref).
    - **Exit 0** → the resolved set, one `id|vendor|kind|model|has-skill` row per line. `fable` is
      always present (the `--fable-floor` union), so the set is never empty. These are the
      secondaries for the whole run.
