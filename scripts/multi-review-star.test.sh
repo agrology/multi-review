@@ -80,6 +80,75 @@ chmod +x "$STUB"
 out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --reviewers codex 2>/dev/null | cut -d'|' -f2)"
 [[ "$out" == "vendor" ]] && ok "seam: MULTI_REVIEW_REVIEWER_SH overrides helper path" || bad "seam override (got '$out')"
 
+# --- resolve-set --pref-file (Task 2) ---
+# These "flag+env empty" cases require env genuinely unset; a dev who exports MULTI_REVIEW_REVIEWERS
+# would otherwise see env shadow the pref and the tests fail spuriously (fable-rd2-r1).
+unset MULTI_REVIEW_REVIEWERS
+# pref used only when flag AND env are both empty; result = pref extras + fable (floored)
+PREF="${WORK}/reviewers.pref"; printf 'codex\n' > "$PREF"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex fable " ]] && ok "pref: used when flag+env empty" || bad "pref used (got '$out')"
+
+# flag beats pref
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers gemini --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "gemini fable " ]] && ok "pref: flag beats pref" || bad "pref flag-beats (got '$out')"
+
+# env beats pref (non-empty)
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "gemini fable " ]] && ok "pref: env beats pref" || bad "pref env-beats (got '$out')"
+
+# empty-string env is treated as unset -> falls through to pref
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex fable " ]] && ok "pref: empty env is unset, falls to pref" || bad "pref empty-env (got '$out')"
+
+# a CSV env value splits like the flag (fable-rd1-r1) — not one unknown "codex,gemini" token.
+# env source is not availability-filtered (that is pref-only), so both ids survive + fable floored.
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="codex,gemini" bash "$SUT" resolve-set --fable-floor 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex gemini fable " ]] && ok "pref: csv env value splits (not one token)" || bad "csv env split (got '$out')"
+
+# read-path normalization: whitespace, duplicates, a literal 'fable', blank lines
+printf '  codex , codex \n\nfable,gemini\n' > "$PREF"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+# gemini resolves but STUB check fails it -> dropped; codex kept; fable floored; literal fable stripped; dup collapsed
+[[ "$out" == "codex fable " ]] && ok "pref: normalize (trim/dedup/strip-fable) + drop unavailable" || bad "pref normalize (got '$out')"
+
+# availability drop is non-destructive: pref file unchanged after the run
+grep -q 'gemini' "$PREF" && ok "pref: unavailable drop does not rewrite pref" || bad "pref rewritten on drop"
+
+# registry-unknown id in pref degrades (dropped, not exit 2); bad id alone -> fable-only.
+# Capture resolve-set's OWN exit (not the trailing pipe's) so the exit-0 assertion is real (fable-rd1-r3).
+printf 'bogus\n' > "$PREF"
+rows="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null)"; rc=$?
+out="$(printf '%s' "$rows" | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "fable " && $rc -eq 0 ]] && ok "pref: unknown id degrades to fable-only (exit 0)" || bad "pref unknown-degrade (out='$out' rc=$rc)"
+
+# contrast: unknown id in an EXPLICIT flag still hard-fails exit 2
+MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers bogus --pref-file "$PREF" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "pref: unknown in flag still exit 2" || bad "flag unknown should exit 2"
+
+# absent pref file (the common fresh-repo bare run): -s false -> fable-only, exit 0, no error (fable-rd2-r4)
+ABS="${WORK}/does-not-exist.pref"; rm -f "$ABS"
+rows="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$ABS" 2>/dev/null)"; rc=$?
+out="$(printf '%s' "$rows" | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "fable " && $rc -eq 0 ]] && ok "pref: absent pref file -> fable-only (exit 0)" || bad "pref absent-file (out='$out' rc=$rc)"
+
+# both drop-notice texts are pinned, so Task 5's arm-time relay keys on the shared "pref reviewer
+# … dropping" token; a reword can't break the relay unnoticed (fable-rd2-r3, fable-rd3-r1).
+# (a) unavailable id (registered but STUB check fails):
+printf 'gemini\n' > "$PREF"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>&1 >/dev/null)"
+printf '%s' "$err" | grep -q "pref reviewer 'gemini'" && printf '%s' "$err" | grep -qi 'unavailable' && printf '%s' "$err" | grep -qi 'dropping' \
+  && ok "pref: unavailable-drop notice pinned (id + 'unavailable' + 'dropping')" || bad "pref unavail-notice text (got '$err')"
+# (b) registry-unknown id (STUB resolve fails):
+printf 'bogus\n' > "$PREF"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>&1 >/dev/null)"
+printf '%s' "$err" | grep -q "pref reviewer 'bogus'" && printf '%s' "$err" | grep -qi 'unknown' && printf '%s' "$err" | grep -qi 'dropping' \
+  && ok "pref: unknown-drop notice pinned (id + 'unknown' + 'dropping')" || bad "pref unknown-notice text (got '$err')"
+
+# unknown flag is rejected (parity with remember-set), not silently swallowed (fable-rd2-r2)
+MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --bogus-flag >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "resolve-set: unknown flag -> exit 2" || bad "resolve-set unknown flag not rejected"
+
 # --- resolve-set --fable-floor (Phase 2, dormant) ---
 # named set gains fable, appended last, deduped
 out="$(bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"

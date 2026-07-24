@@ -92,40 +92,52 @@ STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
 REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
 
-# parse_set [--reviewers csv] -> echoes the raw id list (space-separated), flag>env precedence
-parse_set() {
-  local csv=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --reviewers) [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  if [[ -n "$csv" ]]; then
-    printf '%s' "$csv" | tr ',' ' '
-  else
-    printf '%s' "${MULTI_REVIEW_REVIEWERS:-}"
-  fi
-}
-
+# resolve-set [--fable-floor] [--reviewers csv] [--pref-file path]
+# Source precedence: --reviewers(non-empty) > MULTI_REVIEW_REVIEWERS(non-empty) > pref-file(non-empty).
+# Pref source ONLY: strip literal fable, drop unknown/unavailable ids with a notice (degrade, never
+# hard-fail, never rewrite the pref). Flag/env: unknown id is a hard exit-2 usage error.
 cmd_resolve_set() {
-  local raw seen="" id row out="" fable_floor=0 args=()
-  # peel --fable-floor out of the args passed to parse_set (parse_set ignores unknown flags,
-  # but we must consume it here so it doesn't reach an id slot)
+  local fable_floor=0 csv="" pref_file="" src="" raw="" seen="" id row out=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --fable-floor) fable_floor=1; shift ;;
-      *) args+=("$1"); shift ;;
+      --reviewers)   [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; shift 2 ;;
+      --pref-file)   [[ $# -ge 2 ]] || die "--pref-file requires a value" 2; pref_file="$2"; shift 2 ;;
+      # Reject unknown args (parity with remember-set) so a typo'd flag can't silently disable the
+      # pref feature instead of surfacing (fable-rd2-r2).
+      *) die "resolve-set: unexpected argument: $1" 2 ;;
     esac
   done
-  raw="$(parse_set ${args[@]+"${args[@]}"})" || exit $?
+  # Every source is comma-OR-space tolerant: `tr ',' ' '` on all three, so a csv env value
+  # ("codex,gemini") splits the same as the flag and pref (fable-rd1-r1).
+  if [[ -n "$csv" ]]; then
+    raw="$(printf '%s' "$csv" | tr ',' ' ')"; src="flag"
+  elif [[ -n "${MULTI_REVIEW_REVIEWERS:-}" ]]; then
+    raw="$(printf '%s' "${MULTI_REVIEW_REVIEWERS}" | tr ',' ' ')"; src="env"
+  elif [[ -n "$pref_file" && -s "$pref_file" ]]; then
+    raw="$(tr ',' ' ' < "$pref_file")"; src="pref"
+  else
+    raw=""; src="none"
+  fi
+  set -f                               # no globbing: a '*' in the pref/csv must not expand to filenames (fable-rd3-r5)
   for id in $raw; do
+    # pref normalization: a hand-added literal fable is never a stored extra (it is floored).
+    [[ "$src" == "pref" && "$id" == "fable" ]] && continue
     case " $seen " in *" $id "*) continue ;; esac
+    if ! row="$("$REVIEWER_SH" resolve --reviewer "$id" 2>/dev/null)"; then
+      if [[ "$src" == "pref" ]]; then
+        echo "multi-review-star: pref reviewer '$id' unknown — dropping" >&2; continue
+      fi
+      set +f; die "unknown reviewer provider in set: ${id}" 2
+    fi
+    if [[ "$src" == "pref" ]] && ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then
+      echo "multi-review-star: pref reviewer '$id' unavailable in this repo — dropping (pref unchanged)" >&2
+      continue
+    fi
     seen="$seen $id"
-    row="$("$REVIEWER_SH" resolve --reviewer "$id" 2>/dev/null)" \
-      || die "unknown reviewer provider in set: ${id}" 2
     out="${out}${row}"$'\n'
   done
+  set +f
   if (( fable_floor )); then
     case " $seen " in *" fable "*) : ;; *)
       row="$("$REVIEWER_SH" resolve --reviewer fable 2>/dev/null)" || die "fable unavailable" 2
