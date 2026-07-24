@@ -87,6 +87,30 @@ resolve_row() { # --reviewer <id> -> the full row, or die 2
 
 cmd_resolve() { resolve_row "$@"; }
 
+# repo root for workspace-relative advisory checks: the git top-level, else the plugin ROOT.
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT"; }
+
+# advisory hint -> stderr, distinct prefix so callers (doctor, the command) can grep/relay it.
+hint() { echo "multi-review-reviewer: hint ($1): $2" >&2; }
+
+# respectGitIgnore disabled in a settings.json? whitespace/case-tolerant text match, no jq.
+# Advisory/best-effort in both directions: may over/under-detect on pathological JSON.
+gitignore_disabled() { # <settings-file> -> 0 if "respectGitIgnore":false is present
+  [[ -f "$1" ]] || return 1
+  tr -d '[:space:]' < "$1" | tr '[:upper:]' '[:lower:]' | grep -q '"respectgitignore":false'
+}
+
+# any GEMINI_API_KEY source? env, ~/.gemini/.env, or a workspace .env / .gemini/.env under repo root.
+gemini_has_key() { # <repo-root> -> 0 if a key source exists (never reads the value)
+  [[ -n "${GEMINI_API_KEY:-}" ]] && return 0
+  local f
+  # ${HOME:-} guards against a legitimately-unset HOME under `set -u`.
+  for f in "${HOME:-}/.gemini/.env" "$1/.env" "$1/.gemini/.env"; do
+    [[ -f "$f" ]] && grep -q '^GEMINI_API_KEY=' "$f" && return 0
+  done
+  return 1
+}
+
 cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
   local row id
   row="$(resolve_row "$@")" || exit 2
@@ -98,8 +122,15 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
       command -v codex >/dev/null 2>&1 \
         || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1 ;;
     gemini)
-      command -v gemini >/dev/null 2>&1 \
-        || die "gemini CLI not on PATH" 1 ;;
+      command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
+      local rr; rr="$(repo_root)"
+      [[ "${GEMINI_CLI_TRUST_WORKSPACE:-}" == "true" ]] \
+        || hint gemini "if gemini can't authenticate or edit, this workspace may be untrusted — export GEMINI_CLI_TRUST_WORKSPACE=true (or trust the folder once)"
+      gemini_has_key "$rr" \
+        || hint gemini "no API key source — put GEMINI_API_KEY in ~/.gemini/.env (or your repo's .env)"
+      gitignore_disabled "${rr}/.gemini/settings.json" \
+        || hint gemini "gitignored docs won't be read — set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
+      ;;
     *)
       die "no availability check defined for reviewer provider '${id}'" 2 ;;
   esac

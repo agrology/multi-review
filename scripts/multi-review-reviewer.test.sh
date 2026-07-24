@@ -472,6 +472,47 @@ for id in o1 o3 o1-preview o3-mini; do
     || bad "vendor mapping: '$id' unmapped -> '$out'"
 done
 
+# --- advisory check: gemini (Task 1) ---
+# Deterministic env: no ambient GEMINI_* leaking in (this repo's maintainer exports the trust var).
+unset GEMINI_API_KEY GEMINI_CLI_TRUST_WORKSPACE
+# stub gemini on PATH so `command -v gemini` passes without the real CLI
+GBIN="${WORK}/gbin"; mkdir -p "$GBIN"; printf '#!/usr/bin/env bash\necho OK\n' > "$GBIN/gemini"; chmod +x "$GBIN/gemini"
+# a temp git repo controls repo_root() + workspace files + HOME(~/.gemini)
+GREPO="${WORK}/grepo"; mkdir -p "$GREPO"; ( cd "$GREPO" && git init -q )
+
+# nothing configured -> exit 0 with all three hints
+out="$(cd "$GREPO" && HOME="$GREPO/home" PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && ok "check gemini: advisory keeps exit 0" || bad "check gemini exit $rc (want 0)"
+grep -qi 'trust' <<<"$out" && grep -qi 'API key' <<<"$out" && grep -qi 'respectGitIgnore' <<<"$out" \
+  && ok "check gemini: emits trust+key+gitignore hints when unconfigured" || bad "gemini hints missing: '$out'"
+
+# fully configured -> exit 0, NO hints
+mkdir -p "$GREPO/home/.gemini" && printf 'GEMINI_API_KEY=fake-secret-value\n' > "$GREPO/home/.gemini/.env"
+mkdir -p "$GREPO/.gemini" && printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$GREPO/.gemini/settings.json"
+out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && ok "check gemini: no hints when fully configured" || bad "gemini configured had hints: '$out'"
+
+# whitespace-tolerant gitignore match: spaces/newlines still detected -> no gitignore hint
+printf '{\n  "context": {\n    "fileFiltering": { "respectGitIgnore" : false }\n  }\n}\n' > "$GREPO/.gemini/settings.json"
+out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qi 'respectGitIgnore' <<<"$out" && bad "gitignore hint fired despite valid (spaced) setting" || ok "check gemini: gitignore match is whitespace-tolerant"
+
+# key in a workspace .env (not ~/.gemini) also counts -> no key hint
+rm -f "$GREPO/home/.gemini/.env"; printf 'GEMINI_API_KEY=fake-secret-value\n' > "$GREPO/.env"
+out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qi 'API key' <<<"$out" && bad "key hint fired despite workspace .env" || ok "check gemini: workspace .env counts as a key source"
+
+# hints NEVER print the secret value
+grep -qF 'fake-secret-value' <<<"$out" && bad "check leaked the key value" || ok "check gemini: no secret value in output"
+
+# CLI absent -> hard gate exit 1 (unchanged)
+( cd "$GREPO" && HOME="$GREPO/home" PATH="/usr/bin:/bin" bash "$SUT" check --reviewer gemini >/dev/null 2>&1 ); rc=$?
+[[ $rc -eq 1 ]] && ok "check gemini: CLI absent still exit 1" || bad "gemini absent rc=$rc (want 1)"
+
+# fable arm is unchanged: exit 0 with NO output (doctor's "fable ready" rests on this — fable-rd1-r1)
+out="$(bash "$SUT" check --reviewer fable 2>&1)"; rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && ok "check fable: exit 0, no output (unchanged)" || bad "check fable rc=$rc out='$out'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
