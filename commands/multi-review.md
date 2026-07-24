@@ -12,6 +12,11 @@ for every doc; never advance past the human gate.
 
 ## 1. Resolve the argument
 
+**Diagnostic shortcut (no review).** If `$ARGUMENTS` contains `--check-reviewers`, run
+`${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh doctor`, show its per-provider readiness
+checklist to the engineer, and STOP — do not resolve a doc or arm anything (a no-arm path, like the
+standalone revoke). Use it to answer "why isn't `<reviewer>` working" before a real run.
+
 **Split first.** `$ARGUMENTS` may carry `--reviewers <csv>` (a comma-separated provider set,
 e.g. `codex,gemini`) in addition to the doc path or PR ref, in any order. Extract `--reviewers`
 (consumed in §2). Everything else is `<positional>` (empty if flags-only, or absent).
@@ -167,6 +172,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     each a stable `pref reviewer … dropping` line: `unknown — dropping` (stale, registry-removed)
     and `unavailable in this repo — dropping` (registered but not set up). So a self-healed, quietly
     narrowed combo is visible, mirroring a dispatch quarantine.
+  - **Relay preflight hints.** For each resolved secondary, run
+    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh check --reviewer <id>` and surface any
+    `hint (<id>): …` line it prints on stderr in the armed message (e.g. "gemini: workspace may be
+    untrusted — export GEMINI_CLI_TRUST_WORKSPACE=true"). This is **advisory** — `check` exits 0 and
+    the secondary is still dispatched; the hint just puts the likely fix in front of the engineer
+    *before* a misconfigured reviewer would otherwise fail mid-review and quarantine. Never a gate,
+    never blocks dispatch. (Run `/multi-review --check-reviewers` for the full doctor report.)
   - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)"
     — and append any dropped-reviewer relay, e.g. "`gemini` dropped: unavailable in this repo".
 

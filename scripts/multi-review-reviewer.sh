@@ -87,6 +87,30 @@ resolve_row() { # --reviewer <id> -> the full row, or die 2
 
 cmd_resolve() { resolve_row "$@"; }
 
+# repo root for workspace-relative advisory checks: the git top-level, else the plugin ROOT.
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT"; }
+
+# advisory hint -> stderr, distinct prefix so callers (doctor, the command) can grep/relay it.
+hint() { echo "multi-review-reviewer: hint ($1): $2" >&2; }
+
+# respectGitIgnore disabled in a settings.json? whitespace/case-tolerant text match, no jq.
+# Advisory/best-effort in both directions: may over/under-detect on pathological JSON.
+gitignore_disabled() { # <settings-file> -> 0 if "respectGitIgnore":false is present
+  [[ -f "$1" ]] || return 1
+  tr -d '[:space:]' < "$1" | tr '[:upper:]' '[:lower:]' | grep -q '"respectgitignore":false'
+}
+
+# any GEMINI_API_KEY source? env, ~/.gemini/.env, or a workspace .env / .gemini/.env under repo root.
+gemini_has_key() { # <repo-root> -> 0 if a key source exists (never reads the value)
+  [[ -n "${GEMINI_API_KEY:-}" ]] && return 0
+  local f
+  # ${HOME:-} guards against a legitimately-unset HOME under `set -u`.
+  for f in "${HOME:-}/.gemini/.env" "$1/.env" "$1/.gemini/.env"; do
+    [[ -f "$f" ]] && grep -q '^GEMINI_API_KEY=' "$f" && return 0
+  done
+  return 1
+}
+
 cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
   local row id
   row="$(resolve_row "$@")" || exit 2
@@ -96,10 +120,20 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
       return 0 ;;                       # in-harness; nothing external to probe
     codex)
       command -v codex >/dev/null 2>&1 \
-        || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1 ;;
+        || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1
+      [[ -d "$(repo_root)/.agents/skills/multi-review" ]] \
+        || hint codex "reviewer skill not found — copy .agents/skills/multi-review/ into your repo root"
+      ;;
     gemini)
-      command -v gemini >/dev/null 2>&1 \
-        || die "gemini CLI not on PATH" 1 ;;
+      command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
+      local rr; rr="$(repo_root)"
+      [[ "${GEMINI_CLI_TRUST_WORKSPACE:-}" == "true" ]] \
+        || hint gemini "if gemini can't authenticate or edit, this workspace may be untrusted — export GEMINI_CLI_TRUST_WORKSPACE=true (or trust the folder once)"
+      gemini_has_key "$rr" \
+        || hint gemini "no API key source — put GEMINI_API_KEY in ~/.gemini/.env (or your repo's .env)"
+      gitignore_disabled "${rr}/.gemini/settings.json" \
+        || hint gemini "gitignored docs won't be read — set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
+      ;;
     *)
       die "no availability check defined for reviewer provider '${id}'" 2 ;;
   esac
@@ -205,7 +239,15 @@ cmd_command() { # <doc> --reviewer <id> -> NUL-delimited argv
       # to prompt, so file-modification tools are disabled: observed live, the reviewer emitted
       # its findings as prose and never touched the doc, leaving the marker unflipped. Chosen
       # over `yolo` deliberately — `auto_edit` approves edit tools only, never shell.
-      printf '%s\0' "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt" ;;
+      # Opt-in auto-trust (MULTI_REVIEW_GEMINI_AUTOTRUST=1) scopes GEMINI_CLI_TRUST_WORKSPACE=true to
+      # THIS dispatch via an `env` prefix, so users needn't set it in their profile. Default
+      # (unset/≠1) is byte-identical to before. SECURITY: trusting a workspace lets the CLI honor its
+      # .env / settings and auto-edit — opt-in only, never a cloned/untrusted repo (see README).
+      if [[ "${MULTI_REVIEW_GEMINI_AUTOTRUST:-}" == "1" ]]; then
+        printf '%s\0' "env" "GEMINI_CLI_TRUST_WORKSPACE=true" "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt"
+      else
+        printf '%s\0' "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt"
+      fi ;;
     *)
       die "no shell command defined for reviewer provider '${id}'" 2 ;;
   esac
@@ -357,14 +399,72 @@ cmd_verify_vendor() { # --baseline <snap> <doc> --reviewer <id>
   return 0
 }
 
+# doctor — per-provider readiness report (never a gate: exit 0 if the report ran). For gemini it
+# also runs a bounded LIVE probe; the probe's raw output is discarded (may contain paths/auth).
+cmd_doctor() {
+  local id rr; rr="$(repo_root)"
+  for id in codex fable gemini; do
+    local hints rc
+    hints="$(cmd_check --reviewer "$id" 2>&1 >/dev/null)"; rc=$?
+    if [[ $rc -ne 0 ]]; then
+      echo "✗ ${id}: ${hints}"            # hard gate (CLI absent)
+      continue
+    fi
+    if [[ "$id" == "gemini" ]]; then
+      # The live probe is AUTHORITATIVE for gemini: it proves auth+trust end-to-end, so a green
+      # probe means ready even if a static hint (e.g. the env-var-only trust check) fired falsely on
+      # an interactively-trusted workspace — and static hints never contradict a passing probe.
+      if gemini_live_probe; then
+        echo "✓ gemini: ready (${GEMINI_PROBE_MSG})"
+      else
+        echo "✗ gemini: ${GEMINI_PROBE_MSG}"
+        [[ -n "$hints" ]] && printf '%s\n' "$hints" | sed 's/^/    likely cause: /'
+      fi
+    elif [[ -n "$hints" ]]; then
+      echo "△ ${id}: needs setup"
+      printf '%s\n' "$hints" | sed 's/^/    /'
+    else
+      echo "✓ ${id}: ready"
+    fi
+  done
+  return 0
+}
+
+# Bounded live probe. Returns 0 on auth OK / non-zero otherwise, and sets GEMINI_PROBE_MSG. Never
+# prints the CLI's own output (captured to a temp file, discarded — redaction). Bash 3.2: no
+# timeout(1), so poll a background job then escalate TERM→KILL (KILL can't be caught, so the wait
+# can't hang) and reap direct children.
+GEMINI_PROBE_MSG=""
+gemini_live_probe() {
+  local model out pid waited bound
+  model="$(provider_row gemini | cut -d'|' -f4)"
+  bound="${MULTI_REVIEW_PROBE_TIMEOUT:-30}"
+  out="$(mktemp)"
+  ( gemini -m "$model" -p "reply with OK" >"$out" 2>&1 ) & pid=$!
+  waited=0
+  while kill -0 "$pid" 2>/dev/null && (( waited < bound )); do sleep 1; waited=$((waited+1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null; sleep 1
+    kill -KILL "$pid" 2>/dev/null              # KILL is uncatchable → the wait below returns
+    pkill -KILL -P "$pid" 2>/dev/null || true  # reap direct children the CLI may have spawned
+    wait "$pid" 2>/dev/null
+    rm -f "$out"; GEMINI_PROBE_MSG="live probe timed out after ${bound}s"; return 1
+  fi
+  if wait "$pid"; then
+    rm -f "$out"; GEMINI_PROBE_MSG="live probe: auth OK"; return 0
+  fi
+  rm -f "$out"; GEMINI_PROBE_MSG="live probe failed (auth/trust?) — run 'gemini -p test' to see the CLI's own error"; return 1
+}
+
 # --- dispatch -------------------------------------------------------------
-sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|verify-vendor|vendor-of-model> [args]" 2
+sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|doctor|verify-vendor|vendor-of-model> [args]" 2
 shift
 case "$sub" in
   resolve) cmd_resolve "$@" ;;
   check)   cmd_check "$@" ;;
   prompt)  cmd_prompt "$@" ;;
   command) cmd_command "$@" ;;
+  doctor)  cmd_doctor "$@" ;;
   verify-vendor) cmd_verify_vendor "$@" ;;
   vendor-of-model) cmd_vendor_of_model "$@" ;;
   *)       die "unknown subcommand: $sub" 2 ;;

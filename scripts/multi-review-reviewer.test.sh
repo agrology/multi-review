@@ -472,6 +472,124 @@ for id in o1 o3 o1-preview o3-mini; do
     || bad "vendor mapping: '$id' unmapped -> '$out'"
 done
 
+# --- advisory check: gemini (Task 1) ---
+# Deterministic env: no ambient GEMINI_* leaking in (this repo's maintainer exports the trust var).
+unset GEMINI_API_KEY GEMINI_CLI_TRUST_WORKSPACE
+# stub gemini on PATH so `command -v gemini` passes without the real CLI
+GBIN="${WORK}/gbin"; mkdir -p "$GBIN"; printf '#!/usr/bin/env bash\necho OK\n' > "$GBIN/gemini"; chmod +x "$GBIN/gemini"
+# a temp git repo controls repo_root() + workspace files + HOME(~/.gemini)
+GREPO="${WORK}/grepo"; mkdir -p "$GREPO"; ( cd "$GREPO" && git init -q )
+
+# nothing configured -> exit 0 with all three hints
+out="$(cd "$GREPO" && HOME="$GREPO/home" PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && ok "check gemini: advisory keeps exit 0" || bad "check gemini exit $rc (want 0)"
+grep -qi 'trust' <<<"$out" && grep -qi 'API key' <<<"$out" && grep -qi 'respectGitIgnore' <<<"$out" \
+  && ok "check gemini: emits trust+key+gitignore hints when unconfigured" || bad "gemini hints missing: '$out'"
+
+# fully configured -> exit 0, NO hints
+mkdir -p "$GREPO/home/.gemini" && printf 'GEMINI_API_KEY=fake-secret-value\n' > "$GREPO/home/.gemini/.env"
+mkdir -p "$GREPO/.gemini" && printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$GREPO/.gemini/settings.json"
+out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && ok "check gemini: no hints when fully configured" || bad "gemini configured had hints: '$out'"
+
+# whitespace-tolerant gitignore match: spaces/newlines still detected -> no gitignore hint
+printf '{\n  "context": {\n    "fileFiltering": { "respectGitIgnore" : false }\n  }\n}\n' > "$GREPO/.gemini/settings.json"
+out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qi 'respectGitIgnore' <<<"$out" && bad "gitignore hint fired despite valid (spaced) setting" || ok "check gemini: gitignore match is whitespace-tolerant"
+
+# key in a workspace .env (not ~/.gemini) also counts -> no key hint
+rm -f "$GREPO/home/.gemini/.env"; printf 'GEMINI_API_KEY=fake-secret-value\n' > "$GREPO/.env"
+out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qi 'API key' <<<"$out" && bad "key hint fired despite workspace .env" || ok "check gemini: workspace .env counts as a key source"
+
+# hints NEVER print the secret value
+grep -qF 'fake-secret-value' <<<"$out" && bad "check leaked the key value" || ok "check gemini: no secret value in output"
+
+# CLI absent -> hard gate exit 1 (unchanged)
+( cd "$GREPO" && HOME="$GREPO/home" PATH="/usr/bin:/bin" bash "$SUT" check --reviewer gemini >/dev/null 2>&1 ); rc=$?
+[[ $rc -eq 1 ]] && ok "check gemini: CLI absent still exit 1" || bad "gemini absent rc=$rc (want 1)"
+
+# fable arm is unchanged: exit 0 with NO output (doctor's "fable ready" rests on this — fable-rd1-r1)
+out="$(bash "$SUT" check --reviewer fable 2>&1)"; rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && ok "check fable: exit 0, no output (unchanged)" || bad "check fable rc=$rc out='$out'"
+
+# --- advisory check: codex skill dir (Task 2) ---
+CBIN="${WORK}/cbin"; mkdir -p "$CBIN"; printf '#!/usr/bin/env bash\n:\n' > "$CBIN/codex"; chmod +x "$CBIN/codex"
+CREPO="${WORK}/crepo"; mkdir -p "$CREPO"; ( cd "$CREPO" && git init -q )
+
+# no skill dir -> exit 0 + hint
+out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && grep -qi 'skill' <<<"$out" && ok "check codex: skill-missing hint (exit 0)" || bad "codex skill hint (rc=$rc, out='$out')"
+
+# skill dir present -> no hint
+mkdir -p "$CREPO/.agents/skills/multi-review"
+out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
+[[ -z "$out" ]] && ok "check codex: no hint when skill present" || bad "codex spurious hint: '$out'"
+
+# repo-root resolution: from a SUBDIR with the skill at the root -> still no hint
+mkdir -p "$CREPO/sub/dir"
+out="$(cd "$CREPO/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
+[[ -z "$out" ]] && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir false-hint: '$out'"
+
+# CLI absent -> exit 1 (unchanged)
+( cd "$CREPO" && PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?
+[[ $rc -eq 1 ]] && ok "check codex: CLI absent still exit 1" || bad "codex absent rc=$rc (want 1)"
+
+# --- command: opt-in gemini auto-trust (Task 3) ---
+unset MULTI_REVIEW_GEMINI_AUTOTRUST         # the default-argv case must not inherit an ambient value
+DAT="${WORK}/at.md"; printf '# d\n' > "$DAT"
+# default (unset) -> argv[0] gemini, 7 NULs (byte-identical to today)
+bash "$SUT" command "$DAT" --reviewer gemini > "${WORK}/at0.bin" 2>/dev/null
+first=""; IFS= read -r -d '' first < "${WORK}/at0.bin"
+n0="$(tr -dc '\0' < "${WORK}/at0.bin" | wc -c | tr -d ' ')"
+[[ "$first" == "gemini" && "$n0" == "7" ]] && ok "command gemini: default argv unchanged (gemini, 7 NUL)" || bad "default argv first='$first' nul=$n0"
+
+# autotrust=1 -> argv prefixed with env GEMINI_CLI_TRUST_WORKSPACE=true, 9 NULs
+MULTI_REVIEW_GEMINI_AUTOTRUST=1 bash "$SUT" command "$DAT" --reviewer gemini > "${WORK}/at1.bin" 2>/dev/null
+argv=(); while IFS= read -r -d '' a; do argv+=("$a"); done < "${WORK}/at1.bin"
+n1="$(tr -dc '\0' < "${WORK}/at1.bin" | wc -c | tr -d ' ')"
+[[ "${argv[0]}" == "env" && "${argv[1]}" == "GEMINI_CLI_TRUST_WORKSPACE=true" && "${argv[2]}" == "gemini" && "$n1" == "9" ]] \
+  && ok "command gemini: autotrust=1 prefixes 'env GEMINI_CLI_TRUST_WORKSPACE=true'" || bad "autotrust argv: ${argv[0]}/${argv[1]}/${argv[2]} nul=$n1"
+
+# autotrust set to something other than 1 -> unchanged
+MULTI_REVIEW_GEMINI_AUTOTRUST=yes bash "$SUT" command "$DAT" --reviewer gemini > "${WORK}/at2.bin" 2>/dev/null
+first=""; IFS= read -r -d '' first < "${WORK}/at2.bin"
+[[ "$first" == "gemini" ]] && ok "command gemini: autotrust!=1 leaves argv unchanged" || bad "autotrust!=1 first='$first'"
+
+# --- doctor (Task 4) ---
+unset GEMINI_API_KEY GEMINI_CLI_TRUST_WORKSPACE MULTI_REVIEW_GEMINI_AUTOTRUST
+DREPO="${WORK}/drepo"; mkdir -p "$DREPO"; ( cd "$DREPO" && git init -q )
+# stub gemini that replies instantly (probe -> OK) and codex present
+DBIN="${WORK}/dbin"; mkdir -p "$DBIN"
+printf '#!/usr/bin/env bash\necho OK\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+printf '#!/usr/bin/env bash\n:\n' > "$DBIN/codex"; chmod +x "$DBIN/codex"
+
+# report EXITS 0 even with unconfigured providers, and lists every provider
+out="$(cd "$DREPO" && HOME="$DREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"; rc=$?
+[[ $rc -eq 0 ]] && ok "doctor: exits 0 even with unconfigured providers (report, not gate)" || bad "doctor rc=$rc (want 0)"
+grep -q 'gemini' <<<"$out" && grep -q 'codex' <<<"$out" && grep -q 'fable' <<<"$out" \
+  && ok "doctor: lists every provider" || bad "doctor missing a provider: '$out'"
+grep -qi 'fable.*ready\|✓ fable' <<<"$out" && ok "doctor: fable shows ready" || bad "doctor fable line: '$out'"
+# gemini probe is AUTHORITATIVE: even fully unconfigured, a PASSING probe -> ready, static hints
+# suppressed (no contradictory "needs setup" for gemini) — codex-rd1-r2, fable-rd1-r5.
+grep -qi 'gemini: ready' <<<"$out" && ok "doctor: passing probe -> gemini ready despite static hints" || bad "doctor gemini not ready: '$out'"
+grep -qiE '△ gemini|gemini: needs setup' <<<"$out" && bad "doctor: gemini showed 'needs setup' despite a passing probe" || ok "doctor: no contradictory gemini needs-setup line"
+
+# probe FAILS + unconfigured -> ✗ gemini with static hints shown as 'likely cause'
+printf '#!/usr/bin/env bash\nexit 1\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qi 'likely cause' <<<"$out" && grep -qi 'trust\|API key' <<<"$out" \
+  && ok "doctor: failing probe surfaces static hints as likely cause" || bad "doctor no likely-cause: '$out'"
+
+# a slow stub + tiny timeout -> probe reports timed out, doctor still exits 0 (no hang)
+printf '#!/usr/bin/env bash\nsleep 3\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=1 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"; rc=$?
+[[ $rc -eq 0 ]] && grep -qi 'timed out' <<<"$out" && ok "doctor: probe honors the bounded timeout (no hang)" || bad "doctor timeout (rc=$rc): '$out'"
+# probe output is never echoed (redaction): stub prints a marker; doctor must not surface it
+printf '#!/usr/bin/env bash\necho SENSITIVE_PROBE_STDOUT; exit 1\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qF 'SENSITIVE_PROBE_STDOUT' <<<"$out" && bad "doctor leaked raw probe output" || ok "doctor: probe output is redacted on failure"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
