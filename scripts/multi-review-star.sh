@@ -458,13 +458,34 @@ _verify_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
     got="$(finding_block_hash "$doc" "$id")"
     [[ "$want" == "$got" ]] || { echo "multi-review-star: verify: finding block changed since merge: $id" >&2; return 1; }
   done <<< "$present"
-  # (5) footer integrity — the "; quarantined:" tail appears ONLY in a
-  #     well-formed star-findings footer; a fused/mangled one (symptom 2) leaves
-  #     it on some other line.
-  if grep -n '; quarantined:' "$doc" | grep -vqE '^[0-9]+:<!-- star-findings: .*; quarantined: .*-->$'; then
-    echo "multi-review-star: verify: a star-findings footer is malformed (fused into content?)" >&2
+  # (5) footer integrity: at least one well-formed star-findings footer per merged round.
+  #     We COUNT well-formed footers (in the review section, fences stripped) and compare to the
+  #     highest round in the manifest — we do NOT grep doc content for the "; quarantined:"
+  #     sentinel, because that literal can appear legitimately in a finding's text or a fenced
+  #     diff (a false positive that would block a review of this tool's own PR — issue #17 r1).
+  #     A fused/truncated/deleted footer makes the count come up short, which also covers the
+  #     "tail lost" corruption shape.
+  local nfooters nrounds
+  nfooters="$(review_section "$doc" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->$')"
+  nrounds="$(awk '$1=="finding" || $1=="quarantine" { n=$2; sub(/^.*-rd/,"",n); sub(/[^0-9].*/,"",n); if (n != "") print n }' "${doc}.manifest" | sort -un | tail -1)"
+  nrounds="${nrounds:-0}"
+  if [[ "$nfooters" -lt "$nrounds" ]]; then
+    echo "multi-review-star: verify: $nfooters well-formed footers but $nrounds rounds merged — a footer is fused, truncated, or deleted" >&2
     return 1
   fi
+  # (6) quarantine records: every manifest quarantine entry must still be present in the doc
+  #     with unchanged text (mirrors check-converged guard (d)), so quarantine-record corruption
+  #     also fails at the handoff, not only at the terminal gate.
+  local qentry qkey qwant qp qround qline qgot
+  while IFS= read -r qentry; do
+    [[ -z "$qentry" ]] && continue
+    qkey="${qentry%%=*}"; qwant="${qentry#*=}"
+    qp="${qkey%-rd*}"; qround="${qkey##*-rd}"
+    qline="$(grep -E "^<!-- star-quarantined: ${qp} · .* · round ${qround} -->$" "$doc" | head -1)"
+    [[ -n "$qline" ]] || { echo "multi-review-star: verify: quarantine record missing for ${qkey}" >&2; return 1; }
+    qgot="$(printf '%s' "$qline" | sha)"
+    [[ "$qwant" == "$qgot" ]] || { echo "multi-review-star: verify: quarantine record tampered for ${qkey}" >&2; return 1; }
+  done < <(awk '$1=="quarantine"{print $2}' "${doc}.manifest")
   return 0
 }
 

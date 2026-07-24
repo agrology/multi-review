@@ -820,6 +820,37 @@ bash "$SUT" merge --round 2 "$CB" "${CB}.codex" >/dev/null 2>&1 \
   && bash "$SUT" verify "$CB" >/dev/null 2>&1 \
   && ok "merge: clean 2-round merge passes self-checks + verify" || bad "self-check broke the happy path"
 
+# (#17 gemini-r1/fable-r1, HIGH) the "; quarantined:" literal in a finding's text OR a fenced diff
+# must NOT false-positive the footer check — otherwise the tool cannot review its own PR.
+FP="${WORK}/fp.md"; mkbase "$FP"
+mkcopy "${FP}.codex" '> [finding:r1|med] the footer check must ignore the "; quarantined:" tail written here' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$FP" "${FP}.codex" >/dev/null 2>&1 \
+  && ok "merge: a finding whose text contains '; quarantined:' merges (no self-check false-positive)" \
+  || bad "merge false-positived on a legit '; quarantined:' in finding text (#17 r1)"
+printf '\n```\n+  grep -n "; quarantined:" "$doc"\n```\n' >> "$FP"   # a fenced diff carrying the sentinel
+bash "$SUT" verify "$FP" >/dev/null 2>&1 \
+  && ok "verify: '; quarantined:' in finding text / fenced diff does NOT false-positive (#17 r1)" \
+  || bad "verify false-positived on a legit '; quarantined:' mention (#17 r1)"
+
+# (#17 codex-r1/fable-r2, MED) verify validates manifest quarantine records like check-converged (d)
+QV="${WORK}/qv.md"; mkbase "$QV"
+mkcopy "${QV}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QV" "${QV}.codex" >/dev/null 2>&1
+bash "$SUT" verify "$QV" >/dev/null 2>&1 && ok "verify: clean doc with a quarantine record passes" || bad "verify rejected a clean quarantined doc"
+cp "$QV" "${QV}.bak"
+grep -v '^<!-- star-quarantined:' "${QV}.bak" > "$QV"
+bash "$SUT" verify "$QV" >/dev/null 2>&1 && bad "verify missed a deleted quarantine record" || ok "verify: detects a deleted quarantine record (#17 codex-r1/fable-r2)"
+sed 's/identity-fail/tampered-reason/' "${QV}.bak" > "$QV"
+bash "$SUT" verify "$QV" >/dev/null 2>&1 && bad "verify missed a tampered quarantine record" || ok "verify: detects a tampered quarantine record"
+rm -f "${QV}.bak"
+
+# (#17 fable-r3, LOW) a deleted/truncated footer is caught by the count, not the (now-gone) tail grep
+FD="${WORK}/fd.md"; mkbase "$FD"
+mkcopy "${FD}.codex" '> [finding:r1|med] x' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$FD" "${FD}.codex" >/dev/null 2>&1
+grep -v '^<!-- star-findings:' "$FD" > "${FD}.t" && mv "${FD}.t" "$FD"
+bash "$SUT" verify "$FD" >/dev/null 2>&1 && bad "verify missed a deleted footer" || ok "verify: detects a deleted footer via count (#17 fable-r3)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
