@@ -26,3 +26,32 @@ Exit 0 = safe. Non-zero prints the offending commits/blobs — do not publish un
        bash scripts/multi-review-history-check.sh .
 
 Only flip the GitHub repo to public after the gate passes.
+
+## Distributing via a plugin marketplace
+
+This repo is **both** the plugin and its catalog: `.claude-plugin/marketplace.json` lists a single
+entry (`multi-review`) whose `source` is the `github` object for `agrology/multi-review`. Users add
+and install with:
+
+    /plugin marketplace add agrology/multi-review
+    /plugin install multi-review@agrology
+
+**Why a `github` source (not a relative `"./"`).** The docs recommend `github`/`url` over a relative
+path for robustness — a relative source fails when the marketplace is added by direct URL. A `github`
+source resolves the repo's **default branch** regardless of add-method, so installs/updates deliver
+`main` HEAD (this repo treats `main` as always-shippable).
+
+**Release dependency — the update-prompt trigger.** Marketplace installers only receive an update
+prompt when `.claude-plugin/plugin.json`'s `version` is bumped on `main` at release time. Name the
+version bump explicitly in the release steps, or a release silently never surfaces an update.
+
+**Reserved names.** The marketplace `name` must not collide with Anthropic's reserved names or
+impersonation patterns; `scripts/multi-review-packaging.test.sh` enforces this against a dated
+snapshot list (Claude Code's server-side check on load is the authoritative gate). `agrology` is
+clear.
+
+**Anthropic's directories (separate, human, not automated here).** Anthropic runs
+`claude-plugins-official` (curated, no submission process) and `anthropics/claude-plugins-community`
+(reviewed submissions via Anthropic's form). Submitting there is a deliberate outward-facing
+decision made by a human — verify the live submission URL/criteria at submission time rather than
+trusting a pasted link.
