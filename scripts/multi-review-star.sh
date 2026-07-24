@@ -425,6 +425,56 @@ cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored f
   done <<< "$t"
 }
 
+# --- doc↔manifest consistency (issue #16) ----------------------------------
+# Returns 0 iff the doc is internally well-formed AND matches its .manifest;
+# nonzero with a specific stderr message otherwise. Reused by the `verify`
+# subcommand and as a self-check at both ends of `merge`, so operator- or
+# merge-introduced corruption fails loud at the handoff instead of accumulating
+# silently to the terminal gate. Does NOT require convergence/coverage — open
+# findings (no response yet) are a normal mid-review state.
+_verify_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
+  local doc="$1"
+  [[ -f "$doc" ]] || { echo "multi-review-star: verify: doc not found: $doc" >&2; return 1; }
+  # (1) grammar — catches a finding split from its > — via/risk lines and a
+  #     response to an unknown finding id (issue #16 symptoms 1 & 3-orphan).
+  _table "$doc" >/dev/null || return 1
+  # (2) a merged doc always has a manifest.
+  [[ -f "${doc}.manifest" ]] || { echo "multi-review-star: verify: no manifest (never merged): ${doc}.manifest" >&2; return 1; }
+  # (3) finding-id set: doc body == manifest (catches a dropped/added round).
+  local present manifest_ids
+  present="$(review_section "$doc" | strip_fences /dev/stdin | grep -oE '^> \[finding:[^]|]+' | sed -E 's/^> \[finding://' | sort -u)"
+  manifest_ids="$(awk '$1=="finding"{sub(/=.*/,"",$2); print $2}' "${doc}.manifest" | sort -u)"
+  if [[ "$present" != "$manifest_ids" ]]; then
+    echo "multi-review-star: verify: doc findings do not match manifest (a round may have been dropped or added):" >&2
+    comm -3 <(printf '%s\n' "$present") <(printf '%s\n' "$manifest_ids") \
+      | awk -F'\t' 'NF==2{print "  manifest-only: " $2} NF==1{print "  doc-only: " $1}' >&2
+    return 1
+  fi
+  # (4) each present finding's block bytes are unchanged since merge.
+  local id want got
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    want="$(awk -v i="$id" '$1=="finding" && index($2, i"=")==1 {sub(/^[^=]*=/,"",$2); print $2}' "${doc}.manifest")"
+    got="$(finding_block_hash "$doc" "$id")"
+    [[ "$want" == "$got" ]] || { echo "multi-review-star: verify: finding block changed since merge: $id" >&2; return 1; }
+  done <<< "$present"
+  # (5) footer integrity — the "; quarantined:" tail appears ONLY in a
+  #     well-formed star-findings footer; a fused/mangled one (symptom 2) leaves
+  #     it on some other line.
+  if grep -n '; quarantined:' "$doc" | grep -vqE '^[0-9]+:<!-- star-findings: .*; quarantined: .*-->$'; then
+    echo "multi-review-star: verify: a star-findings footer is malformed (fused into content?)" >&2
+    return 1
+  fi
+  return 0
+}
+
+cmd_verify() { # <doc> -> 0 + summary if consistent; else nonzero (message on stderr)
+  local doc="${1:?doc}"
+  _verify_consistency "$doc" || exit 1
+  local nf; nf="$(awk '$1=="finding"{c++} END{print c+0}' "${doc}.manifest")"
+  echo "verify: ${doc} consistent — ${nf} findings, doc matches manifest"
+}
+
 cmd_merge() {
   local round="" doc="" copies=() quarantined=()
   while [[ $# -gt 0 ]]; do
@@ -436,6 +486,14 @@ cmd_merge() {
   done
   [[ "$round" =~ ^[0-9]+$ ]] || die "--round <N> required (integer)" 2
   [[ -n "$doc" && -f "$doc" ]] || die "merge: doc not found: ${doc:-<none>}" 1
+
+  # Refuse to merge onto a doc already inconsistent with its manifest — fail loud at THIS
+  # handoff rather than compounding the corruption into later rounds (issue #16). Round 1 has
+  # no manifest yet, so this is a no-op there.
+  if [[ -f "${doc}.manifest" ]]; then
+    _verify_consistency "$doc" \
+      || die "merge: refusing to merge — '$doc' is inconsistent with its manifest (run: $(basename "$0") verify '$doc')" 1
+  fi
 
   local block="" copy provider
   for copy in "${copies[@]}"; do
@@ -498,6 +556,10 @@ cmd_merge() {
 
   # in-doc human-readable mirror (NOT trusted for integrity — see check-converged)
   printf '<!-- star-findings: %s; quarantined: %s -->\n' "${mirror% }" "${qmirror% }" >> "$doc"
+
+  # Post-merge self-check: the doc + manifest we just wrote must be mutually consistent (issue #16).
+  _verify_consistency "$doc" \
+    || die "merge: post-merge self-check failed for '$doc' — the merge produced an inconsistent state" 1
 }
 
 cmd_check_converged() {
@@ -699,6 +761,7 @@ main() {
     open-findings) cmd_open_findings "$@" ;;
     observations) cmd_observations "$@" ;;
     merge) cmd_merge "$@" ;;
+    verify) cmd_verify "$@" ;;
     check-converged) cmd_check_converged "$@" ;;
     gate-summary) cmd_gate_summary "$@" ;;
     compose-review) cmd_compose_review "$@" ;;

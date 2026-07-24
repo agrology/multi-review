@@ -307,5 +307,13 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
   rest (`fable` guarantees at least one admissible secondary).
 - If the marker is missing/corrupt, or a working copy changed while it said `awaiting-reviewer`
   in a way the wait/verify flow can't reconcile, pause and surface — do not race-edit.
+- **Doc↔manifest consistency is self-checked.** `merge` verifies the doc against its `.manifest`
+  both before merging (it refuses to build on an already-inconsistent doc) and after writing —
+  so a dropped/duplicated round, a finding split from its `> —` lines, or a mangled footer fails
+  loud at the handoff instead of accumulating silently to the gate. If a `merge` aborts with a
+  consistency error, **stop and diagnose** with `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh
+  verify "<doc>"` — do not re-merge until it passes. After appending your primary
+  `[agree]`/`[dispute]` responses each round, you may run `verify` yourself to catch an
+  append that split a finding block before the next fan-out.
 - Disclosure warnings on stderr are non-blocking; surface them at the gate but keep going.
 - The human gate is inviolable and terminal for this command.

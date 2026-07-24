@@ -760,6 +760,66 @@ printf 'codex\n' > "$RS"
 MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
 [[ ! -e "$RS" ]] && ok "remember-set --clear: ignores env guard" || bad "clear blocked by env guard"
 
+# ============================================================================
+# verify subcommand + merge self-check (issue #16): doc↔manifest inconsistency
+# must fail loud at the handoff, not accumulate silently to the terminal gate.
+# ============================================================================
+mkbase() { { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$1"; }
+
+VB="${WORK}/vfy.md"; mkbase "$VB"
+mkcopy "${VB}.codex"  '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+mkcopy "${VB}.gemini" '> [finding:r1|med] beta'   '> — via gemini'  '> — risk: rb'
+bash "$SUT" merge --round 1 "$VB" "${VB}.codex" "${VB}.gemini" >/dev/null 2>&1
+
+# clean merged doc verifies
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && ok "verify: clean merged doc passes" || bad "verify rejected a clean doc"
+
+# dropped finding (doc missing an id the manifest lists) -> fail
+cp "$VB" "${VB}.bak"
+grep -v -e '\[finding:gemini-rd1-r1' -e '^> — via gemini$' -e '^> — risk: rb$' "${VB}.bak" > "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed a dropped finding" || ok "verify: detects a dropped finding (doc≠manifest id-set)"
+cp "${VB}.bak" "$VB"
+
+# tampered finding block (same id, changed text) -> hash mismatch -> fail
+cp "$VB" "${VB}.bak"
+sed 's/alpha/ALPHA-TAMPERED/' "${VB}.bak" > "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed a tampered finding block" || ok "verify: detects a tampered finding block (hash mismatch)"
+cp "${VB}.bak" "$VB"
+
+# orphaned response (grammar violation) -> fail
+cp "$VB" "${VB}.bak"
+printf '\n> [agree:no-such-finding]\n> — via primary-model\n' >> "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed an orphaned response" || ok "verify: detects an orphaned response (grammar)"
+cp "${VB}.bak" "$VB"
+
+# malformed/fused footer (star-findings prefix lost) -> fail
+cp "$VB" "${VB}.bak"
+sed 's/^<!-- star-findings: /> — via x/' "${VB}.bak" > "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed a malformed footer" || ok "verify: detects a malformed/fused footer"
+cp "${VB}.bak" "$VB"; rm -f "${VB}.bak"
+
+# merge refuses to build on an already-inconsistent doc (start self-check) — this is the
+# guard that would have caught issue #16 at the next round instead of at the gate.
+MB="${WORK}/mchk.md"; mkbase "$MB"
+mkcopy "${MB}.codex" '> [finding:r1|high] one' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$MB" "${MB}.codex" >/dev/null 2>&1
+# corrupt: drop the round-1 finding block from the doc (manifest still lists it)
+grep -v -e '\[finding:codex-rd1-r1' -e '^> — via gpt-5.5$' -e '^> — risk: r$' "$MB" > "${MB}.t" && mv "${MB}.t" "$MB"
+mkcopy "${MB}.codex" '> [finding:r1|low] two' '> — via gpt-5.5' '> — risk: r'
+before="$(shasum "$MB" | cut -d' ' -f1)"
+bash "$SUT" merge --round 2 "$MB" "${MB}.codex" >/dev/null 2>&1; rc=$?
+after="$(shasum "$MB" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$before" == "$after" ]] && ok "merge: refuses to build on an inconsistent doc (start self-check)" || bad "merge built on a corrupted doc (rc=$rc)"
+
+# a clean multi-round merge still succeeds end-to-end (self-checks don't break the happy path)
+CB="${WORK}/mok.md"; mkbase "$CB"
+mkcopy "${CB}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$CB" "${CB}.codex" >/dev/null 2>&1
+mkcopy "${CB}.codex" '> [finding:r1|low] b' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 2 "$CB" "${CB}.codex" >/dev/null 2>&1 \
+  && bash "$SUT" verify "$CB" >/dev/null 2>&1 \
+  && ok "merge: clean 2-round merge passes self-checks + verify" || bad "self-check broke the happy path"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
