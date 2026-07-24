@@ -851,6 +851,36 @@ bash "$SUT" merge --round 1 "$FD" "${FD}.codex" >/dev/null 2>&1
 grep -v '^<!-- star-findings:' "$FD" > "${FD}.t" && mv "${FD}.t" "$FD"
 bash "$SUT" verify "$FD" >/dev/null 2>&1 && bad "verify missed a deleted footer" || ok "verify: detects a deleted footer via count (#17 fable-r3)"
 
+# (#17-refix gemini-r1/fable-r1, HIGH) a finding whose ORIGINAL id contains a "-rd<n>" substring
+# (namespaced to e.g. codex-rd1-guard-rd2) must not be mis-parsed as a later round by the
+# footer-count check — the round is parsed anchored to the provider prefix, not greedily.
+NR="${WORK}/nr.md"; mkbase "$NR"
+mkcopy "${NR}.codex" '> [finding:guard-rd2|med] this original id contains a -rd2 substring' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$NR" "${NR}.codex" >/dev/null 2>&1 \
+  && bash "$SUT" verify "$NR" >/dev/null 2>&1 \
+  && ok "verify: a finding id with nested '-rdN' is not mis-parsed as a later round (#17-refix r1)" \
+  || bad "footer-count mis-parsed a nested '-rdN' id — greedy regex regressed (#17-refix r1)"
+
+# (#17-refix fable-r2, MED) a fenced column-0 star-quarantined example (earlier in the doc) must
+# NOT shadow the real appended record — check(6) is scoped through review_section/strip_fences.
+QS="${WORK}/qs.md"
+{ echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; \
+  echo '```'; echo '<!-- star-quarantined: gemini · SPOOFED-DIFFERENT-TEXT · round 1 -->'; echo '```'; echo; \
+  echo "## Review"; echo; } > "$QS"
+mkcopy "${QS}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QS" "${QS}.codex" >/dev/null 2>&1 \
+  && bash "$SUT" verify "$QS" >/dev/null 2>&1 \
+  && ok "verify: a fenced star-quarantined example does not shadow the real record (#17-refix r2)" \
+  || bad "check(6) fence-blind: a fenced quarantine example shadowed the real record (#17-refix r2)"
+
+# (#17-refix fable-r3, LOW) merge snapshots doc+manifest and cleans them up — no .premerge.* leftovers
+CL="${WORK}/cl.md"; mkbase "$CL"
+mkcopy "${CL}.codex" '> [finding:r1|med] x' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$CL" "${CL}.codex" >/dev/null 2>&1
+[[ -z "$(ls "${CL}".premerge.* "${CL}".manifest.premerge.* 2>/dev/null)" ]] \
+  && ok "merge: pre-merge rollback snapshots are cleaned up on success (#17-refix r3)" \
+  || bad "merge left a .premerge.* snapshot behind"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

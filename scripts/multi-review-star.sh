@@ -458,30 +458,37 @@ _verify_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
     got="$(finding_block_hash "$doc" "$id")"
     [[ "$want" == "$got" ]] || { echo "multi-review-star: verify: finding block changed since merge: $id" >&2; return 1; }
   done <<< "$present"
-  # (5) footer integrity: at least one well-formed star-findings footer per merged round.
-  #     We COUNT well-formed footers (in the review section, fences stripped) and compare to the
-  #     highest round in the manifest — we do NOT grep doc content for the "; quarantined:"
-  #     sentinel, because that literal can appear legitimately in a finding's text or a fenced
-  #     diff (a false positive that would block a review of this tool's own PR — issue #17 r1).
-  #     A fused/truncated/deleted footer makes the count come up short, which also covers the
-  #     "tail lost" corruption shape.
+  # (5) footer shape (best-effort). The footer is an UNTRUSTED mirror — real integrity is checks
+  #     (3)/(4)/(6), which recompute from the manifest — so this is a cheap shape guard for the
+  #     "fused/truncated/deleted footer" corruption, NOT a complete footer-integrity check
+  #     (a count-preserving swap, or a dry round's footer deletion, is out of scope by design;
+  #     #17 codex-r1). We COUNT well-formed footers (review section, fences stripped) and require
+  #     at least one per merged round — we do NOT grep content for the "; quarantined:" sentinel,
+  #     which can appear legitimately in finding text or a fenced diff (#17 r1). The round number
+  #     is parsed anchored to the provider prefix ([^-]*-rd), NOT greedily (^.*-rd) — a namespaced
+  #     id can legitimately contain a later "-rd<n>" substring in its original id (e.g.
+  #     codex-rd1-guard-rd2), and a greedy match would mis-read the round, inflating or (via a
+  #     spoofed "-rd0" id) deflating the count to false-fail or bypass this guard (#17 high).
   local nfooters nrounds
   nfooters="$(review_section "$doc" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->$')"
-  nrounds="$(awk '$1=="finding" || $1=="quarantine" { n=$2; sub(/^.*-rd/,"",n); sub(/[^0-9].*/,"",n); if (n != "") print n }' "${doc}.manifest" | sort -un | tail -1)"
+  nrounds="$(awk '$1=="finding" || $1=="quarantine" { n=$2; sub(/^[^-]*-rd/,"",n); sub(/[^0-9].*/,"",n); if (n != "") print n }' "${doc}.manifest" | sort -un | tail -1)"
   nrounds="${nrounds:-0}"
   if [[ "$nfooters" -lt "$nrounds" ]]; then
     echo "multi-review-star: verify: $nfooters well-formed footers but $nrounds rounds merged — a footer is fused, truncated, or deleted" >&2
     return 1
   fi
-  # (6) quarantine records: every manifest quarantine entry must still be present in the doc
-  #     with unchanged text (mirrors check-converged guard (d)), so quarantine-record corruption
-  #     also fails at the handoff, not only at the terminal gate.
-  local qentry qkey qwant qp qround qline qgot
+  # (6) quarantine records: every manifest quarantine entry must still be present in the doc with
+  #     unchanged text (mirrors check-converged guard (d)), so quarantine-record corruption also
+  #     fails at the handoff. Scope through review_section/strip_fences (like checks 3/4/5) so a
+  #     fenced or quoted column-0 <!-- star-quarantined: ... --> example can't shadow the real
+  #     record (#17 r2 — the same fence-blindness this commit purged from the footer check).
+  local qentry qkey qwant qp qround qline qgot qsection
+  qsection="$(review_section "$doc" | strip_fences /dev/stdin)"
   while IFS= read -r qentry; do
     [[ -z "$qentry" ]] && continue
     qkey="${qentry%%=*}"; qwant="${qentry#*=}"
     qp="${qkey%-rd*}"; qround="${qkey##*-rd}"
-    qline="$(grep -E "^<!-- star-quarantined: ${qp} · .* · round ${qround} -->$" "$doc" | head -1)"
+    qline="$(printf '%s\n' "$qsection" | grep -E "^<!-- star-quarantined: ${qp} · .* · round ${qround} -->$" | head -1)"
     [[ -n "$qline" ]] || { echo "multi-review-star: verify: quarantine record missing for ${qkey}" >&2; return 1; }
     qgot="$(printf '%s' "$qline" | sha)"
     [[ "$qwant" == "$qgot" ]] || { echo "multi-review-star: verify: quarantine record tampered for ${qkey}" >&2; return 1; }
@@ -522,6 +529,15 @@ cmd_merge() {
     provider="$(provider_of_copy "$doc" "$copy")" || exit $?
     block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'\n'
   done
+
+  # Snapshot doc + manifest before any write, so a post-merge self-check failure rolls back to the
+  # pre-merge state (issue #17 r3) — the pre-check leaves the doc untouched; the post-check must too.
+  local _premerge_doc _premerge_man=""
+  _premerge_doc="$(mktemp "${doc}.premerge.XXXXXX")" || die "cannot create rollback snapshot for: $doc" 1
+  cp "$doc" "$_premerge_doc"
+  if [[ -f "${doc}.manifest" ]]; then
+    _premerge_man="$(mktemp "${doc}.manifest.premerge.XXXXXX")" && cp "${doc}.manifest" "$_premerge_man"
+  fi
 
   # append the namespaced blocks after the LAST "## Review" heading. Pass $block via the
   # ENVIRONMENT (ENVIRON[]) — NOT `awk -v add=...`, which escape-processes C sequences and would
@@ -579,8 +595,15 @@ cmd_merge() {
   printf '<!-- star-findings: %s; quarantined: %s -->\n' "${mirror% }" "${qmirror% }" >> "$doc"
 
   # Post-merge self-check: the doc + manifest we just wrote must be mutually consistent (issue #16).
-  _verify_consistency "$doc" \
-    || die "merge: post-merge self-check failed for '$doc' — the merge produced an inconsistent state" 1
+  # On failure, ROLL BACK to the pre-merge snapshot (issue #17 r3) so neither a genuine merge bug
+  # nor a false positive ever leaves a half-written doc for the operator to hand-repair.
+  if ! _verify_consistency "$doc"; then
+    cp "$_premerge_doc" "$doc"
+    if [[ -n "$_premerge_man" ]]; then cp "$_premerge_man" "${doc}.manifest"; else rm -f "${doc}.manifest"; fi
+    rm -f "$_premerge_doc" "$_premerge_man"
+    die "merge: post-merge self-check failed for '$doc' — rolled back to the pre-merge state" 1
+  fi
+  rm -f "$_premerge_doc" "$_premerge_man"
 }
 
 cmd_check_converged() {
