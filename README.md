@@ -32,10 +32,14 @@ flowchart TB
 
 ## Install
 
-    /plugin install agrology/multi-review
+    /plugin install agrology/multi-review            # direct
+    # or browse + get updates via the plugin UI:
+    /plugin marketplace add agrology/multi-review
+    /plugin install multi-review@agrology
 
-Installs the `/multi-review` command + its scripts. Reviewer setup depends on which reviewers you
-add (below) — `fable` needs none.
+Installs the `/multi-review` command + its scripts. The marketplace path also lists the plugin in
+Claude Code's plugin UI with version tracking / update prompts. Reviewer setup depends on which
+reviewers you add (below) — `fable` needs none.
 
 ## Use it
 
