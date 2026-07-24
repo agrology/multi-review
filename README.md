@@ -72,9 +72,16 @@ add (below) — `fable` needs none.
 **codex skill:** copy this repo's `.agents/skills/multi-review/` to `<your-repo>/.agents/skills/multi-review/`
 (exact path — the bundled paths resolve against it) and run Codex from the repo root.
 
-**gemini prereqs:** `export GEMINI_API_KEY=…`; `export GEMINI_CLI_TRUST_WORKSPACE=true`; and
-`.gemini/settings.json` → `{"context":{"fileFiltering":{"respectGitIgnore":false}}}` (review docs
-are gitignored). The free tier's daily cap will exhaust a multi-round review.
+**gemini prereqs** (in order — the first is *the* blocker):
+1. **`export GEMINI_CLI_TRUST_WORKSPACE=true`** (or trust the folder once). An untrusted workspace
+   makes the CLI skip `.env` (so it can't authenticate — the error misleadingly says "set an Auth
+   method") *and* disables file edits, so the reviewer can't write the doc.
+2. An API key — `export GEMINI_API_KEY=…`, or drop `GEMINI_API_KEY=…` in `~/.gemini/.env` (or your
+   repo's `.env`). **It auto-loads once the workspace is trusted.**
+3. `.gemini/settings.json` → `{"context":{"fileFiltering":{"respectGitIgnore":false}}}` (review docs
+   are gitignored). The free tier's daily cap will exhaust a multi-round review.
+
+Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a glance.
 
 ## Config
 
@@ -84,6 +91,7 @@ are gitignored). The free tier's daily cap will exhaust a multi-round review.
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.5`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |
 | `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans` | where bare-name local docs are resolved |
+| `MULTI_REVIEW_GEMINI_AUTOTRUST` | *(off)* | `=1` scopes `GEMINI_CLI_TRUST_WORKSPACE=true` to the gemini dispatch (no profile edit needed). **Security:** trusting a workspace lets gemini honor its `.env`/settings and auto-edit — enable only for repos you trust, never a freshly-cloned one. |
 
 The last explicitly-named reviewer combo is remembered per repo in **`.multi-review/reviewers.pref`**
 (gitignored). It is written when reviewers are named (flag or prose) — **except** when
