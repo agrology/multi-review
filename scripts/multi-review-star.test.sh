@@ -873,13 +873,23 @@ bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QS" "${QS}.code
   && ok "verify: a fenced star-quarantined example does not shadow the real record (#17-refix r2)" \
   || bad "check(6) fence-blind: a fenced quarantine example shadowed the real record (#17-refix r2)"
 
-# (#17-refix fable-r3, LOW) merge snapshots doc+manifest and cleans them up — no .premerge.* leftovers
-CL="${WORK}/cl.md"; mkbase "$CL"
-mkcopy "${CL}.codex" '> [finding:r1|med] x' '> — via gpt-5.5' '> — risk: r'
-bash "$SUT" merge --round 1 "$CL" "${CL}.codex" >/dev/null 2>&1
-[[ -z "$(ls "${CL}".premerge.* "${CL}".manifest.premerge.* 2>/dev/null)" ]] \
-  && ok "merge: pre-merge rollback snapshots are cleaned up on success (#17-refix r3)" \
-  || bad "merge left a .premerge.* snapshot behind"
+# (#17-refix2 codex-r1/fable-r1, HIGH) verify and check-converged must AGREE — they now share ONE
+# structural helper. A fenced star-quarantined look-alike EARLIER in the doc must not make the gate
+# reject a doc the handoff accepts (before the refactor, verify's quarantine check was fence-scoped
+# but check-converged's guard (d) was not → a doc could pass verify yet never converge).
+DV="${WORK}/dv.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 1/1 -->'; \
+  echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; \
+  echo '```'; echo '<!-- star-quarantined: gemini · SPOOF-EARLIER · round 1 -->'; echo '```'; echo; \
+  echo "## Review"; echo; } > "$DV"
+mkcopy "${DV}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$DV" "${DV}.codex" >/dev/null 2>&1
+printf '\n> [agree:codex-rd1-r1] ok\n> — via primary-x\n' >> "$DV"
+dv_v=$(bash "$SUT" verify "$DV" >/dev/null 2>&1; echo $?)
+dv_c=$(bash "$SUT" check-converged "$DV" >/dev/null 2>&1; echo $?)
+[[ "$dv_v" == "0" && "$dv_c" == "0" ]] \
+  && ok "verify and check-converged agree on a fenced-quarantine doc — no divergence (#17-refix2)" \
+  || bad "verify/check-converged diverge on a fenced-quarantine doc (verify=$dv_v check-converged=$dv_c)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
