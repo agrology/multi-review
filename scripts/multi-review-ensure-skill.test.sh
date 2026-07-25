@@ -86,3 +86,16 @@ r="$(newrepo)"; chmod -w "$r/.git/info" 2>/dev/null || true
 chmod +w "$r/.git/info" 2>/dev/null || true
 [[ "$rc" == 0 && -f "$r/$SKILL_REL/.gitignore" ]] \
   && ok "unwritable .git/info: still succeeds via in-dir .gitignore" || bad "read-only .git/info broke provisioning (rc=$rc)"
+
+# --- --repo materializes into the named repo, not cwd ---
+work_cwd="$(mktemp -d "${WORK}/cwd.XXXXXX")"; target="$(newrepo)"
+( cd "$work_cwd" && bash "$SUT" ensure-skill --reviewer codex --repo "$target" ); rc=$?
+[[ "$rc" == 0 && -f "$target/$SKILL_REL/SKILL.md" && ! -e "$work_cwd/.agents" ]] \
+  && ok "--repo materializes into target, not cwd" || bad "--repo wrong target (rc=$rc)"
+
+# --- linked worktree: exclude resolves via --git-path (.git is a file there) ---
+base="$(newrepo)"; echo a > "$base/a"; git -C "$base" add a; git -C "$base" commit -qm a
+wt="${WORK}/wt.$$"; git -C "$base" worktree add -q "$wt" -b wtbranch
+( cd "$wt" && bash "$SUT" ensure-skill --reviewer codex ); rc=$?
+[[ "$rc" == 0 && -f "$wt/$SKILL_REL/SKILL.md" && -z "$(git -C "$wt" status --porcelain)" ]] \
+  && ok "worktree: materialized and git-clean" || bad "worktree case failed (rc=$rc)"
