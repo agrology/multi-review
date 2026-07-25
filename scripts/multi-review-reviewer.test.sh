@@ -513,23 +513,25 @@ grep -qF 'fake-secret-value' <<<"$out" && bad "check leaked the key value" || ok
 out="$(bash "$SUT" check --reviewer fable 2>&1)"; rc=$?
 [[ $rc -eq 0 && -z "$out" ]] && ok "check fable: exit 0, no output (unchanged)" || bad "check fable rc=$rc out='$out'"
 
-# --- advisory check: codex skill dir (Task 2) ---
+# --- advisory check: codex skill dir (Task 4) ---
 CBIN="${WORK}/cbin"; mkdir -p "$CBIN"; printf '#!/usr/bin/env bash\n:\n' > "$CBIN/codex"; chmod +x "$CBIN/codex"
 CREPO="${WORK}/crepo"; mkdir -p "$CREPO"; ( cd "$CREPO" && git init -q )
 
-# no skill dir -> exit 0 + hint
-out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"; rc=$?
-[[ $rc -eq 0 ]] && grep -qi 'skill' <<<"$out" && ok "check codex: skill-missing hint (exit 0)" || bad "codex skill hint (rc=$rc, out='$out')"
+# no skill dir: ready, no hint about copying
+out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && ok "codex check ready with no pre-copied skill" || bad "codex check rc=$rc"
+grep -qi 'copy .*\.agents/skills' <<<"$out" && bad "obsolete copy hint still emitted" || ok "no obsolete copy hint"
 
-# skill dir present -> no hint
-mkdir -p "$CREPO/.agents/skills/multi-review"
-out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
-[[ -z "$out" ]] && ok "check codex: no hint when skill present" || bad "codex spurious hint: '$out'"
+# a tracked copy: drift advisory
+rr_tracked="$(mktemp -d)"; git -C "$rr_tracked" init -q; mkdir -p "$rr_tracked/.agents/skills/multi-review"
+echo x > "$rr_tracked/.agents/skills/multi-review/SKILL.md"; git -C "$rr_tracked" add -f .; git -C "$rr_tracked" -c user.email=t@t -c user.name=t commit -qm s
+out="$(cd "$rr_tracked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
+grep -qi 'drift' <<<"$out" && ok "tracked copy -> drift hint" || bad "no drift hint for tracked copy"
 
-# repo-root resolution: from a SUBDIR with the skill at the root -> still no hint
-mkdir -p "$CREPO/sub/dir"
-out="$(cd "$CREPO/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
-[[ -z "$out" ]] && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir false-hint: '$out'"
+# repo-root resolution: from a SUBDIR with the tracked copy at the root -> still drift hint
+mkdir -p "$rr_tracked/sub/dir"
+out="$(cd "$rr_tracked/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
+grep -qi 'drift' <<<"$out" && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir missed drift hint: '$out'"
 
 # CLI absent -> exit 1 (unchanged)
 ( cd "$CREPO" && PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?

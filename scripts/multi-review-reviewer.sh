@@ -121,8 +121,11 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
     codex)
       command -v codex >/dev/null 2>&1 \
         || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1
-      [[ -d "$(repo_root)/.agents/skills/multi-review" ]] \
-        || hint codex "reviewer skill not found — copy .agents/skills/multi-review/ into your repo root"
+      # readiness = CLI present; auth is NOT probed here. The skill is provisioned
+      # automatically at dispatch (ensure-skill), so its prior presence is not required.
+      local rr; rr="$(repo_root)"
+      [[ -n "$(git -C "$rr" ls-files -- ".agents/skills/multi-review" 2>/dev/null)" ]] \
+        && hint codex "using a git-tracked .agents/skills/multi-review/ — it may drift from the installed plugin; delete it to use auto-provisioning"
       ;;
     gemini)
       command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
