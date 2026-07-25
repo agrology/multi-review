@@ -209,9 +209,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    (`<N>` is the round this fan-out is running; no `reviewers:` suffix on a working copy.) The
    copy carries the empty `## Review` heading from step 1; the secondary appends findings beneath.
-3. **Provision each secondary's skill, right before dispatch.** For each id, run
+3. **Provision each secondary's skill, right before dispatch.** The working root is the git
+   toplevel of the repo under review — your own invocation directory (`git rev-parse
+   --show-toplevel`) — **never** `<doc>`'s own location: for a PR-flavor doc, `<doc>` is a
+   scratch file under `.multi-review/reviews/` and is not the repo it describes. For each id, run
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh ensure-skill --reviewer <id> --repo
-   <the working root you will run this reviewer in>` — a no-op for skill-less reviewers. Non-zero
+   <that working root>` — a no-op for skill-less reviewers. Non-zero
    exit → do NOT dispatch that reviewer this round; quarantine it now, using the command's stderr
    as the reason, via the same quarantine path a dispatch failure uses (record `--quarantined
    <id>:<reason>` for the merge below). If every selected reviewer quarantines here, apply the
@@ -222,7 +225,8 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      `multi-review-reviewer.sh prompt "<doc>.<id>" --reviewer <id>` as the task text. For `codex`
      use the `codex:codex-rescue` agent with `--model <model> --write`; for `fable` use
      `general-purpose` with `model: fable`. `--model`/`--write` are runtime controls, stripped
-     from the task text.
+     from the task text. Run it in the same working root the reviewer was just provisioned into
+     (step 3) — the two must never diverge.
    - **`shell`** → read NUL-delimited argv and execute it without a shell round-trip (macOS bash
      3.2 has no `mapfile`), launched as a background task so it does not block the batch:
 
