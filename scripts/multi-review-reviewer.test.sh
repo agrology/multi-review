@@ -533,6 +533,39 @@ mkdir -p "$rr_tracked/sub/dir"
 out="$(cd "$rr_tracked/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
 grep -qi 'drift' <<<"$out" && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir missed drift hint: '$out'"
 
+# --- Fix 1 regression: an UNTRACKED, non-marker .agents/skills/multi-review copy is exactly the
+# --- state ensure-skill refuses forever ("untracked files at … — remove it and re-run"). check
+# --- must emit the same remove-and-re-run advisory (still exit 0 — it's advisory, not a gate) so
+# --- doctor stops reporting bare "ready" for a codex that is actually quarantined.
+rr_untracked="${WORK}/runtracked"; mkdir -p "$rr_untracked"; git -C "$rr_untracked" init -q
+mkdir -p "$rr_untracked/.agents/skills/multi-review"
+echo x > "$rr_untracked/.agents/skills/multi-review/SKILL.md"   # untracked: never git add'd, no marker
+out="$(cd "$rr_untracked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && ok "check codex: untracked non-marker copy still exits 0 (advisory, not a gate)" \
+  || bad "codex untracked-copy rc=$rc (want 0)"
+grep -qi 'untracked files' <<<"$out" && grep -qi 'remove it and re-run' <<<"$out" \
+  && ok "check codex: untracked non-marker copy emits the remove-and-re-run advisory" \
+  || bad "codex untracked-copy missing the remove-and-re-run advisory: '$out'"
+
+# the materialized (marker present) state is the NORMAL auto-provisioned outcome -> no hint at all
+rr_marked="${WORK}/rmarked"; mkdir -p "$rr_marked"; git -C "$rr_marked" init -q
+mkdir -p "$rr_marked/.agents/skills/multi-review"
+echo x > "$rr_marked/.agents/skills/multi-review/SKILL.md"
+echo "1.0.0" > "$rr_marked/.agents/skills/multi-review/.multi-review-materialized"
+out="$(cd "$rr_marked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 && -z "$out" ]] && ok "check codex: materialized (marker present) copy emits no hint" \
+  || bad "codex materialized copy unexpectedly hinted (rc=$rc): '$out'"
+
+# --- Fix 2 regression: repo_root() falling back to the plugin's own ROOT (non-git cwd) must NOT
+# --- fire EITHER hint — the bundle there is the plugin's own legitimately-tracked source, and the
+# --- untracked-copy hint's "remove it" advice would otherwise target the plugin's own bundle.
+NOGIT="${WORK}/nogit"; mkdir -p "$NOGIT"
+out="$(cd "$NOGIT" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && ok "check codex: non-git cwd (ROOT fallback) exits 0" || bad "codex non-git-cwd rc=$rc (want 0)"
+grep -qiE 'drift|untracked files' <<<"$out" \
+  && bad "codex ROOT-fallback wrongly fired a drift/untracked hint: '$out'" \
+  || ok "check codex: ROOT fallback suppresses both the drift and untracked-copy hints"
+
 # CLI absent -> exit 1 (unchanged)
 ( cd "$CREPO" && PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?
 [[ $rc -eq 1 ]] && ok "check codex: CLI absent still exit 1" || bad "codex absent rc=$rc (want 1)"

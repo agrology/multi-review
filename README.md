@@ -77,7 +77,9 @@ reviewers you add (below) — `fable` needs none.
 this repo's `.agents/skills/multi-review/` into the reviewed repo's root (git-ignored via
 `.git/info/exclude` + an in-dir `.gitignore`); nothing to copy, nothing committed. A
 `.agents/skills/multi-review/` you commit yourself is respected and left untouched (and
-flagged as possibly drifting from the installed plugin).
+flagged as possibly drifting from the installed plugin). An **untracked** copy (e.g. a stale
+manual copy from before auto-provisioning existed) is never touched either — auto-provisioning
+refuses to run until you remove it, and `--check-reviewers`/`doctor` will flag that too.
 
 **gemini prereqs** (in order — the first is *the* blocker):
 1. **`export GEMINI_CLI_TRUST_WORKSPACE=true`** (or trust the folder once). An untrusted workspace

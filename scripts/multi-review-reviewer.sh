@@ -124,8 +124,20 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
       # readiness = CLI present; auth is NOT probed here. The skill is provisioned
       # automatically at dispatch (ensure-skill), so its prior presence is not required.
       local rr; rr="$(repo_root)"
-      [[ -n "$(git -C "$rr" ls-files -- ".agents/skills/multi-review" 2>/dev/null)" ]] \
-        && hint codex "using a git-tracked .agents/skills/multi-review/ — it may drift from the installed plugin; delete it to use auto-provisioning"
+      # Both hints below assume repo_root() resolved a real external repo. When it falls back to
+      # the plugin's own ROOT (non-git cwd, or literally inside the plugin repo), the bundle
+      # there is the plugin's OWN legitimately-tracked source — neither hint applies, and the
+      # untracked-copy hint's "remove it" advice would otherwise target the plugin's own bundle.
+      if [[ "$(canon "$rr")" != "$(canon "$ROOT")" ]]; then
+        local skill_dir="${rr}/.agents/skills/multi-review"
+        if [[ -n "$(git -C "$rr" ls-files -- ".agents/skills/multi-review" 2>/dev/null)" ]]; then
+          hint codex "using a git-tracked .agents/skills/multi-review/ — it may drift from the installed plugin; delete it to use auto-provisioning"
+        elif [[ -e "$skill_dir" && ! -f "${skill_dir}/.multi-review-materialized" ]]; then
+          # Exactly the state ensure-skill refuses forever ("untracked files at … — remove it
+          # and re-run") — check/doctor must not say "ready" while codex is quarantined there.
+          hint codex "untracked files at ${skill_dir} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning"
+        fi
+      fi
       ;;
     gemini)
       command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
@@ -424,15 +436,10 @@ cmd_doctor() {
         [[ -n "$hints" ]] && printf '%s\n' "$hints" | sed 's/^/    likely cause: /'
       fi
     elif [[ "$id" == "codex" ]]; then
-      # A passing check (rc==0) is authoritative for codex too: the tracked-skill-dir hint is
-      # advisory only (auto-provisioning at dispatch means its prior presence is never required),
-      # so it must not present as "needs setup" — same rule gemini gets above.
-      if [[ -n "$hints" ]]; then
-        echo "✓ codex: ready"
-        printf '%s\n' "$hints" | sed 's/^/    advisory: /'
-      else
-        echo "✓ codex: ready"
-      fi
+      # A passing check (rc==0) is authoritative for codex too: an advisory hint is never a
+      # "needs setup" downgrade — same rule gemini gets above.
+      echo "✓ codex: ready"
+      [[ -n "$hints" ]] && printf '%s\n' "$hints" | sed 's/^/    advisory: /'
     elif [[ -n "$hints" ]]; then
       echo "△ ${id}: needs setup"
       printf '%s\n' "$hints" | sed 's/^/    /'
@@ -530,7 +537,7 @@ cmd_ensure_skill() { # --reviewer <id> [--repo <dir>]
   [[ -f "${tmp}/SKILL.md" && -f "${tmp}/${SKILL_MARKER}" && -f "${tmp}/.gitignore" ]] \
     || { rm -rf "$tmp"; die "materialized bundle incomplete" 1; }
   rm -rf "$dst" || { rm -rf "$tmp"; die "cannot remove old bundle at ${dst}" 1; }
-  mv "$tmp" "$dst" || die "failed to install skill bundle at ${dst} — fresh copy left at ${tmp}" 1
+  mv "$tmp" "$dst" || die "failed to install skill bundle at ${dst} — prior bundle was removed; fresh copy left at ${tmp}" 1
 
   # git hygiene: local exclude (worktree-safe path, anchored, idempotent, newline-safe) + in-dir .gitignore
   local excl ignored=0 pat="/${SKILL_REL}/"
