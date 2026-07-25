@@ -4,7 +4,7 @@
 # one selected. Single source of provider truth; the commands own only the dispatch itself.
 #
 # Bash 3.2 compatible (macOS /bin/bash): no mapfile, no associative arrays.
-# Exit: 0 ok, 1 check/verify failure, 2 usage.
+# Exit: 0 ok, 1 check/verify/provisioning failure, 2 usage.
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -456,14 +456,34 @@ gemini_live_probe() {
   rm -f "$out"; GEMINI_PROBE_MSG="live probe failed (auth/trust?) — run 'gemini -p test' to see the CLI's own error"; return 1
 }
 
+# --- provisioning: materialize a has-skill reviewer's bundle into the repo ----------
+SKILL_REL=".agents/skills/multi-review"
+SKILL_MARKER=".multi-review-materialized"
+canon() { cd "$1" 2>/dev/null && pwd -P; }   # canonical physical path, or empty (no die)
+
+cmd_ensure_skill() { # --reviewer <id> [--repo <dir>]
+  local row id has_skill repo_override="" i args=("$@")
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "--repo" ]]; then
+      [[ $((i+1)) -lt ${#args[@]} ]] || die "--repo requires a value" 2
+      repo_override="${args[i+1]}"
+    fi
+  done
+  row="$(resolve_row "$@")" || exit 2
+  id="$(field "$row" 1)"; has_skill="$(field "$row" 5)"
+  [[ "$has_skill" == "yes" ]] || return 0   # skill-less reviewers: nothing to provision
+  return 0                                    # guards (Task 2) + materialize (Task 3) added next
+}
+
 # --- dispatch -------------------------------------------------------------
-sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|doctor|verify-vendor|vendor-of-model> [args]" 2
+sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|doctor|verify-vendor|vendor-of-model|ensure-skill> [args]" 2
 shift
 case "$sub" in
   resolve) cmd_resolve "$@" ;;
   check)   cmd_check "$@" ;;
   prompt)  cmd_prompt "$@" ;;
   command) cmd_command "$@" ;;
+  ensure-skill) cmd_ensure_skill "$@" ;;
   doctor)  cmd_doctor "$@" ;;
   verify-vendor) cmd_verify_vendor "$@" ;;
   vendor-of-model) cmd_vendor_of_model "$@" ;;
