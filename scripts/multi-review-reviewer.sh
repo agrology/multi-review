@@ -4,7 +4,7 @@
 # one selected. Single source of provider truth; the commands own only the dispatch itself.
 #
 # Bash 3.2 compatible (macOS /bin/bash): no mapfile, no associative arrays.
-# Exit: 0 ok, 1 check/verify failure, 2 usage.
+# Exit: 0 ok, 1 check/verify/provisioning failure, 2 usage.
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -121,8 +121,23 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
     codex)
       command -v codex >/dev/null 2>&1 \
         || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1
-      [[ -d "$(repo_root)/.agents/skills/multi-review" ]] \
-        || hint codex "reviewer skill not found — copy .agents/skills/multi-review/ into your repo root"
+      # readiness = CLI present; auth is NOT probed here. The skill is provisioned
+      # automatically at dispatch (ensure-skill), so its prior presence is not required.
+      local rr; rr="$(repo_root)"
+      # Both hints below assume repo_root() resolved a real external repo. When it falls back to
+      # the plugin's own ROOT (non-git cwd, or literally inside the plugin repo), the bundle
+      # there is the plugin's OWN legitimately-tracked source — neither hint applies, and the
+      # untracked-copy hint's "remove it" advice would otherwise target the plugin's own bundle.
+      if [[ "$(canon "$rr")" != "$(canon "$ROOT")" ]]; then
+        local skill_dir="${rr}/.agents/skills/multi-review"
+        if [[ -n "$(git -C "$rr" ls-files -- ".agents/skills/multi-review" 2>/dev/null)" ]]; then
+          hint codex "using a git-tracked .agents/skills/multi-review/ — it may drift from the installed plugin; delete it to use auto-provisioning"
+        elif [[ -e "$skill_dir" && ! -f "${skill_dir}/.multi-review-materialized" ]]; then
+          # Exactly the state ensure-skill refuses forever ("untracked files at … — remove it
+          # and re-run") — check/doctor must not say "ready" while codex is quarantined there.
+          hint codex "untracked files at ${skill_dir} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning"
+        fi
+      fi
       ;;
     gemini)
       command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
@@ -420,6 +435,11 @@ cmd_doctor() {
         echo "✗ gemini: ${GEMINI_PROBE_MSG}"
         [[ -n "$hints" ]] && printf '%s\n' "$hints" | sed 's/^/    likely cause: /'
       fi
+    elif [[ "$id" == "codex" ]]; then
+      # A passing check (rc==0) is authoritative for codex too: an advisory hint is never a
+      # "needs setup" downgrade — same rule gemini gets above.
+      echo "✓ codex: ready"
+      [[ -n "$hints" ]] && printf '%s\n' "$hints" | sed 's/^/    advisory: /'
     elif [[ -n "$hints" ]]; then
       echo "△ ${id}: needs setup"
       printf '%s\n' "$hints" | sed 's/^/    /'
@@ -456,14 +476,92 @@ gemini_live_probe() {
   rm -f "$out"; GEMINI_PROBE_MSG="live probe failed (auth/trust?) — run 'gemini -p test' to see the CLI's own error"; return 1
 }
 
+# --- provisioning: materialize a has-skill reviewer's bundle into the repo ----------
+SKILL_REL=".agents/skills/multi-review"
+SKILL_MARKER=".multi-review-materialized"
+canon() { cd "$1" 2>/dev/null && pwd -P; }   # canonical physical path, or empty (no die)
+
+cmd_ensure_skill() { # --reviewer <id> [--repo <dir>]
+  local row id has_skill repo_override="" i args=("$@")
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "--repo" ]]; then
+      [[ $((i+1)) -lt ${#args[@]} ]] || die "--repo requires a value" 2
+      repo_override="${args[i+1]}"
+    fi
+  done
+  row="$(resolve_row "$@")" || exit 2
+  id="$(field "$row" 1)"; has_skill="$(field "$row" 5)"
+  [[ "$has_skill" == "yes" ]] || return 0   # skill-less reviewers: nothing to provision
+
+  local src repo repo_c
+  src="$(canon "${ROOT}/${SKILL_REL}")"
+  [[ -n "$src" && -f "${src}/SKILL.md" ]] || die "plugin skill bundle missing at ${ROOT}/${SKILL_REL}" 1
+  repo="${repo_override:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT")}"
+  repo_c="$(canon "$repo")"; [[ -n "$repo_c" ]] || die "cannot resolve repo root: $repo" 1
+
+  # a symlinked .agents that escapes the repo would let mkdir/cp write out of tree — refuse first
+  if [[ -L "${repo_c}/.agents" ]]; then
+    local ag; ag="$(canon "${repo_c}/.agents")"
+    case "${ag}/" in "${repo_c%/}/"*) : ;; *) die "refusing: ${repo_c}/.agents is a symlink outside the repo" 1 ;; esac
+  fi
+  mkdir -p "${repo_c}/.agents/skills" || die "cannot create ${repo_c}/.agents/skills" 1
+  local skills_c; skills_c="$(canon "${repo_c}/.agents/skills")"
+  [[ -n "$skills_c" ]] || die "cannot resolve ${repo_c}/.agents/skills" 1
+  case "${skills_c}/" in "${repo_c%/}/"*) : ;; *) die "refusing: .agents/skills resolves outside ${repo_c}" 1 ;; esac
+  local dst="${skills_c}/multi-review"
+
+  # src == dst -> no-op (plugin repo itself / non-git fallback to ROOT)
+  local dst_c; dst_c="$(canon "$dst")"
+  [[ -n "$dst_c" && "$dst_c" == "$src" ]] && return 0
+  # an existing dst must be a real dir directly under skills_c (reject a symlinked leaf)
+  if [[ -n "$dst_c" ]]; then
+    case "${dst_c}/" in "${skills_c%/}/multi-review/") : ;; *) die "refusing: ${dst} resolves outside ${skills_c}" 1 ;; esac
+  fi
+
+  # a git-tracked copy -> no-op (capture then test; avoids grep -q SIGPIPE under pipefail)
+  local tracked; tracked="$(git -C "$repo_c" ls-files -- "$SKILL_REL" 2>/dev/null)"
+  [[ -n "$tracked" ]] && return 0
+
+  # untracked, non-marker dir -> refuse (never destroy the user's files)
+  [[ -e "$dst" && ! -f "${dst}/${SKILL_MARKER}" ]] \
+    && die "untracked files at ${dst} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning" 1
+
+  # rollback-safe materialize into a mktemp sibling, then swap
+  local version tmp
+  version="$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "${ROOT}/.claude-plugin/plugin.json" 2>/dev/null)"
+  [[ -n "$version" ]] || die "cannot determine plugin version from plugin.json" 1
+  tmp="$(mktemp -d "${skills_c}/.multi-review.materialize.XXXXXX")" || die "cannot create materialization dir" 1
+  cp -R "${src}/." "${tmp}/" 2>/dev/null || { rm -rf "$tmp"; die "copy failed while materializing skill bundle" 1; }
+  printf '%s\n' "$version" > "${tmp}/${SKILL_MARKER}" || { rm -rf "$tmp"; die "cannot write marker" 1; }
+  printf '*\n' > "${tmp}/.gitignore" || { rm -rf "$tmp"; die "cannot write in-dir .gitignore" 1; }
+  [[ -f "${tmp}/SKILL.md" && -f "${tmp}/${SKILL_MARKER}" && -f "${tmp}/.gitignore" ]] \
+    || { rm -rf "$tmp"; die "materialized bundle incomplete" 1; }
+  rm -rf "$dst" || { rm -rf "$tmp"; die "cannot remove old bundle at ${dst}" 1; }
+  mv "$tmp" "$dst" || die "failed to install skill bundle at ${dst} — prior bundle was removed; fresh copy left at ${tmp}" 1
+
+  # git hygiene: local exclude (worktree-safe path, anchored, idempotent, newline-safe) + in-dir .gitignore
+  local excl ignored=0 pat="/${SKILL_REL}/"
+  excl="$(git -C "$repo_c" rev-parse --git-path info/exclude 2>/dev/null)"
+  [[ -n "$excl" && "$excl" != /* ]] && excl="${repo_c}/${excl}"
+  if [[ -n "$excl" ]] && mkdir -p "$(dirname "$excl")" 2>/dev/null && { [[ -e "$excl" ]] || : > "$excl"; } 2>/dev/null; then
+    [[ -s "$excl" && -n "$(tail -c1 "$excl")" ]] && printf '\n' >> "$excl" 2>/dev/null || true
+    grep -Fqx -- "$pat" "$excl" 2>/dev/null || printf '%s\n' "$pat" >> "$excl" 2>/dev/null
+    grep -Fqx -- "$pat" "$excl" 2>/dev/null && ignored=1
+  fi
+  grep -Fqx -- '*' "${dst}/.gitignore" 2>/dev/null && ignored=1   # verify the exact rule, not mere existence
+  [[ "$ignored" == 1 ]] || die "could not make ${dst} git-ignored (no writable exclude, no in-dir .gitignore)" 1
+  return 0
+}
+
 # --- dispatch -------------------------------------------------------------
-sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|doctor|verify-vendor|vendor-of-model> [args]" 2
+sub="${1:-}"; [[ -n "$sub" ]] || die "usage: multi-review-reviewer.sh <resolve|check|prompt|command|doctor|verify-vendor|vendor-of-model|ensure-skill> [args]" 2
 shift
 case "$sub" in
   resolve) cmd_resolve "$@" ;;
   check)   cmd_check "$@" ;;
   prompt)  cmd_prompt "$@" ;;
   command) cmd_command "$@" ;;
+  ensure-skill) cmd_ensure_skill "$@" ;;
   doctor)  cmd_doctor "$@" ;;
   verify-vendor) cmd_verify_vendor "$@" ;;
   vendor-of-model) cmd_vendor_of_model "$@" ;;

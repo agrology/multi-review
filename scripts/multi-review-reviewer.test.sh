@@ -513,23 +513,58 @@ grep -qF 'fake-secret-value' <<<"$out" && bad "check leaked the key value" || ok
 out="$(bash "$SUT" check --reviewer fable 2>&1)"; rc=$?
 [[ $rc -eq 0 && -z "$out" ]] && ok "check fable: exit 0, no output (unchanged)" || bad "check fable rc=$rc out='$out'"
 
-# --- advisory check: codex skill dir (Task 2) ---
+# --- advisory check: codex skill dir (Task 4) ---
 CBIN="${WORK}/cbin"; mkdir -p "$CBIN"; printf '#!/usr/bin/env bash\n:\n' > "$CBIN/codex"; chmod +x "$CBIN/codex"
 CREPO="${WORK}/crepo"; mkdir -p "$CREPO"; ( cd "$CREPO" && git init -q )
 
-# no skill dir -> exit 0 + hint
-out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"; rc=$?
-[[ $rc -eq 0 ]] && grep -qi 'skill' <<<"$out" && ok "check codex: skill-missing hint (exit 0)" || bad "codex skill hint (rc=$rc, out='$out')"
+# no skill dir: ready, no hint about copying
+out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && ok "codex check ready with no pre-copied skill" || bad "codex check rc=$rc"
+grep -qi 'copy .*\.agents/skills' <<<"$out" && bad "obsolete copy hint still emitted" || ok "no obsolete copy hint"
 
-# skill dir present -> no hint
-mkdir -p "$CREPO/.agents/skills/multi-review"
-out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
-[[ -z "$out" ]] && ok "check codex: no hint when skill present" || bad "codex spurious hint: '$out'"
+# a tracked copy: drift advisory
+rr_tracked="${WORK}/rtracked"; mkdir -p "$rr_tracked"; git -C "$rr_tracked" init -q; mkdir -p "$rr_tracked/.agents/skills/multi-review"
+echo x > "$rr_tracked/.agents/skills/multi-review/SKILL.md"; git -C "$rr_tracked" add -f .; git -C "$rr_tracked" -c user.email=t@t -c user.name=t commit -qm s
+out="$(cd "$rr_tracked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
+grep -qi 'drift' <<<"$out" && ok "tracked copy -> drift hint" || bad "no drift hint for tracked copy"
 
-# repo-root resolution: from a SUBDIR with the skill at the root -> still no hint
-mkdir -p "$CREPO/sub/dir"
-out="$(cd "$CREPO/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"
-[[ -z "$out" ]] && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir false-hint: '$out'"
+# repo-root resolution: from a SUBDIR with the tracked copy at the root -> still drift hint
+mkdir -p "$rr_tracked/sub/dir"
+out="$(cd "$rr_tracked/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
+grep -qi 'drift' <<<"$out" && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir missed drift hint: '$out'"
+
+# --- Fix 1 regression: an UNTRACKED, non-marker .agents/skills/multi-review copy is exactly the
+# --- state ensure-skill refuses forever ("untracked files at … — remove it and re-run"). check
+# --- must emit the same remove-and-re-run advisory (still exit 0 — it's advisory, not a gate) so
+# --- doctor stops reporting bare "ready" for a codex that is actually quarantined.
+rr_untracked="${WORK}/runtracked"; mkdir -p "$rr_untracked"; git -C "$rr_untracked" init -q
+mkdir -p "$rr_untracked/.agents/skills/multi-review"
+echo x > "$rr_untracked/.agents/skills/multi-review/SKILL.md"   # untracked: never git add'd, no marker
+out="$(cd "$rr_untracked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && ok "check codex: untracked non-marker copy still exits 0 (advisory, not a gate)" \
+  || bad "codex untracked-copy rc=$rc (want 0)"
+grep -qi 'untracked files' <<<"$out" && grep -qi 'remove it and re-run' <<<"$out" \
+  && ok "check codex: untracked non-marker copy emits the remove-and-re-run advisory" \
+  || bad "codex untracked-copy missing the remove-and-re-run advisory: '$out'"
+
+# the materialized (marker present) state is the NORMAL auto-provisioned outcome -> no hint at all
+rr_marked="${WORK}/rmarked"; mkdir -p "$rr_marked"; git -C "$rr_marked" init -q
+mkdir -p "$rr_marked/.agents/skills/multi-review"
+echo x > "$rr_marked/.agents/skills/multi-review/SKILL.md"
+echo "1.0.0" > "$rr_marked/.agents/skills/multi-review/.multi-review-materialized"
+out="$(cd "$rr_marked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 && -z "$out" ]] && ok "check codex: materialized (marker present) copy emits no hint" \
+  || bad "codex materialized copy unexpectedly hinted (rc=$rc): '$out'"
+
+# --- Fix 2 regression: repo_root() falling back to the plugin's own ROOT (non-git cwd) must NOT
+# --- fire EITHER hint — the bundle there is the plugin's own legitimately-tracked source, and the
+# --- untracked-copy hint's "remove it" advice would otherwise target the plugin's own bundle.
+NOGIT="${WORK}/nogit"; mkdir -p "$NOGIT"
+out="$(cd "$NOGIT" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && ok "check codex: non-git cwd (ROOT fallback) exits 0" || bad "codex non-git-cwd rc=$rc (want 0)"
+grep -qiE 'drift|untracked files' <<<"$out" \
+  && bad "codex ROOT-fallback wrongly fired a drift/untracked hint: '$out'" \
+  || ok "check codex: ROOT fallback suppresses both the drift and untracked-copy hints"
 
 # CLI absent -> exit 1 (unchanged)
 ( cd "$CREPO" && PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?
@@ -589,6 +624,17 @@ out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=1 PATH="${DB
 printf '#!/usr/bin/env bash\necho SENSITIVE_PROBE_STDOUT; exit 1\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
 out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
 grep -qF 'SENSITIVE_PROBE_STDOUT' <<<"$out" && bad "doctor leaked raw probe output" || ok "doctor: probe output is redacted on failure"
+
+# codex git-tracked skill copy present -> check still passes (rc=0, drift is advisory-only per
+# cmd_check's own comment), so doctor must show codex READY, not "needs setup" (Finding 1: a
+# passing check must never be downgraded by an advisory hint — same rule gemini already gets).
+mkdir -p "$DREPO/.agents/skills/multi-review"
+echo x > "$DREPO/.agents/skills/multi-review/SKILL.md"
+( cd "$DREPO" && git add -f .agents/skills/multi-review && git -c user.email=t@t -c user.name=t commit -qm skill )
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qi 'codex: ready\|✓ codex' <<<"$out" && ok "doctor: codex ready despite tracked-skill drift hint" || bad "doctor codex not ready: '$out'"
+grep -qiE '△ codex|codex: needs setup' <<<"$out" && bad "doctor: codex showed 'needs setup' despite a passing check" || ok "doctor: no contradictory codex needs-setup line"
+grep -qi 'drift' <<<"$out" && ok "doctor: codex drift advisory still surfaced" || bad "doctor: codex drift advisory missing: '$out'"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

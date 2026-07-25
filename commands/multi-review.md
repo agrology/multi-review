@@ -209,13 +209,24 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    (`<N>` is the round this fan-out is running; no `reviewers:` suffix on a working copy.) The
    copy carries the empty `## Review` heading from step 1; the secondary appends findings beneath.
-3. **Dispatch every secondary in the same turn**, so the harness runs them concurrently — never
+3. **Provision each secondary's skill, right before dispatch.** The working root is the git
+   toplevel of the repo under review — your own invocation directory (`git rev-parse
+   --show-toplevel`) — **never** `<doc>`'s own location: for a PR-flavor doc, `<doc>` is a
+   scratch file under `.multi-review/reviews/` and is not the repo it describes. For each id, run
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh ensure-skill --reviewer <id> --repo
+   <that working root>` — a no-op for skill-less reviewers. Non-zero
+   exit → do NOT dispatch that reviewer this round; quarantine it now, using the command's stderr
+   as the reason, via the same quarantine path a dispatch failure uses (record `--quarantined
+   <id>:<reason>` for the merge below). If every selected reviewer quarantines here, apply the
+   existing all-failed anomaly stop (below) before dispatching anyone.
+4. **Dispatch every secondary in the same turn**, so the harness runs them concurrently — never
    one after another. Branch on `kind`, pointed at `<doc>.<id>`:
    - **`subagent`** → dispatch the Agent tool with the resolved `model`, passing the output of
      `multi-review-reviewer.sh prompt "<doc>.<id>" --reviewer <id>` as the task text. For `codex`
      use the `codex:codex-rescue` agent with `--model <model> --write`; for `fable` use
      `general-purpose` with `model: fable`. `--model`/`--write` are runtime controls, stripped
-     from the task text.
+     from the task text. Run it in the same working root the reviewer was just provisioned into
+     (step 3) — the two must never diverge.
    - **`shell`** → read NUL-delimited argv and execute it without a shell round-trip (macOS bash
      3.2 has no `mapfile`), launched as a background task so it does not block the batch:
 
@@ -230,23 +241,23 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             (( ${#argv[@]} )) && "${argv[@]}"
 
    All same-turn subagent dispatches go in the SAME response block as each other.
-4. **Bound the wait, per copy.**
+5. **Bound the wait, per copy.**
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh "<doc>.<id>" awaiting-author [seconds]`
    (240s default is reasonable; raise it for a known-slow provider). Exit 0 → verify below.
    Non-zero (bound hit, or the copy went sideways) → quarantine this provider (next step) with
    that reason. A hung secondary must never stall the others or the round.
-5. **Verify identity, per copy that reached `awaiting-author`.**
+6. **Verify identity, per copy that reached `awaiting-author`.**
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh verify-vendor --baseline
    "<doc>.baseline" "<doc>.<id>" --reviewer <id>`. Pass → admit the copy into the merge. Fail →
    quarantine: exclude it and record `--quarantined <id>:<reason>` (the reason is
-   `verify-vendor`'s message, or "no response within the wait bound" from step 4).
+   `verify-vendor`'s message, or "no response within the wait bound" from step 5).
    - **All secondaries quarantined** (including `fable`) → an **anomaly stop**: do not advance the
      marker; surface every quarantine reason and STOP. A round with zero trustworthy findings
      cannot merge. (In practice `fable` runs in-harness and should always be admissible, so this
      should not occur.)
-6. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
+7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
    <id>:<reason> ...] "<doc>" <admitted copies...>`.
-7. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
+8. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
    `<doc>.manifest`, and `<doc>.baseline` — the terminal gate releases them.
 
