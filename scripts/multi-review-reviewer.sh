@@ -423,6 +423,16 @@ cmd_doctor() {
         echo "✗ gemini: ${GEMINI_PROBE_MSG}"
         [[ -n "$hints" ]] && printf '%s\n' "$hints" | sed 's/^/    likely cause: /'
       fi
+    elif [[ "$id" == "codex" ]]; then
+      # A passing check (rc==0) is authoritative for codex too: the tracked-skill-dir hint is
+      # advisory only (auto-provisioning at dispatch means its prior presence is never required),
+      # so it must not present as "needs setup" — same rule gemini gets above.
+      if [[ -n "$hints" ]]; then
+        echo "✓ codex: ready"
+        printf '%s\n' "$hints" | sed 's/^/    advisory: /'
+      else
+        echo "✓ codex: ready"
+      fi
     elif [[ -n "$hints" ]]; then
       echo "△ ${id}: needs setup"
       printf '%s\n' "$hints" | sed 's/^/    /'

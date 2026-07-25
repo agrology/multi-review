@@ -523,7 +523,7 @@ out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>
 grep -qi 'copy .*\.agents/skills' <<<"$out" && bad "obsolete copy hint still emitted" || ok "no obsolete copy hint"
 
 # a tracked copy: drift advisory
-rr_tracked="$(mktemp -d)"; git -C "$rr_tracked" init -q; mkdir -p "$rr_tracked/.agents/skills/multi-review"
+rr_tracked="${WORK}/rtracked"; mkdir -p "$rr_tracked"; git -C "$rr_tracked" init -q; mkdir -p "$rr_tracked/.agents/skills/multi-review"
 echo x > "$rr_tracked/.agents/skills/multi-review/SKILL.md"; git -C "$rr_tracked" add -f .; git -C "$rr_tracked" -c user.email=t@t -c user.name=t commit -qm s
 out="$(cd "$rr_tracked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
 grep -qi 'drift' <<<"$out" && ok "tracked copy -> drift hint" || bad "no drift hint for tracked copy"
@@ -591,6 +591,17 @@ out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=1 PATH="${DB
 printf '#!/usr/bin/env bash\necho SENSITIVE_PROBE_STDOUT; exit 1\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
 out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
 grep -qF 'SENSITIVE_PROBE_STDOUT' <<<"$out" && bad "doctor leaked raw probe output" || ok "doctor: probe output is redacted on failure"
+
+# codex git-tracked skill copy present -> check still passes (rc=0, drift is advisory-only per
+# cmd_check's own comment), so doctor must show codex READY, not "needs setup" (Finding 1: a
+# passing check must never be downgraded by an advisory hint — same rule gemini already gets).
+mkdir -p "$DREPO/.agents/skills/multi-review"
+echo x > "$DREPO/.agents/skills/multi-review/SKILL.md"
+( cd "$DREPO" && git add -f .agents/skills/multi-review && git -c user.email=t@t -c user.name=t commit -qm skill )
+out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qi 'codex: ready\|✓ codex' <<<"$out" && ok "doctor: codex ready despite tracked-skill drift hint" || bad "doctor codex not ready: '$out'"
+grep -qiE '△ codex|codex: needs setup' <<<"$out" && bad "doctor: codex showed 'needs setup' despite a passing check" || ok "doctor: no contradictory codex needs-setup line"
+grep -qi 'drift' <<<"$out" && ok "doctor: codex drift advisory still surfaced" || bad "doctor: codex drift advisory missing: '$out'"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
