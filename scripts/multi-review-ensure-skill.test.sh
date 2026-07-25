@@ -55,3 +55,34 @@ r="$(newrepo)"; outside="$(mktemp -d "${WORK}/outside.XXXXXX")"; ln -s "$outside
 ( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ) 2>/dev/null; rc=$?
 [[ "$rc" == 1 ]] && ok "symlinked .agents escape refused" || bad "escape rc=$rc (want 1)"
 [[ ! -e "$outside/skills/multi-review" ]] && ok "nothing written outside repo" || bad "wrote outside repo"
+
+# --- fresh repo: materialized, marker + in-dir .gitignore, git-invisible ---
+r="$(newrepo)"
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ); rc=$?
+[[ "$rc" == 0 ]] && ok "codex materialize exits 0" || bad "materialize rc=$rc"
+[[ -f "$r/$SKILL_REL/SKILL.md" && -f "$r/$SKILL_REL/$MARKER" && -f "$r/$SKILL_REL/.gitignore" ]] \
+  && ok "bundle + marker + .gitignore present" || bad "materialized bundle incomplete"
+[[ -z "$(git -C "$r" status --porcelain)" ]] && ok "git status clean" || bad "git sees bundle: $(git -C "$r" status --porcelain | head -1)"
+# exclude entry present exactly once, idempotent across a second run
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex )
+excl="$r/$(git -C "$r" rev-parse --git-path info/exclude)"
+m="$(grep -Fxc -- '/.agents/skills/multi-review/' "$excl" 2>/dev/null || true)"; m="${m:-0}"
+[[ "$m" == 1 ]] && ok "exclude entry exactly once" || bad "exclude count=$m (want 1)"
+
+# --- refresh removes a stale file ---
+echo stale > "$r/$SKILL_REL/STALE"; ( cd "$r" && bash "$SUT" ensure-skill --reviewer codex )
+[[ ! -e "$r/$SKILL_REL/STALE" ]] && ok "refresh drops stale file" || bad "stale survived"
+
+# --- atomic: a copy failure leaves the prior bundle intact ---
+r="$(newrepo)"; ( cd "$r" && bash "$SUT" ensure-skill --reviewer codex )   # prior good bundle
+fakebin="$(mktemp -d "${WORK}/fakebin.XXXXXX")"; printf '#!/bin/sh\nexit 1\n' > "$fakebin/cp"; chmod +x "$fakebin/cp"
+( cd "$r" && PATH="$fakebin:$PATH" bash "$SUT" ensure-skill --reviewer codex ) 2>/dev/null; rc=$?
+[[ "$rc" == 1 ]] && ok "copy failure -> exit 1" || bad "copy-fail rc=$rc (want 1)"
+[[ -f "$r/$SKILL_REL/SKILL.md" && -f "$r/$SKILL_REL/$MARKER" ]] && ok "prior bundle intact after copy failure" || bad "bundle lost on copy failure"
+
+# --- exclude write is best-effort: a read-only .git/info still succeeds via the in-dir .gitignore ---
+r="$(newrepo)"; chmod -w "$r/.git/info" 2>/dev/null || true
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ); rc=$?
+chmod +w "$r/.git/info" 2>/dev/null || true
+[[ "$rc" == 0 && -f "$r/$SKILL_REL/.gitignore" ]] \
+  && ok "unwritable .git/info: still succeeds via in-dir .gitignore" || bad "read-only .git/info broke provisioning (rc=$rc)"

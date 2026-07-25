@@ -506,7 +506,31 @@ cmd_ensure_skill() { # --reviewer <id> [--repo <dir>]
   [[ -e "$dst" && ! -f "${dst}/${SKILL_MARKER}" ]] \
     && die "untracked files at ${dst} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning" 1
 
-  return 0   # materialize added in Task 3
+  # rollback-safe materialize into a mktemp sibling, then swap
+  local version tmp
+  version="$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "${ROOT}/.claude-plugin/plugin.json" 2>/dev/null)"
+  [[ -n "$version" ]] || die "cannot determine plugin version from plugin.json" 1
+  tmp="$(mktemp -d "${skills_c}/.multi-review.materialize.XXXXXX")" || die "cannot create materialization dir" 1
+  cp -R "${src}/." "${tmp}/" 2>/dev/null || { rm -rf "$tmp"; die "copy failed while materializing skill bundle" 1; }
+  printf '%s\n' "$version" > "${tmp}/${SKILL_MARKER}" || { rm -rf "$tmp"; die "cannot write marker" 1; }
+  printf '*\n' > "${tmp}/.gitignore" || { rm -rf "$tmp"; die "cannot write in-dir .gitignore" 1; }
+  [[ -f "${tmp}/SKILL.md" && -f "${tmp}/${SKILL_MARKER}" && -f "${tmp}/.gitignore" ]] \
+    || { rm -rf "$tmp"; die "materialized bundle incomplete" 1; }
+  rm -rf "$dst" || { rm -rf "$tmp"; die "cannot remove old bundle at ${dst}" 1; }
+  mv "$tmp" "$dst" || die "failed to install skill bundle at ${dst} — fresh copy left at ${tmp}" 1
+
+  # git hygiene: local exclude (worktree-safe path, anchored, idempotent, newline-safe) + in-dir .gitignore
+  local excl ignored=0 pat="/${SKILL_REL}/"
+  excl="$(git -C "$repo_c" rev-parse --git-path info/exclude 2>/dev/null)"
+  [[ -n "$excl" && "$excl" != /* ]] && excl="${repo_c}/${excl}"
+  if [[ -n "$excl" ]] && mkdir -p "$(dirname "$excl")" 2>/dev/null && { [[ -e "$excl" ]] || : > "$excl"; } 2>/dev/null; then
+    [[ -s "$excl" && -n "$(tail -c1 "$excl")" ]] && printf '\n' >> "$excl" 2>/dev/null || true
+    grep -Fqx -- "$pat" "$excl" 2>/dev/null || printf '%s\n' "$pat" >> "$excl" 2>/dev/null
+    grep -Fqx -- "$pat" "$excl" 2>/dev/null && ignored=1
+  fi
+  grep -Fqx -- '*' "${dst}/.gitignore" 2>/dev/null && ignored=1   # verify the exact rule, not mere existence
+  [[ "$ignored" == 1 ]] || die "could not make ${dst} git-ignored (no writable exclude, no in-dir .gitignore)" 1
+  return 0
 }
 
 # --- dispatch -------------------------------------------------------------
