@@ -436,18 +436,23 @@ _structural_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
   local doc="$1"
   [[ -f "$doc" ]] || { echo "multi-review-star: verify: doc not found: $doc" >&2; return 1; }
   # grammar — catches a finding split from its > — via/risk lines and a response to an unknown
-  # finding id (issue #16 symptoms 1 & 3-orphan).
-  _table "$doc" >/dev/null || return 1
+  # finding id (issue #16 symptoms 1 & 3-orphan). Capture the parsed table: it is the AUTHORITATIVE
+  # list of findings the rest of the tool (open-findings, coverage, gate-summary) can see.
+  local tbl; tbl="$(_table "$doc")" || return 1
   # a merged doc always has a manifest.
   [[ -f "${doc}.manifest" ]] || { echo "multi-review-star: verify: no manifest (never merged): ${doc}.manifest" >&2; return 1; }
 
-  # Fence-stripped review section, computed once and reused by every check below so no check ever
-  # greps raw doc content (a fenced diff / prose look-alike must not be seen as a live record).
+  # Fence-stripped review section, computed once and reused by the footer/quarantine checks so they
+  # never grep raw doc content (a fenced diff / prose look-alike must not be seen as a live record).
   local review; review="$(review_section "$doc" | strip_fences /dev/stdin)"
 
-  # (b) finding-id set: doc body == manifest (catches a dropped/added round).
+  # (b) finding-id set: compare the _table-PARSED ids (NOT a raw grep) against the manifest. A raw
+  #     grep accepts an id outside _table's [A-Za-z0-9_-] grammar that the manifest records but
+  #     _table cannot see — recorded-yet-unadjudicated, invisible to open-findings/coverage/gate —
+  #     which would let the terminal gate fail OPEN (#17-refix3 high). Sourcing present-ids from
+  #     _table makes such an id a manifest/doc mismatch → fail closed.
   local present manifest_ids
-  present="$(printf '%s\n' "$review" | grep -oE '^> \[finding:[^]|]+' | sed -E 's/^> \[finding://' | sort -u)"
+  present="$(printf '%s\n' "$tbl" | awk -F'\t' 'NF{print $1}' | sort -u)"
   manifest_ids="$(awk '$1=="finding"{sub(/=.*/,"",$2); print $2}' "${doc}.manifest" | sort -u)"
   if [[ "$present" != "$manifest_ids" ]]; then
     echo "multi-review-star: verify: doc findings do not match manifest (a round may have been dropped or added):" >&2

@@ -891,6 +891,18 @@ dv_c=$(bash "$SUT" check-converged "$DV" >/dev/null 2>&1; echo $?)
   && ok "verify and check-converged agree on a fenced-quarantine doc — no divergence (#17-refix2)" \
   || bad "verify/check-converged diverge on a fenced-quarantine doc (verify=$dv_v check-converged=$dv_c)"
 
+# (#17-refix3 fable-r1, HIGH) fail CLOSED, not open: an id in the manifest that is outside _table's
+# grammar (e.g. contains '.') is invisible to open-findings/coverage/gate, so the consistency check
+# must reject it (present-ids sourced from _table, not a raw grep) rather than let it silently pass.
+FO="${WORK}/fo.md"; mkbase "$FO"
+mkcopy "${FO}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$FO" "${FO}.codex" >/dev/null 2>&1
+printf '\n> [finding:codex-rd1-r.2|high] this id has a dot — invisible to _table\n> — via x\n> — risk: r\n' >> "$FO"
+echo 'finding codex-rd1-r.2=deadbeefdeadbeef' >> "${FO}.manifest"
+bash "$SUT" verify "$FO" >/dev/null 2>&1 \
+  && bad "verify FAILED OPEN: an ungrammatical manifest id passed (#17-refix3 r1)" \
+  || ok "verify: fails closed on a manifest id invisible to _table's grammar (#17-refix3 r1)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
