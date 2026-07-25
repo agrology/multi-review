@@ -56,6 +56,21 @@ r="$(newrepo)"; outside="$(mktemp -d "${WORK}/outside.XXXXXX")"; ln -s "$outside
 [[ "$rc" == 1 ]] && ok "symlinked .agents escape refused" || bad "escape rc=$rc (want 1)"
 [[ ! -e "$outside/skills/multi-review" ]] && ok "nothing written outside repo" || bad "wrote outside repo"
 
+# --- .agents/skills itself a symlink escaping the repo is REFUSED (containment check) ---
+r="$(newrepo)"; outside="$(mktemp -d "${WORK}/outside.XXXXXX")"; mkdir -p "$r/.agents"; ln -s "$outside" "$r/.agents/skills"
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ) 2>/dev/null; rc=$?
+[[ "$rc" == 1 ]] && ok "symlinked .agents/skills escape refused" || bad "skills escape rc=$rc (want 1)"
+[[ ! -e "$outside/multi-review" ]] && ok "nothing written outside repo (skills escape)" || bad "wrote outside repo (skills escape)"
+
+# --- dst leaf (.agents/skills/multi-review) a symlink escaping the repo is REFUSED (leaf check) ---
+# pre-seed the marker so the (separate, already-tested) untracked-non-marker guard doesn't also
+# fire here -- this isolates the leaf-containment check itself as the thing under test.
+r="$(newrepo)"; outside="$(mktemp -d "${WORK}/outside.XXXXXX")"; : > "$outside/$MARKER"
+mkdir -p "$r/.agents/skills"; ln -s "$outside" "$r/$SKILL_REL"
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ) 2>/dev/null; rc=$?
+[[ "$rc" == 1 ]] && ok "symlinked dst leaf escape refused" || bad "leaf escape rc=$rc (want 1)"
+[[ ! -f "$outside/SKILL.md" ]] && ok "nothing written outside repo (leaf escape)" || bad "wrote outside repo (leaf escape)"
+
 # --- fresh repo: materialized, marker + in-dir .gitignore, git-invisible ---
 r="$(newrepo)"
 ( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ); rc=$?
@@ -80,12 +95,21 @@ fakebin="$(mktemp -d "${WORK}/fakebin.XXXXXX")"; printf '#!/bin/sh\nexit 1\n' > 
 [[ "$rc" == 1 ]] && ok "copy failure -> exit 1" || bad "copy-fail rc=$rc (want 1)"
 [[ -f "$r/$SKILL_REL/SKILL.md" && -f "$r/$SKILL_REL/$MARKER" ]] && ok "prior bundle intact after copy failure" || bad "bundle lost on copy failure"
 
-# --- exclude write is best-effort: a read-only .git/info still succeeds via the in-dir .gitignore ---
-r="$(newrepo)"; chmod -w "$r/.git/info" 2>/dev/null || true
+# --- exclude write is best-effort: a genuinely-unwritable exclude file forces reliance on the
+# in-dir .gitignore. (`git init` pre-creates .git/info/exclude, so chmod -w on the *directory*
+# alone leaves that pre-existing file itself writable and never actually exercises this path --
+# lock the exclude file itself too, so the append genuinely fails.)
+r="$(newrepo)"; excl="$r/.git/info/exclude"
+chmod -w "$excl" "$r/.git/info" 2>/dev/null || true
 ( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ); rc=$?
-chmod +w "$r/.git/info" 2>/dev/null || true
-[[ "$rc" == 0 && -f "$r/$SKILL_REL/.gitignore" ]] \
-  && ok "unwritable .git/info: still succeeds via in-dir .gitignore" || bad "read-only .git/info broke provisioning (rc=$rc)"
+chmod +w "$r/.git/info" "$excl" 2>/dev/null || true
+[[ "$rc" == 0 ]] && ok "unwritable exclude file: ensure-skill still exits 0" || bad "unwritable exclude broke provisioning (rc=$rc)"
+[[ -f "$r/$SKILL_REL/.gitignore" ]] && ok "in-dir .gitignore present" || bad "in-dir .gitignore missing"
+[[ -z "$(git -C "$r" status --porcelain)" ]] \
+  && ok "git status clean via in-dir .gitignore alone" || bad "git sees bundle: $(git -C "$r" status --porcelain | head -1)"
+! grep -Fqx -- "/${SKILL_REL}/" "$excl" 2>/dev/null \
+  && ok "exclude write genuinely failed (pattern absent -- proves reliance on in-dir .gitignore)" \
+  || bad "exclude was written despite read-only file (test doesn't exercise the fallback)"
 
 # --- --repo materializes into the named repo, not cwd ---
 work_cwd="$(mktemp -d "${WORK}/cwd.XXXXXX")"; target="$(newrepo)"

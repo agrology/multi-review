@@ -136,7 +136,7 @@ run. Reset it with a "forget the reviewers" request.
 - `.agents/skills/multi-review/` — the self-contained reviewer skill, auto-provisioned into consumer repos for `codex` (git-ignored)
 - `.claude-plugin/plugin.json` — plugin manifest
 - `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / compose
-- `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / verify-vendor / vendor-of-model
+- `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / ensure-skill / doctor / verify-vendor / vendor-of-model
 - `scripts/multi-review-pr.sh` — PR ingest (via `gh`) + the one-neutral-review publish
 - `scripts/multi-review-core.sh` — marker state; `-wait.sh` — bounded per-copy wait;
   `-egress-guard.sh` — path validation; `-build-reviewer-bundle.sh` — regenerate the skill bundle;
