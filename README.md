@@ -70,11 +70,14 @@ reviewers you add (below) — `fable` needs none.
 | reviewer | vendor | setup |
 |---|---|---|
 | `fable` *(always on)* | anthropic | **none** — runs in-harness |
-| `codex` | openai | `codex` CLI authed **+** copy `.agents/skills/multi-review/` into your repo root |
+| `codex` | openai | `codex` CLI authed — skill provisioned automatically per run (git-ignored) |
 | `gemini` | google | `gemini` CLI authed + 3 settings (below) |
 
-**codex skill:** copy this repo's `.agents/skills/multi-review/` to `<your-repo>/.agents/skills/multi-review/`
-(exact path — the bundled paths resolve against it) and run Codex from the repo root.
+**codex skill:** provisioned automatically. On each run `/multi-review` materializes
+this repo's `.agents/skills/multi-review/` into the reviewed repo's root (git-ignored via
+`.git/info/exclude` + an in-dir `.gitignore`); nothing to copy, nothing committed. A
+`.agents/skills/multi-review/` you commit yourself is respected and left untouched (and
+flagged as possibly drifting from the installed plugin).
 
 **gemini prereqs** (in order — the first is *the* blocker):
 1. **`export GEMINI_CLI_TRUST_WORKSPACE=true`** (or trust the folder once). An untrusted workspace
@@ -130,7 +133,7 @@ run. Reset it with a "forget the reviewers" request.
 
 - `commands/multi-review.md` — the `/multi-review` command
 - `docs/multi-review.md` — the star protocol contract (also vendored into the reviewer skill)
-- `.agents/skills/multi-review/` — the self-contained reviewer skill (needed only for `codex`)
+- `.agents/skills/multi-review/` — the self-contained reviewer skill, auto-provisioned into consumer repos for `codex` (git-ignored)
 - `.claude-plugin/plugin.json` — plugin manifest
 - `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / compose
 - `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / verify-vendor / vendor-of-model
