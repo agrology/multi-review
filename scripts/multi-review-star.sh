@@ -425,6 +425,92 @@ cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored f
   done <<< "$t"
 }
 
+# --- doc↔manifest consistency (issue #16) ----------------------------------
+# Returns 0 iff the doc is internally well-formed AND matches its .manifest;
+# nonzero with a specific stderr message otherwise. Reused by the `verify`
+# subcommand and as a self-check at both ends of `merge`, so operator- or
+# merge-introduced corruption fails loud at the handoff instead of accumulating
+# silently to the terminal gate. Does NOT require convergence/coverage — open
+# findings (no response yet) are a normal mid-review state.
+_structural_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
+  local doc="$1"
+  [[ -f "$doc" ]] || { echo "multi-review-star: verify: doc not found: $doc" >&2; return 1; }
+  # grammar — catches a finding split from its > — via/risk lines and a response to an unknown
+  # finding id (issue #16 symptoms 1 & 3-orphan). Capture the parsed table: it is the AUTHORITATIVE
+  # list of findings the rest of the tool (open-findings, coverage, gate-summary) can see.
+  local tbl; tbl="$(_table "$doc")" || return 1
+  # a merged doc always has a manifest.
+  [[ -f "${doc}.manifest" ]] || { echo "multi-review-star: verify: no manifest (never merged): ${doc}.manifest" >&2; return 1; }
+
+  # Fence-stripped review section, computed once and reused by the footer/quarantine checks so they
+  # never grep raw doc content (a fenced diff / prose look-alike must not be seen as a live record).
+  local review; review="$(review_section "$doc" | strip_fences /dev/stdin)"
+
+  # (b) finding-id set: compare the _table-PARSED ids (NOT a raw grep) against the manifest. A raw
+  #     grep accepts an id outside _table's [A-Za-z0-9_-] grammar that the manifest records but
+  #     _table cannot see — recorded-yet-unadjudicated, invisible to open-findings/coverage/gate —
+  #     which would let the terminal gate fail OPEN (#17-refix3 high). Sourcing present-ids from
+  #     _table makes such an id a manifest/doc mismatch → fail closed.
+  local present manifest_ids
+  present="$(printf '%s\n' "$tbl" | awk -F'\t' 'NF{print $1}' | sort -u)"
+  manifest_ids="$(awk '$1=="finding"{sub(/=.*/,"",$2); print $2}' "${doc}.manifest" | sort -u)"
+  if [[ "$present" != "$manifest_ids" ]]; then
+    echo "multi-review-star: verify: doc findings do not match manifest (a round may have been dropped or added):" >&2
+    comm -3 <(printf '%s\n' "$present") <(printf '%s\n' "$manifest_ids") \
+      | awk -F'\t' 'NF==2{print "  manifest-only: " $2} NF==1{print "  doc-only: " $1}' >&2
+    return 1
+  fi
+  # (c) each present finding's block bytes are unchanged since merge.
+  local id want got
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    want="$(awk -v i="$id" '$1=="finding" && index($2, i"=")==1 {sub(/^[^=]*=/,"",$2); print $2}' "${doc}.manifest")"
+    got="$(finding_block_hash "$doc" "$id")"
+    [[ "$want" == "$got" ]] || { echo "multi-review-star: verify: finding block changed since merge: $id" >&2; return 1; }
+  done <<< "$present"
+  # footer shape (best-effort). The footer is an UNTRUSTED mirror — real integrity is the manifest
+  # checks above and (d) below — so this is a cheap shape guard for the fused/truncated/deleted
+  # footer corruption, NOT a complete footer-integrity check (a count-preserving swap or a dry
+  # round's footer deletion is out of scope; #17 codex-r1). Count well-formed footers vs the
+  # highest manifest round; do NOT grep for the "; quarantined:" sentinel (it appears legitimately
+  # in finding text / a fenced diff; #17 r1). Round parsed with match(/-rd[0-9]+/) — the FIRST
+  # "-rd<n>" — robust to a hyphenated provider (#17 gemini) and to a later "-rd<n>" substring in a
+  # namespaced id (e.g. codex-rd1-guard-rd2; #17 fable/gemini); a greedy or [^-]*-anchored parse
+  # mis-read the round and could false-fail or (via a spoofed "-rd0") bypass this guard.
+  local nfooters nrounds
+  nfooters="$(printf '%s\n' "$review" | grep -cE '^<!-- star-findings: .*-->$')"
+  nrounds="$(awk '$1=="finding" || $1=="quarantine" { if (match($2, /-rd[0-9]+/)) print substr($2, RSTART+3, RLENGTH-3)+0 }' "${doc}.manifest" | sort -un | tail -1)"
+  nrounds="${nrounds:-0}"
+  if [[ "$nfooters" -lt "$nrounds" ]]; then
+    echo "multi-review-star: verify: $nfooters well-formed footers but $nrounds rounds merged — a footer is fused, truncated, or deleted" >&2
+    return 1
+  fi
+  # (d) quarantine records: every manifest quarantine entry must have a matching durable record in
+  # the (fence-stripped) review section, unchanged. Matched by HASH-MEMBERSHIP: accept iff SOME
+  # star-quarantined line hashes to the manifest hash. This can neither be shadowed by a fenced /
+  # different-text look-alike (fences stripped, and a spoof won't hash-match; #17 r2) nor fooled by
+  # ordering (no head -1). Same helper the terminal gate uses (guard (d)) — one implementation, so
+  # handoff and gate can never diverge (#17: they did, and that was a bug).
+  local qentry qkey qwant qok qline
+  while IFS= read -r qentry; do
+    [[ -z "$qentry" ]] && continue
+    qkey="${qentry%%=*}"; qwant="${qentry#*=}"; qok=0
+    while IFS= read -r qline; do
+      [[ -z "$qline" ]] && continue
+      [[ "$(printf '%s' "$qline" | sha)" == "$qwant" ]] && { qok=1; break; }
+    done < <(printf '%s\n' "$review" | grep -E '^<!-- star-quarantined: ')
+    [[ "$qok" == "1" ]] || { echo "multi-review-star: verify: quarantine record missing or tampered for ${qkey}" >&2; return 1; }
+  done < <(awk '$1=="quarantine"{print $2}' "${doc}.manifest")
+  return 0
+}
+
+cmd_verify() { # <doc> -> 0 + summary if consistent; else nonzero (message on stderr)
+  local doc="${1:?doc}"
+  _structural_consistency "$doc" || exit 1
+  local nf; nf="$(awk '$1=="finding"{c++} END{print c+0}' "${doc}.manifest")"
+  echo "verify: ${doc} consistent — ${nf} findings, doc matches manifest"
+}
+
 cmd_merge() {
   local round="" doc="" copies=() quarantined=()
   while [[ $# -gt 0 ]]; do
@@ -436,6 +522,14 @@ cmd_merge() {
   done
   [[ "$round" =~ ^[0-9]+$ ]] || die "--round <N> required (integer)" 2
   [[ -n "$doc" && -f "$doc" ]] || die "merge: doc not found: ${doc:-<none>}" 1
+
+  # Refuse to merge onto a doc already inconsistent with its manifest — fail loud at THIS
+  # handoff rather than compounding the corruption into later rounds (issue #16). Round 1 has
+  # no manifest yet, so this is a no-op there.
+  if [[ -f "${doc}.manifest" ]]; then
+    _structural_consistency "$doc" \
+      || die "merge: refusing to merge — '$doc' is inconsistent with its manifest (run: $(basename "$0") verify '$doc')" 1
+  fi
 
   local block="" copy provider
   for copy in "${copies[@]}"; do
@@ -498,6 +592,14 @@ cmd_merge() {
 
   # in-doc human-readable mirror (NOT trusted for integrity — see check-converged)
   printf '<!-- star-findings: %s; quarantined: %s -->\n' "${mirror% }" "${qmirror% }" >> "$doc"
+
+  # Post-merge self-check: the doc + manifest we just wrote must be mutually consistent (issue #16).
+  # This can only fail on a genuine merge bug (a correct merge writes a consistent doc), so — like
+  # the terminal gate's own guardrail — we FAIL LOUD and leave the doc as-is for diagnosis rather
+  # than rolling back (an earlier rollback attempt was itself a data-loss hazard; #17). The pre-check
+  # already prevents building on pre-existing corruption.
+  _structural_consistency "$doc" \
+    || die "merge: post-merge self-check failed for '$doc' — the merge produced an inconsistent state; left in place for diagnosis" 1
 }
 
 cmd_check_converged() {
@@ -509,46 +611,18 @@ cmd_check_converged() {
   mstate="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $1}')"
   [[ "$mstate" == "converged" ]] || exit 1
 
-  # parse table (also enforces grammar); a contract violation -> not converged
+  # Structural consistency — the SAME helper the handoff self-check (verify/merge) uses: grammar,
+  # finding id-set, per-finding block hashes, footer shape, and quarantine-record integrity. One
+  # implementation, so the terminal gate and the handoff can never diverge (#17: they did — verify's
+  # quarantine check got fence-scoped while this one didn't — and that was a bug). Silent: this
+  # command signals only via exit code.
+  _structural_consistency "$doc" >/dev/null 2>&1 || exit 1
+
+  # parse the table for the convergence-only checks below (grammar already validated above)
   t="$(_table "$doc")" || exit 1
 
   # (a) coverage: every finding has exactly one response (state != open)
   printf '%s\n' "$t" | awk -F'\t' '$3 == "open" { exit 1 }' || exit 1
-
-  # (b) id-set: present finding ns-ids == manifest finding ns-ids
-  local present manifest_ids
-  present="$(printf '%s\n' "$t" | awk -F'\t' 'NF{print $1}' | sort -u)"
-  manifest_ids="$(awk '$1=="finding"{sub(/=.*/,"",$2); print $2}' "${doc}.manifest" | sort -u)"
-  [[ "$present" == "$manifest_ids" ]] || exit 1
-
-  # (c) content: each present finding block hash == manifest hash (r14)
-  local id want got
-  while IFS= read -r id; do
-    [[ -z "$id" ]] && continue
-    want="$(awk -v i="$id" '$1=="finding" && index($2, i"=")==1 {sub(/^[^=]*=/,"",$2); print $2}' "${doc}.manifest")"
-    got="$(finding_block_hash "$doc" "$id")"
-    [[ "$want" == "$got" ]] || exit 1
-  done <<< "$present"
-
-  # (d) quarantine: every manifest quarantine record must still be present in the doc AND its
-  #     content unchanged — hash the present record and compare to the manifest hash. Presence
-  #     alone (grep) is insufficient: the reason or round could be tampered without failing (r5).
-  #     The manifest key is round-qualified (<provider>-rd<round>) since the same provider can
-  #     be quarantined in more than one round — split the key back into provider/round so we
-  #     grep THAT round's specific record, not just the first record for the provider.
-  #     Reads via process substitution so the while loop runs IN THIS shell (a pipe subshell
-  #     cannot set qmiss). Same newline-free hashing merge used (`printf '%s' | sha`).
-  local qentry qkey qp qround qwant qline qgot qmiss=0
-  while IFS= read -r qentry; do
-    [[ -z "$qentry" ]] && continue
-    qkey="${qentry%%=*}"; qwant="${qentry#*=}"
-    qp="${qkey%-rd*}"; qround="${qkey##*-rd}"
-    qline="$(grep -E "^<!-- star-quarantined: ${qp} · .* · round ${qround} -->$" "$doc" | head -1)"
-    [[ -n "$qline" ]] || { qmiss=1; break; }            # record deleted (r15/r16)
-    qgot="$(printf '%s' "$qline" | sha)"
-    [[ "$qwant" == "$qgot" ]] || { qmiss=1; break; }     # record text tampered (r5)
-  done < <(awk '$1=="quarantine"{print $2}' "${doc}.manifest")
-  [[ $qmiss -eq 0 ]] || exit 1
 
   # (e) single primary (c1): every response must come from the SAME model. Guard (a) already
   #     requires one response per finding and _table's self-response guard already blocks a
@@ -699,6 +773,7 @@ main() {
     open-findings) cmd_open_findings "$@" ;;
     observations) cmd_observations "$@" ;;
     merge) cmd_merge "$@" ;;
+    verify) cmd_verify "$@" ;;
     check-converged) cmd_check_converged "$@" ;;
     gate-summary) cmd_gate_summary "$@" ;;
     compose-review) cmd_compose_review "$@" ;;

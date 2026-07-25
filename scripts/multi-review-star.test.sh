@@ -760,6 +760,149 @@ printf 'codex\n' > "$RS"
 MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" remember-set --pref-file "$RS" --clear >/dev/null 2>&1
 [[ ! -e "$RS" ]] && ok "remember-set --clear: ignores env guard" || bad "clear blocked by env guard"
 
+# ============================================================================
+# verify subcommand + merge self-check (issue #16): doc↔manifest inconsistency
+# must fail loud at the handoff, not accumulate silently to the terminal gate.
+# ============================================================================
+mkbase() { { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$1"; }
+
+VB="${WORK}/vfy.md"; mkbase "$VB"
+mkcopy "${VB}.codex"  '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+mkcopy "${VB}.gemini" '> [finding:r1|med] beta'   '> — via gemini'  '> — risk: rb'
+bash "$SUT" merge --round 1 "$VB" "${VB}.codex" "${VB}.gemini" >/dev/null 2>&1
+
+# clean merged doc verifies
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && ok "verify: clean merged doc passes" || bad "verify rejected a clean doc"
+
+# dropped finding (doc missing an id the manifest lists) -> fail
+cp "$VB" "${VB}.bak"
+grep -v -e '\[finding:gemini-rd1-r1' -e '^> — via gemini$' -e '^> — risk: rb$' "${VB}.bak" > "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed a dropped finding" || ok "verify: detects a dropped finding (doc≠manifest id-set)"
+cp "${VB}.bak" "$VB"
+
+# tampered finding block (same id, changed text) -> hash mismatch -> fail
+cp "$VB" "${VB}.bak"
+sed 's/alpha/ALPHA-TAMPERED/' "${VB}.bak" > "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed a tampered finding block" || ok "verify: detects a tampered finding block (hash mismatch)"
+cp "${VB}.bak" "$VB"
+
+# orphaned response (grammar violation) -> fail
+cp "$VB" "${VB}.bak"
+printf '\n> [agree:no-such-finding]\n> — via primary-model\n' >> "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed an orphaned response" || ok "verify: detects an orphaned response (grammar)"
+cp "${VB}.bak" "$VB"
+
+# malformed/fused footer (star-findings prefix lost) -> fail
+cp "$VB" "${VB}.bak"
+sed 's/^<!-- star-findings: /> — via x/' "${VB}.bak" > "$VB"
+bash "$SUT" verify "$VB" >/dev/null 2>&1 && bad "verify missed a malformed footer" || ok "verify: detects a malformed/fused footer"
+cp "${VB}.bak" "$VB"; rm -f "${VB}.bak"
+
+# merge refuses to build on an already-inconsistent doc (start self-check) — this is the
+# guard that would have caught issue #16 at the next round instead of at the gate.
+MB="${WORK}/mchk.md"; mkbase "$MB"
+mkcopy "${MB}.codex" '> [finding:r1|high] one' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$MB" "${MB}.codex" >/dev/null 2>&1
+# corrupt: drop the round-1 finding block from the doc (manifest still lists it)
+grep -v -e '\[finding:codex-rd1-r1' -e '^> — via gpt-5.5$' -e '^> — risk: r$' "$MB" > "${MB}.t" && mv "${MB}.t" "$MB"
+mkcopy "${MB}.codex" '> [finding:r1|low] two' '> — via gpt-5.5' '> — risk: r'
+before="$(shasum "$MB" | cut -d' ' -f1)"
+bash "$SUT" merge --round 2 "$MB" "${MB}.codex" >/dev/null 2>&1; rc=$?
+after="$(shasum "$MB" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$before" == "$after" ]] && ok "merge: refuses to build on an inconsistent doc (start self-check)" || bad "merge built on a corrupted doc (rc=$rc)"
+
+# a clean multi-round merge still succeeds end-to-end (self-checks don't break the happy path)
+CB="${WORK}/mok.md"; mkbase "$CB"
+mkcopy "${CB}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$CB" "${CB}.codex" >/dev/null 2>&1
+mkcopy "${CB}.codex" '> [finding:r1|low] b' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 2 "$CB" "${CB}.codex" >/dev/null 2>&1 \
+  && bash "$SUT" verify "$CB" >/dev/null 2>&1 \
+  && ok "merge: clean 2-round merge passes self-checks + verify" || bad "self-check broke the happy path"
+
+# (#17 gemini-r1/fable-r1, HIGH) the "; quarantined:" literal in a finding's text OR a fenced diff
+# must NOT false-positive the footer check — otherwise the tool cannot review its own PR.
+FP="${WORK}/fp.md"; mkbase "$FP"
+mkcopy "${FP}.codex" '> [finding:r1|med] the footer check must ignore the "; quarantined:" tail written here' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$FP" "${FP}.codex" >/dev/null 2>&1 \
+  && ok "merge: a finding whose text contains '; quarantined:' merges (no self-check false-positive)" \
+  || bad "merge false-positived on a legit '; quarantined:' in finding text (#17 r1)"
+printf '\n```\n+  grep -n "; quarantined:" "$doc"\n```\n' >> "$FP"   # a fenced diff carrying the sentinel
+bash "$SUT" verify "$FP" >/dev/null 2>&1 \
+  && ok "verify: '; quarantined:' in finding text / fenced diff does NOT false-positive (#17 r1)" \
+  || bad "verify false-positived on a legit '; quarantined:' mention (#17 r1)"
+
+# (#17 codex-r1/fable-r2, MED) verify validates manifest quarantine records like check-converged (d)
+QV="${WORK}/qv.md"; mkbase "$QV"
+mkcopy "${QV}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QV" "${QV}.codex" >/dev/null 2>&1
+bash "$SUT" verify "$QV" >/dev/null 2>&1 && ok "verify: clean doc with a quarantine record passes" || bad "verify rejected a clean quarantined doc"
+cp "$QV" "${QV}.bak"
+grep -v '^<!-- star-quarantined:' "${QV}.bak" > "$QV"
+bash "$SUT" verify "$QV" >/dev/null 2>&1 && bad "verify missed a deleted quarantine record" || ok "verify: detects a deleted quarantine record (#17 codex-r1/fable-r2)"
+sed 's/identity-fail/tampered-reason/' "${QV}.bak" > "$QV"
+bash "$SUT" verify "$QV" >/dev/null 2>&1 && bad "verify missed a tampered quarantine record" || ok "verify: detects a tampered quarantine record"
+rm -f "${QV}.bak"
+
+# (#17 fable-r3, LOW) a deleted/truncated footer is caught by the count, not the (now-gone) tail grep
+FD="${WORK}/fd.md"; mkbase "$FD"
+mkcopy "${FD}.codex" '> [finding:r1|med] x' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$FD" "${FD}.codex" >/dev/null 2>&1
+grep -v '^<!-- star-findings:' "$FD" > "${FD}.t" && mv "${FD}.t" "$FD"
+bash "$SUT" verify "$FD" >/dev/null 2>&1 && bad "verify missed a deleted footer" || ok "verify: detects a deleted footer via count (#17 fable-r3)"
+
+# (#17-refix gemini-r1/fable-r1, HIGH) a finding whose ORIGINAL id contains a "-rd<n>" substring
+# (namespaced to e.g. codex-rd1-guard-rd2) must not be mis-parsed as a later round by the
+# footer-count check — the round is parsed anchored to the provider prefix, not greedily.
+NR="${WORK}/nr.md"; mkbase "$NR"
+mkcopy "${NR}.codex" '> [finding:guard-rd2|med] this original id contains a -rd2 substring' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$NR" "${NR}.codex" >/dev/null 2>&1 \
+  && bash "$SUT" verify "$NR" >/dev/null 2>&1 \
+  && ok "verify: a finding id with nested '-rdN' is not mis-parsed as a later round (#17-refix r1)" \
+  || bad "footer-count mis-parsed a nested '-rdN' id — greedy regex regressed (#17-refix r1)"
+
+# (#17-refix fable-r2, MED) a fenced column-0 star-quarantined example (earlier in the doc) must
+# NOT shadow the real appended record — check(6) is scoped through review_section/strip_fences.
+QS="${WORK}/qs.md"
+{ echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; \
+  echo '```'; echo '<!-- star-quarantined: gemini · SPOOFED-DIFFERENT-TEXT · round 1 -->'; echo '```'; echo; \
+  echo "## Review"; echo; } > "$QS"
+mkcopy "${QS}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QS" "${QS}.codex" >/dev/null 2>&1 \
+  && bash "$SUT" verify "$QS" >/dev/null 2>&1 \
+  && ok "verify: a fenced star-quarantined example does not shadow the real record (#17-refix r2)" \
+  || bad "check(6) fence-blind: a fenced quarantine example shadowed the real record (#17-refix r2)"
+
+# (#17-refix2 codex-r1/fable-r1, HIGH) verify and check-converged must AGREE — they now share ONE
+# structural helper. A fenced star-quarantined look-alike EARLIER in the doc must not make the gate
+# reject a doc the handoff accepts (before the refactor, verify's quarantine check was fence-scoped
+# but check-converged's guard (d) was not → a doc could pass verify yet never converge).
+DV="${WORK}/dv.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 1/1 -->'; \
+  echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; \
+  echo '```'; echo '<!-- star-quarantined: gemini · SPOOF-EARLIER · round 1 -->'; echo '```'; echo; \
+  echo "## Review"; echo; } > "$DV"
+mkcopy "${DV}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$DV" "${DV}.codex" >/dev/null 2>&1
+printf '\n> [agree:codex-rd1-r1] ok\n> — via primary-x\n' >> "$DV"
+dv_v=$(bash "$SUT" verify "$DV" >/dev/null 2>&1; echo $?)
+dv_c=$(bash "$SUT" check-converged "$DV" >/dev/null 2>&1; echo $?)
+[[ "$dv_v" == "0" && "$dv_c" == "0" ]] \
+  && ok "verify and check-converged agree on a fenced-quarantine doc — no divergence (#17-refix2)" \
+  || bad "verify/check-converged diverge on a fenced-quarantine doc (verify=$dv_v check-converged=$dv_c)"
+
+# (#17-refix3 fable-r1, HIGH) fail CLOSED, not open: an id in the manifest that is outside _table's
+# grammar (e.g. contains '.') is invisible to open-findings/coverage/gate, so the consistency check
+# must reject it (present-ids sourced from _table, not a raw grep) rather than let it silently pass.
+FO="${WORK}/fo.md"; mkbase "$FO"
+mkcopy "${FO}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 "$FO" "${FO}.codex" >/dev/null 2>&1
+printf '\n> [finding:codex-rd1-r.2|high] this id has a dot — invisible to _table\n> — via x\n> — risk: r\n' >> "$FO"
+echo 'finding codex-rd1-r.2=deadbeefdeadbeef' >> "${FO}.manifest"
+bash "$SUT" verify "$FO" >/dev/null 2>&1 \
+  && bad "verify FAILED OPEN: an ungrammatical manifest id passed (#17-refix3 r1)" \
+  || ok "verify: fails closed on a manifest id invisible to _table's grammar (#17-refix3 r1)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
