@@ -472,7 +472,41 @@ cmd_ensure_skill() { # --reviewer <id> [--repo <dir>]
   row="$(resolve_row "$@")" || exit 2
   id="$(field "$row" 1)"; has_skill="$(field "$row" 5)"
   [[ "$has_skill" == "yes" ]] || return 0   # skill-less reviewers: nothing to provision
-  return 0                                    # guards (Task 2) + materialize (Task 3) added next
+
+  local src repo repo_c
+  src="$(canon "${ROOT}/${SKILL_REL}")"
+  [[ -n "$src" && -f "${src}/SKILL.md" ]] || die "plugin skill bundle missing at ${ROOT}/${SKILL_REL}" 1
+  repo="${repo_override:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT")}"
+  repo_c="$(canon "$repo")"; [[ -n "$repo_c" ]] || die "cannot resolve repo root: $repo" 1
+
+  # a symlinked .agents that escapes the repo would let mkdir/cp write out of tree — refuse first
+  if [[ -L "${repo_c}/.agents" ]]; then
+    local ag; ag="$(canon "${repo_c}/.agents")"
+    case "${ag}/" in "${repo_c%/}/"*) : ;; *) die "refusing: ${repo_c}/.agents is a symlink outside the repo" 1 ;; esac
+  fi
+  mkdir -p "${repo_c}/.agents/skills" || die "cannot create ${repo_c}/.agents/skills" 1
+  local skills_c; skills_c="$(canon "${repo_c}/.agents/skills")"
+  [[ -n "$skills_c" ]] || die "cannot resolve ${repo_c}/.agents/skills" 1
+  case "${skills_c}/" in "${repo_c%/}/"*) : ;; *) die "refusing: .agents/skills resolves outside ${repo_c}" 1 ;; esac
+  local dst="${skills_c}/multi-review"
+
+  # src == dst -> no-op (plugin repo itself / non-git fallback to ROOT)
+  local dst_c; dst_c="$(canon "$dst")"
+  [[ -n "$dst_c" && "$dst_c" == "$src" ]] && return 0
+  # an existing dst must be a real dir directly under skills_c (reject a symlinked leaf)
+  if [[ -n "$dst_c" ]]; then
+    case "${dst_c}/" in "${skills_c%/}/multi-review/") : ;; *) die "refusing: ${dst} resolves outside ${skills_c}" 1 ;; esac
+  fi
+
+  # a git-tracked copy -> no-op (capture then test; avoids grep -q SIGPIPE under pipefail)
+  local tracked; tracked="$(git -C "$repo_c" ls-files -- "$SKILL_REL" 2>/dev/null)"
+  [[ -n "$tracked" ]] && return 0
+
+  # untracked, non-marker dir -> refuse (never destroy the user's files)
+  [[ -e "$dst" && ! -f "${dst}/${SKILL_MARKER}" ]] \
+    && die "untracked files at ${dst} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning" 1
+
+  return 0   # materialize added in Task 3
 }
 
 # --- dispatch -------------------------------------------------------------

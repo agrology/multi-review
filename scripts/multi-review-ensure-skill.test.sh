@@ -27,3 +27,31 @@ r="$(newrepo)"
 ( cd "$r" && bash "$SUT" ensure-skill --reviewer nope ) 2>/dev/null; [[ $? == 2 ]] && ok "unknown provider -> 2" || bad "unknown not 2"
 ( cd "$r" && bash "$SUT" ensure-skill ) 2>/dev/null; [[ $? == 2 ]] && ok "missing --reviewer -> 2" || bad "missing --reviewer not 2"
 ( cd "$r" && bash "$SUT" ensure-skill --reviewer codex --repo ) 2>/dev/null; [[ $? == 2 ]] && ok "--repo no value -> 2" || bad "--repo no value not 2"
+
+# helper: a throwaway clone of the plugin so src==dst can be exercised safely
+plugin_clone() { local c; c="$(mktemp -d "${WORK}/plug.XXXXXX")"; rm -rf "$c"; \
+  git clone -q --local "$PLUGIN" "$c"; echo "$c"; }
+
+# --- src==dst (inside a *disposable clone* of the plugin) is a no-op; bundle untouched ---
+c="$(plugin_clone)"
+( cd "$c" && bash "$c/scripts/multi-review-reviewer.sh" ensure-skill --reviewer codex ); rc=$?
+[[ "$rc" == 0 ]] && ok "src==dst (clone) exits 0" || bad "src==dst rc=$rc"
+[[ ! -f "$c/$SKILL_REL/$MARKER" ]] && ok "clone bundle not marker-stamped" || bad "clobbered clone bundle"
+
+# --- a git-tracked copy is left untouched (no-op) ---
+r="$(newrepo)"; mkdir -p "$r/$SKILL_REL"; echo MINE > "$r/$SKILL_REL/SKILL.md"
+git -C "$r" add -f "$SKILL_REL/SKILL.md"; git -C "$r" commit -qm seed
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ); rc=$?
+[[ "$rc" == 0 && "$(cat "$r/$SKILL_REL/SKILL.md")" == MINE ]] && ok "tracked copy untouched" || bad "tracked modified (rc=$rc)"
+
+# --- an untracked non-marker dir is REFUSED (exit 1), not deleted ---
+r="$(newrepo)"; mkdir -p "$r/$SKILL_REL"; echo WIP > "$r/$SKILL_REL/mywork.txt"
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ) 2>/dev/null; rc=$?
+[[ "$rc" == 1 ]] && ok "untracked non-marker -> 1" || bad "refuse rc=$rc (want 1)"
+[[ -f "$r/$SKILL_REL/mywork.txt" ]] && ok "user's untracked file preserved" || bad "DESTROYED user file"
+
+# --- symlinked .agents escaping the repo is REFUSED ---
+r="$(newrepo)"; outside="$(mktemp -d "${WORK}/outside.XXXXXX")"; ln -s "$outside" "$r/.agents"
+( cd "$r" && bash "$SUT" ensure-skill --reviewer codex ) 2>/dev/null; rc=$?
+[[ "$rc" == 1 ]] && ok "symlinked .agents escape refused" || bad "escape rc=$rc (want 1)"
+[[ ! -e "$outside/skills/multi-review" ]] && ok "nothing written outside repo" || bad "wrote outside repo"
