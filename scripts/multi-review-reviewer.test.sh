@@ -36,9 +36,11 @@ grep -qi 'required' <<<"$err" && ok "resolve no-flag error explains --reviewer i
   || bad "resolve no-flag error unclear: '$err'"
 
 # --- resolve: codex's own default model is overridable (nothing is unoverridable) ---
-out="$(bash "$SUT" resolve --reviewer codex 2>/dev/null)"; rc=$?
+# Clear MULTI_REVIEW_REVIEWER_MODEL from the inherited env: the default-row assertion below
+# must test the built-in default, not a value a developer happens to export in their shell.
+out="$(env -u MULTI_REVIEW_REVIEWER_MODEL bash "$SUT" resolve --reviewer codex 2>/dev/null)"; rc=$?
 [[ "$rc" == 0 ]] && ok "resolve --reviewer codex exits 0" || bad "resolve rc=$rc (want 0)"
-[[ "$out" == "codex|openai|subagent|gpt-5.5|yes" ]] \
+[[ "$out" == "codex|openai|subagent|gpt-5.6-terra|yes" ]] \
   && ok "codex falls back to its documented default model" || bad "codex default row was '$out'"
 out="$(MULTI_REVIEW_REVIEWER_MODEL=gpt-9-turbo bash "$SUT" resolve --reviewer codex 2>/dev/null)"
 [[ "$out" == "codex|openai|subagent|gpt-9-turbo|yes" ]] \
