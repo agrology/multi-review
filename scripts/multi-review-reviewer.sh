@@ -104,6 +104,11 @@ gitignore_disabled() { # <settings-file> -> 0 if "respectGitIgnore":false is pre
   tr -d '[:space:]' < "$1" | tr '[:upper:]' '[:lower:]' | grep -q '"respectgitignore":false'
 }
 
+# Newline-separated path list -> one space-separated line. `printf %s`, never `echo`: a path that
+# begins with a dash (a doc dir literally named `-n`/`-e`) is eaten by echo as a flag, and the
+# hint would then name nothing while still claiming something is unreadable (PR#23 gemini-rd1-r3).
+fmt_paths() { printf '%s' "$1" | tr '\n' ' ' | sed 's/ *$//'; }
+
 # Which arming roots gemini-cli would REFUSE to open, given this repo's ignore rules.
 #
 # Readability is a constraint independent of auth: gemini-cli honors gitignore by default, so a
@@ -120,7 +125,12 @@ gitignore_disabled() { # <settings-file> -> 0 if "respectGitIgnore":false is pre
 gemini_unreadable_paths() { # <repo-root> -> ignored candidate paths, one per line
   local rr="$1" d
   git -C "$rr" rev-parse --git-dir >/dev/null 2>&1 || return 0   # not a repo: gitignore is moot
-  gitignore_disabled "${rr}/.gemini/settings.json" && return 0   # user already opted out of it
+  # Both scopes: gemini-cli merges the USER-scoped ~/.gemini/settings.json with the workspace
+  # one, so a user-level opt-out makes the docs readable everywhere. Checking only the workspace
+  # file would fire on a correctly-configured machine — the same cry-wolf false positive this
+  # check exists to remove. ${HOME:-} guards a legitimately-unset HOME under `set -u`.
+  gitignore_disabled "${rr}/.gemini/settings.json" && return 0
+  gitignore_disabled "${HOME:-}/.gemini/settings.json" && return 0
   # MULTI_REVIEW_DOC_DIRS is space-separated by design (word-split here) — same contract as
   # multi-review-egress-guard.sh; individual dirs cannot contain spaces.
   #
@@ -130,7 +140,9 @@ gemini_unreadable_paths() { # <repo-root> -> ignored candidate paths, one per li
   # slash form matches both pattern shapes, so it is the only one correct in all cases.
   # shellcheck disable=SC2086
   for d in ${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans} .multi-review; do
-    git -C "$rr" check-ignore -q -- "${d%/}/" 2>/dev/null && echo "$d"
+    # `printf`, not `echo` — same dash-eating hazard fmt_paths documents, one level down: a dir
+    # named `-n`/`-e` would be consumed as a flag and silently vanish from the list.
+    git -C "$rr" check-ignore -q -- "${d%/}/" 2>/dev/null && printf '%s\n' "$d"
   done
   return 0
 }
@@ -183,7 +195,7 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
         || hint gemini "no API key source — put GEMINI_API_KEY in ~/.gemini/.env (or your repo's .env)"
       local unreadable; unreadable="$(gemini_unreadable_paths "$rr")"
       [[ -z "$unreadable" ]] \
-        || hint gemini "gemini will refuse to read a review doc under $(echo "$unreadable" | tr '\n' ' ' | sed 's/ $//') — git-ignored in this repo, and gemini-cli honors gitignore. Set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
+        || hint gemini "gemini will refuse to read a review doc under $(fmt_paths "$unreadable") — git-ignored in this repo, and gemini-cli honors gitignore. Set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
       ;;
     *)
       die "no availability check defined for reviewer provider '${id}'" 2 ;;
@@ -505,7 +517,7 @@ cmd_doctor() {
       unread="$(gemini_unreadable_paths "$rr")"
       gemini_live_probe && probe_ok=1
       if (( probe_ok )) && [[ -n "$unread" ]]; then
-        echo "△ gemini: ${GEMINI_PROBE_MSG}, but it cannot read a review doc under $(echo "$unread" | tr '\n' ' ' | sed 's/ $//')"
+        echo "△ gemini: ${GEMINI_PROBE_MSG}, but it cannot read a review doc under $(fmt_paths "$unread")"
         echo "    git-ignored in this repo, and gemini-cli honors gitignore."
         echo "    fix: set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
       elif (( probe_ok )); then

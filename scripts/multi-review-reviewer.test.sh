@@ -732,6 +732,30 @@ out="$(cd "$RREPO" && HOME="$RREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DB
 grep -qE '✓ gemini: ready' <<<"$out" \
   && ok "doctor: back to ready once readability is fixed" || bad "doctor: still downgraded after fix: '$out'"
 
+# (d2) gemini-cli merges the USER-scoped ~/.gemini/settings.json over the workspace one, so a
+# user-level opt-out makes the docs readable too. Consulting only the workspace file reintroduces
+# exactly the cry-wolf false positive this check exists to remove (PR#23 fable-rd1-r1).
+rm -f "$RREPO/.gemini/settings.json"
+mkdir -p "$RREPO/home/.gemini"
+printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/home/.gemini/settings.json"
+err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+! grep -qi 'respectGitIgnore' <<<"$err" \
+  && ok "check gemini: user-scoped ~/.gemini/settings.json clears the readability hint" \
+  || bad "check gemini: ignored the user-scoped opt-out: '$err'"
+out="$(cd "$RREPO" && HOME="$RREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qE '✓ gemini: ready' <<<"$out" \
+  && ok "doctor: ready under a user-scoped opt-out" || bad "doctor still downgraded under user-scoped opt-out: '$out'"
+rm -rf "$RREPO/home/.gemini"
+
+# (f) a doc dir literally named `-n`/`-e` must not be swallowed: `echo "$list"` would eat it as a
+# flag and silently report nothing unreadable (PR#23 gemini-rd1-r3).
+RDASH="${WORK}/rdash"; mkdir -p "$RDASH"; ( cd "$RDASH" && git init -q )
+printf -- '-n/\n' > "$RDASH/.gitignore"
+err="$(cd "$RDASH" && HOME="$RDASH/home" MULTI_REVIEW_DOC_DIRS="-n" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qF -- '-n' <<<"$err" \
+  && ok "check gemini: a path named -n survives the hint's formatting" \
+  || bad "check gemini: echo swallowed the -n path: '$err'"
+
 # (e) PR mode reviews a scratch file under .multi-review/, which the plugin itself gitignores —
 # so that path is a readability blocker for gemini even when the doc dirs are clean.
 RPR="${WORK}/rpr"; mkdir -p "$RPR"; ( cd "$RPR" && git init -q )

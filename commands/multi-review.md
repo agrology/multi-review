@@ -282,10 +282,19 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    the per-round × per-provider counts, the trend, any dry streaks, and a `verdict:` line.
 
    **Adaptive re-fan-out** is the rule: re-fan **only while the round is `< MAX`, the previous
-   round produced ≥1 new admitted finding, AND the finding rate is still decaying**; converge as
-   soon as a round goes dry, the rate stops falling, or the ceiling is hit. The `verdict:` line
-   applies exactly this rule — follow it unless you have a specific reason not to, and say so if
-   you override it.
+   round produced ≥1 new admitted finding, AND the finding rate is still decaying** — round 1 is
+   excepted, having no prior round to compare against, so it re-fans whenever it found anything.
+   Converge as soon as a round goes dry, the rate stops falling, or the ceiling is hit. The
+   `verdict:` line applies exactly this rule — follow it unless you have a specific reason not
+   to, and say so if you override it.
+
+   Run `round-stats` **after the merge**, in this turn — it refuses to render a verdict while a
+   round is still in flight, because an unmerged round has no findings in the doc yet and would
+   read as dry.
+
+   A `↑ rising` round still stops the loop, but for a different reason than a plateau: the new
+   findings are most likely about the edits you just made, not the original doc. Say so at the
+   gate rather than presenting it as saturation.
 
    The decay condition is what makes stopping reachable: step 2 obliges you to address every
    agreed finding in the doc body, so the next round reviews text you wrote minutes ago. The

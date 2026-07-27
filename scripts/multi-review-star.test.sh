@@ -1002,6 +1002,52 @@ grep -qE '^rd2 .*codex q' <<<"$out" \
   && ok "round-stats: a quarantined round does not count toward a dry streak" \
   || bad "round-stats miscounted a quarantine as dry: '$out'"
 
+# a RISING rate is not the same signal as a flat one (PR#23 gemini-rd1-r2, fable-rd1-r3): both
+# stop the loop, but a rise can mean the primary's own edits introduced regressions, which the
+# human gate should be able to tell from mere saturation.
+RSUP="${WORK}/rs-rising.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 3/5 -->'
+  echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+  for i in a b c d e f g h i; do fnd fable 1 "$i"; done
+  for i in a b c d e f g; do fnd fable 2 "$i"; done
+  for i in a b c d e f g h i; do fnd fable 3 "$i"; done
+} > "$RSUP"
+out="$(bash "$SUT" round-stats "$RSUP" 2>&1)"
+grep -qE '^rd3 .*rising' <<<"$out" && ok "round-stats: marks a rising round distinctly" || bad "round-stats rising not labeled: '$out'"
+! grep -qE '^rd3 .*flat' <<<"$out" && ok "round-stats: a rising round is not labeled flat" || bad "round-stats called a rise flat: '$out'"
+if grep -qE '^verdict: converge' <<<"$out" && grep -qiE '^verdict:.*(rose|rising)' <<<"$out"; then
+  ok "round-stats: verdict distinguishes a rise from a plateau"
+else
+  bad "round-stats verdict conflates rise with flat: '$(grep '^verdict:' <<<"$out")'"
+fi
+
+# round-stats must refuse to render a verdict on an IN-FLIGHT round (PR#23 fable-rd1-r2). Called
+# on `awaiting-secondaries`, round N has fanned out but not merged, so it has no ns-ids yet — the
+# old code read that as zero and printed a confident "converge — round N went dry".
+RSIF="${WORK}/rs-inflight.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-secondaries · round 2/5 -->'
+  echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+  for i in a b c; do fnd fable 1 "$i"; done
+} > "$RSIF"
+out="$(bash "$SUT" round-stats "$RSIF" 2>&1)"; rc=$?
+[[ $rc -ne 0 ]] && ok "round-stats: in-flight round exits non-zero" || bad "round-stats accepted an in-flight round (rc=$rc)"
+! grep -qE '^verdict: (converge|re-fan)' <<<"$out" \
+  && ok "round-stats: emits no verdict for an in-flight round" \
+  || bad "round-stats gave a confident verdict mid-round: '$out'"
+grep -qi 'awaiting-secondaries\|in flight\|not merged' <<<"$out" \
+  && ok "round-stats: names why it refused" || bad "round-stats refusal unexplained: '$out'"
+
+# the states where a verdict IS meaningful still work
+for st in awaiting-primary converged exhausted; do
+  RSOK="${WORK}/rs-${st}.md"
+  { echo "# Doc"; echo "<!-- multi-review: ${st} · round 2/5 -->"
+    echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+    for i in a b c; do fnd fable 1 "$i"; done; fnd fable 2 a
+  } > "$RSOK"
+  bash "$SUT" round-stats "$RSOK" >/dev/null 2>&1 \
+    && ok "round-stats: accepts state ${st}" || bad "round-stats rejected valid state ${st}"
+done
+
 # missing doc / missing marker fail loud rather than reporting a confident empty table
 bash "$SUT" round-stats "${WORK}/nope.md" >/dev/null 2>&1 \
   && bad "round-stats accepted a missing doc" || ok "round-stats: missing doc fails loud"

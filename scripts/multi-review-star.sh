@@ -741,11 +741,21 @@ cmd_gate_summary() {
 # quarantined, and found nothing in ANY round is visible only via the hint — outside that, the
 # doc holds no record it ran.
 cmd_round_stats() {
-  local doc="${1:?doc}" marker round max t quar hintp
+  local doc="${1:?doc}" marker state round max t quar hintp
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   marker="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null)" \
     || die "no valid multi-review marker in: $doc" 1
+  state="$(awk '{print $1}' <<<"$marker")"
   round="$(awk '{print $2}' <<<"$marker")"; max="$(awk '{print $3}' <<<"$marker")"
+
+  # The state is not decoration — a verdict is only meaningful once the round's findings are
+  # merged. On `awaiting-secondaries` the current round has fanned out but merged nothing, so it
+  # carries no ns-ids; reading that as a zero count produced a confident
+  # "converge — round N went dry" for a round still in flight. Refuse loudly instead.
+  case "$state" in
+    awaiting-primary|converged|exhausted) : ;;
+    *) die "round-stats needs a merged round: marker says '${state}' (round ${round} is still in flight — nothing merged yet). Run it in the primary turn, after merge." 1 ;;
+  esac
   t="$(_table "$doc")" || die "round-stats: contract violation in $doc" 1
 
   # Canonical quarantine-record shape, same as gate-summary / check-converged guard (d).
@@ -790,7 +800,8 @@ cmd_round_stats() {
         if (r >= 2) {
           if (total == 0)          line = line "  ✗ dry"
           else if (total < prev)   line = line "  ↓ decaying"
-          else                     line = line "  → flat"
+          else if (total == prev)  line = line "  → flat"
+          else                     line = line "  ↑ rising"
         }
         print line
         tot[r] = total; prev = total
@@ -821,8 +832,14 @@ cmd_round_stats() {
         v = "re-fan — round 1, no trend yet"
       else if (last < before)
         v = "re-fan — the finding rate is still decaying (" before " → " last ")"
+      else if (last == before)
+        v = "converge — the finding rate went flat at round " rounds " (" before " → " last ")"
       else
-        v = "converge — the finding rate stopped decaying at round " rounds " (" before " → " last ")"
+        # A RISE is not saturation. It usually means the between-round edits made by the primary
+        # introduced new problems, so it stops the loop for a different reason than a plateau and
+        # the human gate should be able to tell the two apart. NB: no apostrophes in this awk
+        # program — it is single-quoted in the shell, and one would terminate it.
+        v = "converge — the finding rate ROSE at round " rounds " (" before " → " last "); the new findings most likely concern the between-round edits, not the original doc — review them at the gate"
       print "verdict: " v
     }'
 }

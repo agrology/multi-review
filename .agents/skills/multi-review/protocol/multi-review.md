@@ -108,7 +108,9 @@ convergence impossible.
 Round = one secondary fan-out pass + one primary adjudication pass. **Adaptive re-fan-out**:
 the primary re-enters `awaiting-secondaries` only while the round is still under `max`, the
 previous round produced at least one new admitted finding, **and the finding rate is still
-decaying**. It converges as soon as a round goes dry *or the rate stops falling*. At
+decaying** — round 1 excepted, since it has no prior round to compare against and so always
+re-fans if it found anything. It converges as soon as a round goes dry *or the rate stops
+falling*. At
 `round > max` the doc marker becomes `exhausted`. Convergence or exhaustion both stop the loop
 and present the annotated doc; a **human approves** before any implementation or PR.
 
