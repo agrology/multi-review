@@ -1117,6 +1117,50 @@ out="$(bash "$SUT" round-stats "$RSAQ" 2>&1)"
   && ok "round-stats: no went-dry verdict when nobody spoke" \
   || bad "round-stats converged on an all-quarantined round: '$(grep '^verdict:' <<<"$out")'"
 
+# Glyph and verdict must agree on what DRY means (PR#23 fable-rd4-r1). The round-3 fix put the
+# trend DIRECTION on the comparable subset but left dryness split: the glyph fired on the subset
+# sum, the verdict on the raw admitted total. A provider quarantined in r-1 returning in r with
+# findings drove the subset to zero while the round plainly found things — printing `✗ dry` above
+# a re-fan verdict. Dryness is "nothing was admitted at all" (raw); direction is the subset.
+RSDG="${WORK}/rs-dryglyph.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 2/5 -->'
+  echo '<!-- multi-review-mode: star · reviewers: codex -->'; echo; echo "## Review"; echo
+  fnd fable 1 a; fnd fable 1 b
+  for i in a b c; do fnd codex 2 "$i"; done
+  echo '<!-- star-quarantined: codex · dispatch-timeout · round 1 -->'
+} > "$RSDG"
+out="$(bash "$SUT" round-stats "$RSDG" 2>&1)"
+! grep -qE '^rd2 .*dry' <<<"$out" \
+  && ok "round-stats: a round with admitted findings is never glyphed dry" \
+  || bad "round-stats glyphed a non-empty round dry: '$(grep '^rd2' <<<"$out")'"
+
+# The dry caveat must key on a quarantine in THIS round, not on the two-round comparison window
+# (PR#23 gemini-rd4-r1) — otherwise a round-1 dry round can never be caveated at all, and a
+# quarantine in the PREVIOUS round wrongly caveats a cleanly-dry current one.
+RSD1="${WORK}/rs-dry-round1.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 1/5 -->'
+  echo '<!-- multi-review-mode: star · reviewers: codex -->'; echo; echo "## Review"; echo
+  echo '<!-- star-quarantined: codex · dispatch-timeout · round 1 -->'
+} > "$RSD1"
+out="$(bash "$SUT" round-stats "$RSD1" 2>&1)"
+grep -qiE '^verdict:.*quarantin' <<<"$out" \
+  && ok "round-stats: a round-1 dry round with a quarantine is caveated" \
+  || bad "round-stats round-1 dry not caveated: '$(grep '^verdict:' <<<"$out")'"
+
+RSD2="${WORK}/rs-dry-clean.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 3/5 -->'
+  echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+  for i in a b c; do fnd fable 1 "$i"; done
+  fnd fable 2 a
+  echo '<!-- star-quarantined: fable · dispatch-timeout · round 1 -->'
+} > "$RSD2"
+out="$(bash "$SUT" round-stats "$RSD2" 2>&1)"
+if grep -qE '^verdict: converge' <<<"$out" && ! grep -qiE '^verdict:.*quarantin' <<<"$out"; then
+  ok "round-stats: a cleanly-dry round is not caveated by an older quarantine"
+else
+  bad "round-stats caveated a clean dry round: '$(grep '^verdict:' <<<"$out")'"
+fi
+
 # missing doc / missing marker fail loud rather than reporting a confident empty table
 bash "$SUT" round-stats "${WORK}/nope.md" >/dev/null 2>&1 \
   && bad "round-stats accepted a missing doc" || ok "round-stats: missing doc fails loud"

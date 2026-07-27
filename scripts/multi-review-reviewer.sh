@@ -97,11 +97,30 @@ repo_root() { git rev-parse --show-toplevel 2>/dev/null || echo "$ROOT"; }
 # advisory hint -> stderr, distinct prefix so callers (doctor, the command) can grep/relay it.
 hint() { echo "multi-review-reviewer: hint ($1): $2" >&2; }
 
-# respectGitIgnore disabled in a settings.json? whitespace/case-tolerant text match, no jq.
-# Advisory/best-effort in both directions: may over/under-detect on pathological JSON.
-gitignore_disabled() { # <settings-file> -> 0 if "respectGitIgnore":false is present
-  [[ -f "$1" ]] || return 1
-  tr -d '[:space:]' < "$1" | tr '[:upper:]' '[:lower:]' | grep -q '"respectgitignore":false'
+# What a settings file SAYS about respectGitIgnore: "false", "true", or "" when it is silent.
+# Whitespace/case-tolerant text match, no jq — advisory/best-effort, may over/under-detect on
+# pathological JSON. The tri-state matters because the two scopes are ranked, not OR-ed: see
+# gitignore_respected. (Supersedes an earlier boolean gitignore_disabled, which could not
+# express "explicitly true" and so could not rank the scopes.)
+gitignore_setting() { # <settings-file> -> false | true | (empty)
+  [[ -f "$1" ]] || return 0
+  local norm; norm="$(tr -d '[:space:]' < "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$norm" in
+    *'"respectgitignore":false'*) echo false ;;
+    *'"respectgitignore":true'*)  echo true ;;
+    *)                            : ;;
+  esac
+}
+
+# Does gemini-cli honor gitignore here? WORKSPACE settings take precedence over user settings, so
+# the scopes are ranked rather than OR-ed: a workspace file that explicitly sets
+# respectGitIgnore:true overrides a user-scope false. OR-ing them cleared the blocker in exactly
+# that case and reported "ready" for a reviewer that would still refuse the docs.
+gitignore_respected() { # <repo-root> -> 0 if gitignore IS honored (i.e. a real blocker)
+  local v
+  v="$(gitignore_setting "$1/.gemini/settings.json")"
+  [[ -z "$v" ]] && v="$(gitignore_setting "${HOME:-}/.gemini/settings.json")"
+  [[ "$v" != "false" ]]        # default (silent) is honor-gitignore
 }
 
 # Newline-separated path list -> one space-separated line. `printf %s`, never `echo`: a path that
@@ -125,12 +144,11 @@ fmt_paths() { printf '%s' "$1" | tr '\n' ' ' | sed 's/ *$//'; }
 gemini_unreadable_paths() { # <repo-root> -> ignored candidate paths, one per line
   local rr="$1" d
   git -C "$rr" rev-parse --git-dir >/dev/null 2>&1 || return 0   # not a repo: gitignore is moot
-  # Both scopes: gemini-cli merges the USER-scoped ~/.gemini/settings.json with the workspace
-  # one, so a user-level opt-out makes the docs readable everywhere. Checking only the workspace
-  # file would fire on a correctly-configured machine — the same cry-wolf false positive this
-  # check exists to remove. ${HOME:-} guards a legitimately-unset HOME under `set -u`.
-  gitignore_disabled "${rr}/.gemini/settings.json" && return 0
-  gitignore_disabled "${HOME:-}/.gemini/settings.json" && return 0
+  # Both scopes, RANKED (workspace wins) — see gitignore_respected. A user-level opt-out makes
+  # the docs readable everywhere unless the workspace overrides it, so checking only the
+  # workspace file would fire on a correctly-configured machine, and OR-ing the two would stay
+  # silent when the workspace explicitly re-enables gitignore.
+  gitignore_respected "$rr" || return 0
   # MULTI_REVIEW_DOC_DIRS is space-separated by design (word-split here) — same contract as
   # multi-review-egress-guard.sh; individual dirs cannot contain spaces.
   #

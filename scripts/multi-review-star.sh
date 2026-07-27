@@ -804,6 +804,11 @@ cmd_round_stats() {
       # The trend must compare LIKE WITH LIKE. Raw totals move with the admitted-provider set, so
       # a single quarantine can make a still-decaying review read as flat or rising. Compare only
       # the providers admitted in BOTH of the two rounds being compared.
+      # Was anyone silenced in the FINAL round? That, not the comparison window, is what makes a
+      # dry reading partial — and unlike cmp_partial it is defined for round 1 too.
+      qcur = 0
+      for (i = 1; i <= n; i++) if ((sorted[i] SUBSEP rounds) in Q) qcur = 1
+
       cmp_ok = 0; cmp_prev = 0; cmp_last = 0; cmp_partial = 0
       if (rounds >= 2) {
         for (i = 1; i <= n; i++) {
@@ -834,12 +839,16 @@ cmd_round_stats() {
             if ((p SUBSEP r) in Q || (p SUBSEP (r-1)) in Q) continue
             any = 1; sp += C[p SUBSEP (r-1)] + 0; sl += C[p SUBSEP r] + 0
           }
-          if (nadm[r] == 0)     line = line "  ‼ all-quarantined"
-          else if (!any)        line = line "  ? no comparable provider"
-          else if (sl == 0)     line = line "  ✗ dry"
-          else if (sl < sp)     line = line "  ↓ decaying"
-          else if (sl == sp)    line = line "  → flat"
-          else                  line = line "  ↑ rising"
+          # Dryness and direction are different questions. DRY means nothing was admitted at
+          # all, which is the raw total; DIRECTION is only meaningful on the comparable subset.
+          # Keying dryness off the subset printed `✗ dry` on a round that plainly found things,
+          # whenever a provider quarantined in r-1 returned in r (subset -> 0, raw > 0).
+          if (nadm[r] == 0)      line = line "  ‼ all-quarantined"
+          else if (tot[r] == 0)  line = line "  ✗ dry"
+          else if (!any)         line = line "  ? no comparable provider"
+          else if (sl < sp)      line = line "  ↓ decaying"
+          else if (sl == sp)     line = line "  → flat"
+          else                   line = line "  ↑ rising"
         }
         print line
       }
@@ -867,7 +876,7 @@ cmd_round_stats() {
         v = "stop — every secondary was quarantined in round " rounds "; nobody reviewed, so this is absence of evidence, not a dry round (protocol anomaly stop)"
       else if (rounds + 0 >= maxr + 0)
         v = "converge — round ceiling " maxr " reached"
-      else if (tot[rounds] == 0 && cmp_partial)
+      else if (tot[rounds] == 0 && qcur)
         v = "converge — round " rounds " went dry for every ADMITTED provider, but some were quarantined and never spoke; treat the dry reading as partial and check the quarantine reasons at the gate"
       else if (tot[rounds] == 0)
         v = "converge — round " rounds " went dry"

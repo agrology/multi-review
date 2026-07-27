@@ -757,6 +757,26 @@ grep -qF 'docs/specs' <<<"$err" \
   && ok "check gemini: catches a glob rule that ignores the docs but not the dir" \
   || bad "check gemini: missed a *.md ignore rule: '$err'"
 
+# (d3) WORKSPACE settings win over user settings (PR#23 fable-rd4-r2). Clearing the blocker when
+# EITHER scope says false is wrong: a workspace file that explicitly sets respectGitIgnore:true
+# overrides a user-scope false, so gemini still refuses the docs while we would report ready —
+# a silently missed warning, the failure mode this check exists to remove.
+mkdir -p "$RREPO/home/.gemini" "$RREPO/.gemini"
+printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/home/.gemini/settings.json"
+printf '{"context":{"fileFiltering":{"respectGitIgnore":true}}}\n'  > "$RREPO/.gemini/settings.json"
+err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qF 'docs/specs' <<<"$err" \
+  && ok "check gemini: a workspace 'true' overrides a user-scope 'false'" \
+  || bad "check gemini: user scope wrongly won over workspace: '$err'"
+# and the reverse precedence still clears it
+printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/.gemini/settings.json"
+printf '{"context":{"fileFiltering":{"respectGitIgnore":true}}}\n'  > "$RREPO/home/.gemini/settings.json"
+err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+! grep -qi 'respectGitIgnore' <<<"$err" \
+  && ok "check gemini: a workspace 'false' wins over a user-scope 'true'" \
+  || bad "check gemini: workspace false did not win: '$err'"
+rm -rf "$RREPO/home/.gemini" "$RREPO/.gemini"
+
 # (f) a doc dir literally named `-n`/`-e` must not be swallowed: `echo "$list"` would eat it as a
 # flag and silently report nothing unreadable (PR#23 gemini-rd1-r3).
 RDASH="${WORK}/rdash"; mkdir -p "$RDASH"; ( cd "$RDASH" && git init -q )
