@@ -764,14 +764,17 @@ cmd_round_stats() {
   # `reviewers:` list off the mode hint; `[^-]*` stops at the `-->` (provider ids are [a-z0-9]).
   hintp="$(header_region "$doc" | grep -o 'reviewers:[^-]*' | head -1 | sed 's/reviewers://' || true)"
 
-  printf '%s\n' "$t" | awk -F'\t' -v rounds="$round" -v maxr="$max" -v quar="$quar" -v hintp="$hintp" '
+  # quar/hintp go through the ENVIRONMENT, not `awk -v`: -v values cannot contain a literal
+  # newline (two quarantine records in one doc made awk die "newline in string"), and -v also
+  # escape-processes backslashes. Same reason cmd_merge passes its block via ENVIRON.
+  printf '%s\n' "$t" | RS_QUAR="$quar" RS_HINTP="$hintp" awk -F'\t' -v rounds="$round" -v maxr="$max" '
     BEGIN {
-      nq = split(quar, ql, "\n")
+      nq = split(ENVIRON["RS_QUAR"], ql, "\n")
       for (i = 1; i <= nq; i++) {
         if (ql[i] == "") continue
         split(ql[i], q, " "); Q[q[1] SUBSEP (q[2]+0)] = 1; provs[q[1]] = 1
       }
-      np = split(hintp, hp, " ")
+      np = split(ENVIRON["RS_HINTP"], hp, " ")
       for (i = 1; i <= np; i++) if (hp[i] != "") provs[hp[i]] = 1
     }
     NF {
@@ -788,23 +791,46 @@ cmd_round_stats() {
         while (j >= 1 && sorted[j] > v) { sorted[j+1] = sorted[j]; j-- }
         sorted[j+1] = v }
 
-      prev = -1
+      # Per round: raw admitted total, and how many providers were admitted at all.
       for (r = 1; r <= rounds; r++) {
-        line = "rd" r; total = 0
+        tot[r] = 0; nadm[r] = 0
         for (i = 1; i <= n; i++) {
           p = sorted[i]
-          if ((p SUBSEP r) in Q) { line = line "  " p " q" }      # never spoke — not a zero
-          else { c = C[p SUBSEP r] + 0; line = line "  " p " " c; total += c }
+          if ((p SUBSEP r) in Q) continue
+          nadm[r]++; tot[r] += C[p SUBSEP r] + 0
         }
-        line = line "  = " total
+      }
+
+      # The trend must compare LIKE WITH LIKE. Raw totals move with the admitted-provider set, so
+      # a single quarantine can make a still-decaying review read as flat or rising. Compare only
+      # the providers admitted in BOTH of the two rounds being compared.
+      cmp_ok = 0; cmp_prev = 0; cmp_last = 0; cmp_partial = 0
+      if (rounds >= 2) {
+        for (i = 1; i <= n; i++) {
+          p = sorted[i]
+          if ((p SUBSEP rounds) in Q || (p SUBSEP (rounds-1)) in Q) { cmp_partial = 1; continue }
+          cmp_ok = 1
+          cmp_prev += C[p SUBSEP (rounds-1)] + 0
+          cmp_last += C[p SUBSEP rounds] + 0
+        }
+      }
+
+      for (r = 1; r <= rounds; r++) {
+        line = "rd" r
+        for (i = 1; i <= n; i++) {
+          p = sorted[i]
+          if ((p SUBSEP r) in Q) line = line "  " p " q"      # never spoke — not a zero
+          else line = line "  " p " " (C[p SUBSEP r] + 0)
+        }
+        line = line "  = " tot[r]
         if (r >= 2) {
-          if (total == 0)          line = line "  ✗ dry"
-          else if (total < prev)   line = line "  ↓ decaying"
-          else if (total == prev)  line = line "  → flat"
-          else                     line = line "  ↑ rising"
+          if (nadm[r] == 0)          line = line "  ‼ all-quarantined"
+          else if (tot[r] == 0)      line = line "  ✗ dry"
+          else if (tot[r] < tot[r-1]) line = line "  ↓ decaying"
+          else if (tot[r] == tot[r-1]) line = line "  → flat"
+          else                       line = line "  ↑ rising"
         }
         print line
-        tot[r] = total; prev = total
       }
 
       # Per-provider dry streak: consecutive MOST RECENT rounds with zero findings. A quarantined
@@ -823,23 +849,29 @@ cmd_round_stats() {
       }
       if (streaks != "") print "dry-streak:" streaks
 
-      last = tot[rounds] + 0; before = (rounds >= 2) ? tot[rounds-1] + 0 : -1
-      if (rounds + 0 >= maxr + 0)
+      if (rounds >= 2 && cmp_partial && cmp_ok)
+        print "note: trend computed on the providers admitted in BOTH rounds " (rounds-1) " and " rounds " (" cmp_prev " → " cmp_last "); a quarantine changed the raw totals, which are not comparable"
+
+      if (nadm[rounds] == 0)
+        v = "stop — every secondary was quarantined in round " rounds "; nobody reviewed, so this is absence of evidence, not a dry round (protocol anomaly stop)"
+      else if (rounds + 0 >= maxr + 0)
         v = "converge — round ceiling " maxr " reached"
-      else if (last == 0)
+      else if (tot[rounds] == 0)
         v = "converge — round " rounds " went dry"
       else if (rounds + 0 < 2)
         v = "re-fan — round 1, no trend yet"
-      else if (last < before)
-        v = "re-fan — the finding rate is still decaying (" before " → " last ")"
-      else if (last == before)
-        v = "converge — the finding rate went flat at round " rounds " (" before " → " last ")"
+      else if (!cmp_ok)
+        v = "re-fan — no provider was admitted in both rounds " (rounds-1) " and " rounds ", so there is no comparable trend"
+      else if (cmp_last < cmp_prev)
+        v = "re-fan — the finding rate is still decaying (" cmp_prev " → " cmp_last ")"
+      else if (cmp_last == cmp_prev)
+        v = "converge — the finding rate went flat at round " rounds " (" cmp_prev " → " cmp_last ")"
       else
         # A RISE is not saturation. It usually means the between-round edits made by the primary
         # introduced new problems, so it stops the loop for a different reason than a plateau and
         # the human gate should be able to tell the two apart. NB: no apostrophes in this awk
         # program — it is single-quoted in the shell, and one would terminate it.
-        v = "converge — the finding rate ROSE at round " rounds " (" before " → " last "); the new findings most likely concern the between-round edits, not the original doc — review them at the gate"
+        v = "converge — the finding rate ROSE at round " rounds " (" cmp_prev " → " cmp_last "); the new findings most likely concern the between-round edits, not the original doc — review them at the gate"
       print "verdict: " v
     }'
 }

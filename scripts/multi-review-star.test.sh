@@ -1048,6 +1048,46 @@ for st in awaiting-primary converged exhausted; do
     && ok "round-stats: accepts state ${st}" || bad "round-stats rejected valid state ${st}"
 done
 
+# The trend must compare LIKE WITH LIKE (PR#23 fable-rd2-r2). Raw round totals move with the
+# admitted-provider set, so a quarantine alone can make a still-decaying review look flat or
+# rising. Demonstrated on this PR's own smoke data: rd2 excluded a quarantined codex (7) while
+# rd3 included codex's 3 (9) — on the providers admitted in BOTH rounds the rate went 7 → 6,
+# still decaying. The verdict must be computed on that comparable subset.
+RSQD="${WORK}/rs-qdenom.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 3/5 -->'
+  echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+  fnd codex 1 a; fnd codex 1 b; for i in a b c d e; do fnd fable 1 "$i"; done; fnd gemini 1 a; fnd gemini 1 b
+  for i in a b c d; do fnd fable 2 "$i"; done; for i in a b c; do fnd gemini 2 "$i"; done
+  for i in a b c; do fnd codex 3 "$i"; done; for i in a b c; do fnd fable 3 "$i"; done; for i in a b c; do fnd gemini 3 "$i"; done
+  echo '<!-- star-quarantined: codex · dispatch-timeout · round 2 -->'
+} > "$RSQD"
+out="$(bash "$SUT" round-stats "$RSQD" 2>&1)"
+# raw totals: rd2 = 7 (codex quarantined), rd3 = 9. Comparable subset (fable+gemini): 7 -> 6.
+grep -qE '^verdict: re-fan' <<<"$out" \
+  && ok "round-stats: trend ignores a quarantine-shifted denominator" \
+  || bad "round-stats verdict was a denominator artifact: '$(grep '^verdict:' <<<"$out")'"
+grep -qiE 'comparable|admitted in both' <<<"$out" \
+  && ok "round-stats: says the trend used a comparable subset" \
+  || bad "round-stats did not disclose the subset basis: '$out'"
+
+# An ALL-quarantined round is not a dry round (PR#23 fable-rd2-r1): nobody spoke, so a zero total
+# is absence of evidence, not evidence of saturation. The code already treats quarantine that way
+# for dry streaks; the round total and verdict must agree.
+RSAQ="${WORK}/rs-allq.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 2/5 -->'
+  echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+  for i in a b c; do fnd fable 1 "$i"; done; fnd codex 1 a
+  echo '<!-- star-quarantined: fable · dispatch-timeout · round 2 -->'
+  echo '<!-- star-quarantined: codex · dispatch-timeout · round 2 -->'
+} > "$RSAQ"
+out="$(bash "$SUT" round-stats "$RSAQ" 2>&1)"
+! grep -qE '^rd2 .*dry' <<<"$out" \
+  && ok "round-stats: an all-quarantined round is not labeled dry" \
+  || bad "round-stats called an all-quarantined round dry: '$out'"
+! grep -qE '^verdict: converge.*dry' <<<"$out" \
+  && ok "round-stats: no went-dry verdict when nobody spoke" \
+  || bad "round-stats converged on an all-quarantined round: '$(grep '^verdict:' <<<"$out")'"
+
 # missing doc / missing marker fail loud rather than reporting a confident empty table
 bash "$SUT" round-stats "${WORK}/nope.md" >/dev/null 2>&1 \
   && bad "round-stats accepted a missing doc" || ok "round-stats: missing doc fails loud"

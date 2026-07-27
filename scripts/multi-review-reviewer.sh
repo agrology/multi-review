@@ -140,9 +140,15 @@ gemini_unreadable_paths() { # <repo-root> -> ignored candidate paths, one per li
   # slash form matches both pattern shapes, so it is the only one correct in all cases.
   # shellcheck disable=SC2086
   for d in ${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans} .multi-review; do
+    # Probe the DIRECTORY *and* a representative markdown file inside it. A rule can ignore the
+    # review docs without ignoring their directory (`docs/specs/*.md` is the common shape), and a
+    # directory-only probe reports "readable" while gemini still refuses the actual doc.
     # `printf`, not `echo` — same dash-eating hazard fmt_paths documents, one level down: a dir
     # named `-n`/`-e` would be consumed as a flag and silently vanish from the list.
-    git -C "$rr" check-ignore -q -- "${d%/}/" 2>/dev/null && printf '%s\n' "$d"
+    if git -C "$rr" check-ignore -q -- "${d%/}/" 2>/dev/null \
+       || git -C "$rr" check-ignore -q -- "${d%/}/probe.md" 2>/dev/null; then
+      printf '%s\n' "$d"
+    fi
   done
   return 0
 }

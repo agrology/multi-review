@@ -747,6 +747,16 @@ grep -qE '✓ gemini: ready' <<<"$out" \
   && ok "doctor: ready under a user-scoped opt-out" || bad "doctor still downgraded under user-scoped opt-out: '$out'"
 rm -rf "$RREPO/home/.gemini"
 
+# (b2) a glob rule that ignores the FILES without ignoring the directory (PR#23 codex-rd2-r1).
+# `docs/specs/*.md` leaves `docs/specs/` itself readable, so probing only the directory misses it
+# while gemini still refuses the actual review doc.
+RGLOB="${WORK}/rglob"; mkdir -p "$RGLOB"; ( cd "$RGLOB" && git init -q )
+printf 'docs/specs/*.md\n' > "$RGLOB/.gitignore"
+err="$(cd "$RGLOB" && HOME="$RGLOB/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qF 'docs/specs' <<<"$err" \
+  && ok "check gemini: catches a glob rule that ignores the docs but not the dir" \
+  || bad "check gemini: missed a *.md ignore rule: '$err'"
+
 # (f) a doc dir literally named `-n`/`-e` must not be swallowed: `echo "$list"` would eat it as a
 # flag and silently report nothing unreadable (PR#23 gemini-rd1-r3).
 RDASH="${WORK}/rdash"; mkdir -p "$RDASH"; ( cd "$RDASH" && git init -q )
