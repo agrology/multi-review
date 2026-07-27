@@ -104,6 +104,37 @@ gitignore_disabled() { # <settings-file> -> 0 if "respectGitIgnore":false is pre
   tr -d '[:space:]' < "$1" | tr '[:upper:]' '[:lower:]' | grep -q '"respectgitignore":false'
 }
 
+# Which arming roots gemini-cli would REFUSE to open, given this repo's ignore rules.
+#
+# Readability is a constraint independent of auth: gemini-cli honors gitignore by default, so a
+# review doc under an ignored dir is unreadable no matter how well the CLI is authenticated. The
+# candidates are exactly the roots a review can be armed on — the configured doc dirs, plus
+# `.multi-review/`, where PR-mode ingests its scratch file (and which the plugin itself
+# gitignores, so PR mode is affected even when the doc dirs are clean).
+#
+# Naming the offending path is the point. The previous hint fired unconditionally and named only
+# the setting; a real run read it, checked whether the review copies were ignored (they were
+# not), and reasonably concluded it did not apply (issue #22). A hint that names what is
+# unreadable cannot be misread that way — and one that stays silent when nothing is ignored is
+# believed when it does fire.
+gemini_unreadable_paths() { # <repo-root> -> ignored candidate paths, one per line
+  local rr="$1" d
+  git -C "$rr" rev-parse --git-dir >/dev/null 2>&1 || return 0   # not a repo: gitignore is moot
+  gitignore_disabled "${rr}/.gemini/settings.json" && return 0   # user already opted out of it
+  # MULTI_REVIEW_DOC_DIRS is space-separated by design (word-split here) — same contract as
+  # multi-review-egress-guard.sh; individual dirs cannot contain spaces.
+  #
+  # Probe the TRAILING-SLASH form. A directory-only pattern (`.multi-review/`, the shape the
+  # plugin's own .gitignore uses) does not match a slash-less path that does not exist on disk
+  # yet — and these dirs routinely do not, since the check runs before the review is armed. The
+  # slash form matches both pattern shapes, so it is the only one correct in all cases.
+  # shellcheck disable=SC2086
+  for d in ${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans} .multi-review; do
+    git -C "$rr" check-ignore -q -- "${d%/}/" 2>/dev/null && echo "$d"
+  done
+  return 0
+}
+
 # any GEMINI_API_KEY source? env, ~/.gemini/.env, or a workspace .env / .gemini/.env under repo root.
 gemini_has_key() { # <repo-root> -> 0 if a key source exists (never reads the value)
   [[ -n "${GEMINI_API_KEY:-}" ]] && return 0
@@ -150,8 +181,9 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
         || hint gemini "if gemini can't authenticate or edit, this workspace may be untrusted — export GEMINI_CLI_TRUST_WORKSPACE=true (or trust the folder once)"
       gemini_has_key "$rr" \
         || hint gemini "no API key source — put GEMINI_API_KEY in ~/.gemini/.env (or your repo's .env)"
-      gitignore_disabled "${rr}/.gemini/settings.json" \
-        || hint gemini "gitignored docs won't be read — set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
+      local unreadable; unreadable="$(gemini_unreadable_paths "$rr")"
+      [[ -z "$unreadable" ]] \
+        || hint gemini "gemini will refuse to read a review doc under $(echo "$unreadable" | tr '\n' ' ' | sed 's/ $//') — git-ignored in this repo, and gemini-cli honors gitignore. Set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
       ;;
     *)
       die "no availability check defined for reviewer provider '${id}'" 2 ;;
@@ -166,11 +198,32 @@ abs_path() { # <path> -> canonical absolute path, or die 2
   echo "${d}/${b}"
 }
 
+# The operative contract, for inlining into a skill-less reviewer's prompt.
+#
+# Everything up to (not including) `## Supersedes`. That section documents the two RETIRED
+# grammars (`[reviewer:]`/`[author: resolved:]` and `[concur:]`) for the benefit of someone
+# reading the repo's history; handing it to a reviewer would offer it grammar it must not use.
+# The awk cut is deliberately a no-op if the heading is ever renamed or dropped — the
+# retired-grammar assertions in the test suite are what would then fail, loudly.
+protocol_body() {
+  [[ -f "$PROTOCOL" ]] || return 1
+  awk '/^## Supersedes[[:space:]]*$/{exit} {print}' "$PROTOCOL"
+}
+
 # The opening paragraph is the ONLY provider-dependent part of the prompt. Skill-bearing
-# reviewers are pointed at their skill; skill-less ones get an actionable read-then-act
-# instruction, because a bare path leaves them nothing to act on. There is one review model
-# (star) and one finding grammar — it is stated unconditionally in emit_prompt below, never
-# gated on a mode the reviewer has to detect.
+# reviewers are pointed at their skill; skill-less ones get the contract INLINE. There is one
+# review model (star) and one finding grammar — it is stated unconditionally in emit_prompt
+# below, never gated on a mode the reviewer has to detect.
+#
+# Inline rather than by path (issue #22): $PROTOCOL is rooted at the PLUGIN root, which under a
+# normal install is ~/.claude/plugins/cache/<owner>/multi-review/<version>/... — always outside
+# the repo being reviewed. gemini-cli refuses any read outside its workspace root
+# ("Path not in workspace"), and no user setting relaxes that, so the one provider dispatched as
+# an external CLI could never open the file. The in-repo copy is no fallback either: it is
+# git-ignored twice over by ensure-skill (`.git/info/exclude` + an in-dir `.gitignore`), and
+# gemini-cli honors gitignore by default. Inlining removes the filesystem from the path entirely,
+# so the contract reaches every reviewer regardless of workspace root, ignore rules, or trust
+# settings. Cost is ~7KB of prompt per dispatch.
 prompt_head() { # <has-skill>
   if [[ "$1" == "yes" ]]; then
     cat <<'HEAD'
@@ -178,13 +231,19 @@ You are a secondary reviewer in this repo's multi-review star review. Use your m
 (it reads docs/multi-review.md and follows the star protocol).
 HEAD
   else
+    local body
+    body="$(protocol_body)" || die "protocol contract not found at ${PROTOCOL}" 1
+    [[ -n "$body" ]] || die "protocol contract at ${PROTOCOL} is empty" 1
     cat <<HEAD
 You are a secondary reviewer in this repo's multi-review star review.
 
-Before editing anything, read the protocol contract in full:
-  ${PROTOCOL}
-It defines the star finding grammar and the copy-marker handoff. Follow it for the rest of
-this turn.
+Before editing anything, read the protocol contract in full. It is inlined below between the
+BEGIN/END markers — do NOT go looking for it on disk. It defines the star finding grammar and
+the copy-marker handoff. Follow it for the rest of this turn.
+
+----- BEGIN MULTI-REVIEW PROTOCOL -----
+${body}
+----- END MULTI-REVIEW PROTOCOL -----
 HEAD
   fi
 }
@@ -244,7 +303,11 @@ cmd_command() { # <doc> --reviewer <id> -> NUL-delimited argv
   model="$(field "$row" 4)"; has_skill="$(field "$row" 5)"
   [[ "$kind" == "shell" ]] \
     || die "provider '${id}' is dispatch-kind '${kind}'; 'command' is shell-kind only (dispatch it via the Agent tool)" 2
-  prompt="$(emit_prompt "$(abs_path "$doc")" "$has_skill")"
+  # emit_prompt runs in this substitution's own subshell, so a `die` inside it (missing/empty
+  # protocol contract) exits only that subshell. Unchecked, we would emit a perfectly
+  # well-formed argv carrying a truncated prompt — the reviewer would run with no contract at
+  # all. Propagate instead. (Same subshell-die hazard resolve_row documents above.)
+  prompt="$(emit_prompt "$(abs_path "$doc")" "$has_skill")" || exit $?
   # NUL-delimited: the prompt is multi-line and doc paths contain spaces, so the caller must
   # never re-parse this through a shell. Consumer idiom (bash 3.2 safe, no mapfile):
   #   argv=(); while IFS= read -r -d '' a; do argv+=("$a"); done < <(… command "$doc")
@@ -430,10 +493,22 @@ cmd_doctor() {
       continue
     fi
     if [[ "$id" == "gemini" ]]; then
-      # The live probe is AUTHORITATIVE for gemini: it proves auth+trust end-to-end, so a green
-      # probe means ready even if a static hint (e.g. the env-var-only trust check) fired falsely on
-      # an interactively-trusted workspace — and static hints never contradict a passing probe.
-      if gemini_live_probe; then
+      # The live probe is AUTHORITATIVE for gemini's AUTH: it proves auth+trust end-to-end, so a
+      # green probe means ready even if a static hint (e.g. the env-var-only trust check) fired
+      # falsely on an interactively-trusted workspace — auth hints never contradict a passing probe.
+      #
+      # READABILITY is a separate axis and the probe says nothing about it (issue #22). Letting a
+      # green probe suppress it printed "✓ gemini: ready" in exactly the repo state where the
+      # reviewer could not open the doc it was sent to review. Report the two independently.
+      # The probe is a live network call — run it exactly once, then branch on the result.
+      local unread probe_ok=0
+      unread="$(gemini_unreadable_paths "$rr")"
+      gemini_live_probe && probe_ok=1
+      if (( probe_ok )) && [[ -n "$unread" ]]; then
+        echo "△ gemini: ${GEMINI_PROBE_MSG}, but it cannot read a review doc under $(echo "$unread" | tr '\n' ' ' | sed 's/ $//')"
+        echo "    git-ignored in this repo, and gemini-cli honors gitignore."
+        echo "    fix: set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
+      elif (( probe_ok )); then
         echo "✓ gemini: ready (${GEMINI_PROBE_MSG})"
       else
         echo "✗ gemini: ${GEMINI_PROBE_MSG}"

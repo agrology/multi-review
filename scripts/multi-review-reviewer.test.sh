@@ -24,7 +24,17 @@ mkdoc() { # mkdoc <name> <state>; prints path
 # in provider_row but deliberately left unhandled in cmd_check/cmd_command's own case
 # statements — reproduces "a provider added to the registry without a matching dispatch arm"
 # without needing to touch the real registry. Inserted right after the real `gemini)` arm.
-UNHANDLED="${WORK}/reviewer-unhandled.sh"
+#
+# The copy lives at <fixture-root>/scripts/ so its ROOT resolves to <fixture-root>, mirroring the
+# real bundle layout: the SUT reads ROOT-relative assets (the protocol contract it now inlines
+# into skill-less prompts), so a fixture dropped anywhere else would fail on a missing bundle
+# rather than on the behavior under test.
+FIXROOT="${WORK}/fixture-root"
+mkdir -p "${FIXROOT}/scripts" "${FIXROOT}/.agents/skills/multi-review/protocol"
+cp "$(cd "$(dirname "$SUT")/.." && pwd)/.agents/skills/multi-review/protocol/multi-review.md" \
+   "${FIXROOT}/.agents/skills/multi-review/protocol/multi-review.md" \
+  || { echo "FIXTURE SETUP FAILED: cannot stage protocol contract"; exit 1; }
+UNHANDLED="${FIXROOT}/scripts/reviewer-unhandled.sh"
 awk '{print} /gemini\) echo "gemini\|google\|shell/{print "    ghost)  echo \"ghost|nowhere|shell|ghost-model|no\" ;;"}' \
   "$SUT" > "$UNHANDLED"
 grep -q '^    ghost)' "$UNHANDLED" || { echo "FIXTURE SETUP FAILED: ghost arm not inserted"; exit 1; }
@@ -161,14 +171,39 @@ done
 out="$(bash "$SUT" prompt "$D" --reviewer codex 2>/dev/null)"
 grep -qi 'multi-review skill' <<<"$out" && ok "codex prompt references its skill" || bad "codex skill reference missing"
 
-# --- prompt: skill-less providers get an ACTIONABLE read-then-act instruction, ---
-# --- not merely a path (a bare path would satisfy a substring check and be useless) ---
+# --- prompt: skill-less providers get the contract INLINE, never a path (issue #22) ---
+# This assertion used to require the prompt to NAME `protocol/multi-review.md`. That encoded
+# the bug: the path is rooted at the PLUGIN root, which under a normal install is
+# ~/.claude/plugins/cache/... — always outside the reviewed repo. gemini-cli hard-refuses any
+# read outside its workspace ("Path not in workspace"), so the one reviewer that is dispatched
+# as an external CLI could never open the contract. Replaced deliberately, not weakened: the
+# checks below are strictly stronger — the body must actually be present, and no filesystem
+# path may stand in for it.
+protocol_src="$(cd "$(dirname "$SUT")/.." && pwd)/.agents/skills/multi-review/protocol/multi-review.md"
+[[ -f "$protocol_src" ]] || { echo "FIXTURE SETUP FAILED: protocol not at $protocol_src"; exit 1; }
 for p in fable gemini; do
   out="$(bash "$SUT" prompt "$D" --reviewer "$p" 2>/dev/null)"
   grep -qiE 'read the protocol contract in full' <<<"$out" \
     && ok "prompt($p) instructs reading the protocol" || bad "prompt($p) lacks the read instruction"
-  grep -qF 'protocol/multi-review.md' <<<"$out" \
-    && ok "prompt($p) names the protocol file" || bad "prompt($p) lacks the protocol path"
+  # (a) no path to the contract file at all — the reviewer must not be sent to the filesystem
+  ! grep -qF 'protocol/multi-review.md' <<<"$out" \
+    && ok "prompt($p) does not point at an out-of-workspace protocol path" \
+    || bad "prompt($p) still hands the reviewer a protocol file path"
+  # (b) the operative contract is really inlined — distinctive body lines, not a summary. Two
+  # separate sections, so a partial/truncated inline fails.
+  grep -qF 'awaiting-secondaries' <<<"$out" && grep -qF 'Copy marker' <<<"$out" \
+    && ok "prompt($p) inlines the protocol body" || bad "prompt($p) lacks the inlined protocol body"
+  # (c) the whole operative contract, not a prefix: the last section before `## Supersedes`
+  # must be present too.
+  grep -qF 'Secondaries touch no GitHub' <<<"$out" \
+    && ok "prompt($p) inlines through the final operative section" \
+    || bad "prompt($p) inline is truncated before the end of the contract"
+  # (d) `## Supersedes` is retired-grammar history for repo readers. Inlining it would hand the
+  # reviewer `[reviewer:]`/`[concur:]` — grammar it must NOT use. The retired-grammar
+  # assertions further down are what enforce this; this one pins the cause.
+  ! grep -qF '## Supersedes' <<<"$out" \
+    && ok "prompt($p) omits the retired-grammar Supersedes section" \
+    || bad "prompt($p) inlined the Supersedes section"
   # No reference to a skill ANYWHERE in a skill-less prompt — not just the exact phrase
   # "multi-review skill". The shared body used to say "the protocol your skill defines",
   # which a narrower check would have missed while the reviewer got contradictory orders.
@@ -482,11 +517,21 @@ GBIN="${WORK}/gbin"; mkdir -p "$GBIN"; printf '#!/usr/bin/env bash\necho OK\n' >
 # a temp git repo controls repo_root() + workspace files + HOME(~/.gemini)
 GREPO="${WORK}/grepo"; mkdir -p "$GREPO"; ( cd "$GREPO" && git init -q )
 
-# nothing configured -> exit 0 with all three hints
+# nothing configured -> exit 0 with the two hints that apply to an unconfigured CLI.
+#
+# This assertion used to demand the respectGitIgnore hint here too, in a bare repo that ignores
+# nothing. That encoded the cry-wolf behavior issue #22 identified: an always-on hint naming only
+# a setting is indistinguishable from a false positive, and a real run dismissed it for exactly
+# that reason. The hint is now conditional on something actually being unreadable, and is
+# asserted where that is true (readability block near the doctor tests). Narrowed deliberately:
+# trust and key remain unconditional here because they ARE unconditional prerequisites.
 out="$(cd "$GREPO" && HOME="$GREPO/home" PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"; rc=$?
 [[ $rc -eq 0 ]] && ok "check gemini: advisory keeps exit 0" || bad "check gemini exit $rc (want 0)"
-grep -qi 'trust' <<<"$out" && grep -qi 'API key' <<<"$out" && grep -qi 'respectGitIgnore' <<<"$out" \
-  && ok "check gemini: emits trust+key+gitignore hints when unconfigured" || bad "gemini hints missing: '$out'"
+grep -qi 'trust' <<<"$out" && grep -qi 'API key' <<<"$out" \
+  && ok "check gemini: emits trust+key hints when unconfigured" || bad "gemini hints missing: '$out'"
+! grep -qi 'respectGitIgnore' <<<"$out" \
+  && ok "check gemini: no gitignore hint in a repo that ignores nothing" \
+  || bad "check gemini: gitignore hint fired with nothing ignored: '$out'"
 
 # fully configured -> exit 0, NO hints
 mkdir -p "$GREPO/home/.gemini" && printf 'GEMINI_API_KEY=fake-secret-value\n' > "$GREPO/home/.gemini/.env"
@@ -637,6 +682,64 @@ out="$(cd "$DREPO" && HOME="$DREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DB
 grep -qi 'codex: ready\|✓ codex' <<<"$out" && ok "doctor: codex ready despite tracked-skill drift hint" || bad "doctor codex not ready: '$out'"
 grep -qiE '△ codex|codex: needs setup' <<<"$out" && bad "doctor: codex showed 'needs setup' despite a passing check" || ok "doctor: no contradictory codex needs-setup line"
 grep -qi 'drift' <<<"$out" && ok "doctor: codex drift advisory still surfaced" || bad "doctor: codex drift advisory missing: '$out'"
+
+# --- readability is reported SEPARATELY from auth (issue #22) ------------------------------
+# A green live probe proves auth+trust; it proves nothing about whether gemini-cli's gitignore
+# filtering will let the reviewer OPEN the doc. doctor used to let a passing probe suppress
+# EVERY static hint, so it printed a bare "✓ gemini: ready" in exactly the repo state where the
+# reviewer could not read what it was sent to review.
+RREPO="${WORK}/rrepo"; mkdir -p "$RREPO/docs/specs"; ( cd "$RREPO" && git init -q )
+printf 'OK\n' > "$RREPO/docs/specs/d.md"
+printf '#!/usr/bin/env bash\necho OK\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"   # probe passes
+
+# (a) nothing ignored -> no readability hint at all. Precision matters: the OLD hint fired
+# unconditionally, which is why a real run read it, checked whether the review copies were
+# ignored (they were not), and correctly-but-wrongly concluded it did not apply.
+err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+! grep -qi 'gitignore\|respectGitIgnore' <<<"$err" \
+  && ok "check gemini: no readability hint when nothing is ignored" \
+  || bad "check gemini: cried wolf with nothing ignored: '$err'"
+
+# (b) doc dir actually ignored -> hint NAMES the ignored path, not just the setting
+printf 'docs/specs/\n' > "$RREPO/.gitignore"
+err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qF 'docs/specs' <<<"$err" \
+  && ok "check gemini: readability hint names the ignored path" \
+  || bad "check gemini: hint does not name the unreadable path: '$err'"
+grep -qi 'respectGitIgnore' <<<"$err" \
+  && ok "check gemini: readability hint still names the fix" \
+  || bad "check gemini: hint lost the actionable fix: '$err'"
+
+# (c) doctor must NOT print a bare ready while that blocker stands, and must still say auth is OK
+out="$(cd "$RREPO" && HOME="$RREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qE '✓ gemini: ready' <<<"$out" \
+  && bad "doctor: printed bare 'ready' for a gemini that cannot read the doc: '$out'" \
+  || ok "doctor: no bare 'ready' when the doc is unreadable"
+grep -qF 'docs/specs' <<<"$out" \
+  && ok "doctor: names the unreadable path" || bad "doctor: readability blocker not named: '$out'"
+grep -qi 'auth OK' <<<"$out" \
+  && ok "doctor: still reports the auth probe result separately" \
+  || bad "doctor: lost the auth signal: '$out'"
+
+# (d) the settings fix clears it — the hint and the doctor downgrade both go away
+mkdir -p "$RREPO/.gemini"
+printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/.gemini/settings.json"
+err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+! grep -qi 'respectGitIgnore' <<<"$err" \
+  && ok "check gemini: readability hint clears once respectGitIgnore is disabled" \
+  || bad "check gemini: hint persists after the fix: '$err'"
+out="$(cd "$RREPO" && HOME="$RREPO/home" MULTI_REVIEW_PROBE_TIMEOUT=5 PATH="${DBIN}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qE '✓ gemini: ready' <<<"$out" \
+  && ok "doctor: back to ready once readability is fixed" || bad "doctor: still downgraded after fix: '$out'"
+
+# (e) PR mode reviews a scratch file under .multi-review/, which the plugin itself gitignores —
+# so that path is a readability blocker for gemini even when the doc dirs are clean.
+RPR="${WORK}/rpr"; mkdir -p "$RPR"; ( cd "$RPR" && git init -q )
+printf '.multi-review/\n' > "$RPR/.gitignore"
+err="$(cd "$RPR" && HOME="$RPR/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qF '.multi-review' <<<"$err" \
+  && ok "check gemini: names the gitignored PR scratch dir" \
+  || bad "check gemini: missed the PR scratch blocker: '$err'"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
