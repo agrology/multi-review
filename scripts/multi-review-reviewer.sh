@@ -25,7 +25,8 @@ die() { echo "multi-review-reviewer: $1" >&2; exit "$2"; }
 #             `verify-vendor` catches that after the fact; this keeps it from happening.
 #             `gpt-5.6-terra` is the current top codex tier (successor to gpt-5.4/5.5); bump this
 #             when OpenAI ships the next one. NB: codex self-reports its family id `gpt-5-codex`
-#             regardless of the pinned variant, so the disclosed `> — via` model may differ (#20).
+#             regardless of the pinned variant, so the disclosed `> — via` model may differ
+#             (https://github.com/agrology/multi-review/issues/20).
 # MULTI_REVIEW_REVIEWER_MODEL overrides the default for whichever provider is selected — nothing
 # here is unoverridable.
 provider_row() { # <id> -> "id|vendor|dispatch-kind|model|has-skill"
