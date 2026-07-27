@@ -277,9 +277,26 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    `> [observation] <text>` + `> — via <primary-model-id>`. It is human-gate-only — never a
    finding, never counted toward convergence — so a missing `> — via` line is a contract error.
 4. Decide: **converge**, or re-enter `awaiting-secondaries` for another round.
-   **Adaptive re-fan-out** is the rule: re-fan **only while the previous round produced ≥1 new
-   admitted finding AND the round is `< MAX`**; converge as soon as a round goes dry (nothing
-   new) or the ceiling is hit.
+
+   First run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh round-stats "<doc>"`. It prints
+   the per-round × per-provider counts, the trend, any dry streaks, and a `verdict:` line.
+
+   **Adaptive re-fan-out** is the rule: re-fan **only while the round is `< MAX`, the previous
+   round produced ≥1 new admitted finding, AND the finding rate is still decaying**; converge as
+   soon as a round goes dry, the rate stops falling, or the ceiling is hit. The `verdict:` line
+   applies exactly this rule — follow it unless you have a specific reason not to, and say so if
+   you override it.
+
+   The decay condition is what makes stopping reachable: step 2 obliges you to address every
+   agreed finding in the doc body, so the next round reviews text you wrote minutes ago. The
+   count can flatten instead of falling to zero, and "did this round find anything" would keep
+   re-firing indefinitely. Hitting `MAX` on a doc you rewrite substantially each round is a
+   normal outcome, not a failure — report it as such.
+
+   A `dry-streak:` line is **advisory only**. Never drop a secondary from the set on your own:
+   a saturated reviewer can still catch something in newly written text. Surface the streak at
+   the gate and let the engineer decide.
+
    Edit the marker directly:
    - **Converge** → state word only: `awaiting-primary` → `converged` (same round number).
    - **Another round** → `awaiting-primary · round <N>/<MAX>` → `awaiting-secondaries · round
