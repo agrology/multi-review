@@ -1070,6 +1070,35 @@ grep -qiE 'comparable|admitted in both' <<<"$out" \
   && ok "round-stats: says the trend used a comparable subset" \
   || bad "round-stats did not disclose the subset basis: '$out'"
 
+# The per-row GLYPH must agree with the verdict (PR#23 codex-rd3-r1 + fable-rd3-r2, raised
+# independently by two vendors). The verdict compares the comparable subset while the glyph
+# compared raw totals, so the same table could print `↑ rising` directly above
+# `verdict: re-fan — still decaying`. The glyph is the row's headline signal at the gate.
+out="$(bash "$SUT" round-stats "$RSQD" 2>&1)"
+if grep -qE '^rd3 .*rising' <<<"$out" && grep -qE '^verdict: re-fan' <<<"$out"; then
+  bad "round-stats: glyph contradicts the verdict: '$(grep -E '^rd3|^verdict:' <<<"$out" | tr '\n' '|')'"
+else
+  ok "round-stats: row glyph and verdict agree under a quarantine"
+fi
+grep -qE '^rd3 .*decaying' <<<"$out" \
+  && ok "round-stats: glyph uses the comparable subset too" \
+  || bad "round-stats rd3 glyph not decaying: '$(grep '^rd3' <<<"$out")'"
+
+# A PARTIALLY-quarantined round with zero admitted findings is not saturation either (PR#23
+# fable-rd3-r1): the unheard providers are absence of evidence, exactly as in the all-quarantined
+# case. The dry verdict must carry that caveat rather than converging silently.
+RSPQ="${WORK}/rs-partialq.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 2/5 -->'
+  echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo
+  for i in a b c; do fnd fable 1 "$i"; done; fnd codex 1 a; fnd gemini 1 a
+  echo '<!-- star-quarantined: codex · dispatch-timeout · round 2 -->'
+  echo '<!-- star-quarantined: gemini · dispatch-timeout · round 2 -->'
+} > "$RSPQ"
+out="$(bash "$SUT" round-stats "$RSPQ" 2>&1)"
+grep -qE '^verdict:' <<<"$out" && grep -qiE 'quarantin' <<<"$(grep '^verdict:' <<<"$out")" \
+  && ok "round-stats: a partially-quarantined dry round is caveated" \
+  || bad "round-stats converged on a partial quarantine with no caveat: '$(grep '^verdict:' <<<"$out")'"
+
 # An ALL-quarantined round is not a dry round (PR#23 fable-rd2-r1): nobody spoke, so a zero total
 # is absence of evidence, not evidence of saturation. The code already treats quarantine that way
 # for dry streaks; the round total and verdict must agree.
