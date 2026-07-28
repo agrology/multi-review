@@ -323,10 +323,19 @@ heading as:
   every finding)
   \`> — via <your-model-id>\` — required disclosure line, immediately after
   \`> — risk: <short risk>\` — required, immediately after that, one clause, no paragraphs
-and optionally, right after the risk line, \`> — at <path>:<line>\` (or \`<path>:<start>-<end>\`,
+  \`> — evidence: <how you know>\` — REQUIRED on \`high\` and \`med\`: the mechanism that produces
+  the failure, or the reproduction you ran. If you cannot state one, raise it as \`low\`.
+and optionally, after those, \`> — at <path>:<line>\` (or \`<path>:<start>-<end>\`,
 RIGHT-side new-file line numbers). The severity tag and risk line are required on every
-finding — local doc or PR diff scratch, there is no mode to detect. Flip the status marker
-from \`awaiting-reviewer\` to \`awaiting-author\` as your FINAL edit (the flip is the handoff).
+finding — local doc or PR diff scratch, there is no mode to detect.
+
+Severity is a claim about consequence: \`high\`/\`med\` assert a defect exists, so say how you
+know — "empty batch → index 0 raises IndexError", or "ran X, got rc=1". A concern you cannot
+ground that way is still worth raising; raise it as \`low\`. Padding a round with speculative
+\`med\`s costs the author real edits and the review real rounds.
+
+Flip the status marker from \`awaiting-reviewer\` to \`awaiting-author\` as your FINAL edit (the
+flip is the handoff).
 
 Read only that document. Do not implement, commit, or open a PR — stop at the human gate.
 Then stop and report which ids you added and that the marker was flipped.

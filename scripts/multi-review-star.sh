@@ -12,6 +12,7 @@
 #   gate-summary <doc> <primary-model-id>
 #   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
 #                              and a converge/re-fan verdict (advisory; pure read)
+#   evidence-gaps <doc>     -> high/med findings lacking a "> — evidence:" line (report, not gate)
 #   compose-review <doc> <primary-model-id>  -> neutral PR review body (dormant; Task A4)
 #   compose-inline <doc>                     -> "path\tstart\tend\tbody" per agreed+anchored
 #                                                finding (dormant; Task A4)
@@ -206,7 +207,7 @@ cmd_available() {
 # respond to a finding disclosed under its own model id. On any grammar violation, prints an
 # error to stderr and exits 2. Pure awk (portable associative arrays); control line + its
 # required "> — via" line are consumed as a pair.
-_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk" per finding
+_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tevidence" per finding
   local doc="${1:?doc}" ufl rstart
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   ufl="$(review_section "$doc" | unterminated_fence_line /dev/stdin)"
@@ -255,10 +256,22 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk" pe
         if (line ~ /^> — risk:/) {
           rk = line; sub(/^> — risk:[ ]*/, "", rk); gsub(/[ \t]+$/, "", rk)
           if (rk == "") fail("empty risk for finding: " risk_for)
-          frisk[risk_for] = rk; next
+          frisk[risk_for] = rk; cur_finding = risk_for; next
         } else { fail("finding " risk_for " not followed by a \"> — risk: <risk>\" line") }
       }
-      if (parse(line)) { pv = V; pi = I; pwhy = WHY; psev = SEV; pend = 1 }
+      # Optional `> — evidence:` line, credited to the finding whose block we are still inside.
+      # cur_finding is cleared by the next control line, so an evidence line sitting after a
+      # response cannot retroactively document the finding above it. Never fatal when absent:
+      # a missing line must not fail the parse, because that quarantines the whole reviewer turn
+      # and discards real findings — the failure mode this project keeps having to undo.
+      if (line ~ /^> — evidence:/) {
+        if (cur_finding != "") {
+          ev = line; sub(/^> — evidence:[ ]*/, "", ev); gsub(/[ \t]+$/, "", ev)
+          if (ev != "") fev[cur_finding] = ev
+        }
+        next
+      }
+      if (parse(line)) { pv = V; pi = I; pwhy = WHY; psev = SEV; pend = 1; cur_finding = "" }
     }
     END {
       if (pend) fail("control line " pv ":" pi " not followed by a \"> — via <model>\" line")
@@ -271,7 +284,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk" pe
         if (rverb[id] == "agree") state = "agreed"
         else if (rverb[id] == "dispute") state = "dissent"
         resp = (id in rmodel) ? rmodel[id] : ""
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id]
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id]
       }
     }
   '
@@ -758,6 +771,17 @@ cmd_gate_summary() {
       if(d>0){ print "Disputes (high→low):"; emit("dissent"); print "" }
     }'
 
+  # Evidentiary quality of the review, not just its findings. A `high`/`med` claim with no stated
+  # mechanism is the shape that was consistently speculative (issue #29), and the gate is where a
+  # human decides how much weight the review deserves — so the count belongs here rather than
+  # only in the primary's own turn. Dormant when there is nothing to report.
+  local egaps; egaps="$(cmd_evidence_gaps "$doc" 2>/dev/null)"
+  if [[ -n "$egaps" ]]; then
+    echo "Findings asserting high/med severity without evidence ($(printf '%s\n' "$egaps" | grep -c .)):"
+    printf '%s\n' "$egaps" | awk 'NF{ printf "  - %s (%s)\n", $1, $2 }'
+    echo
+  fi
+
   # quarantined secondaries (readability channel: the in-doc records, via the shared parser)
   local qlist; qlist="$(_quarantines "$doc")"
   if [[ -n "$qlist" ]]; then
@@ -984,6 +1008,24 @@ cmd_round_stats() {
     }'
 }
 
+# evidence-gaps — high/med findings that assert a defect without stating how it is known.
+#
+# Measured across four reviews (issue #29): what separated the findings worth acting on from the
+# speculative ones was a demonstrated failure MECHANISM, not the vendor or the severity tag. So
+# `high`/`med` carry `> — evidence:`; `low` need not.
+#
+# Deliberately a REPORT, not a gate. Rejecting an undocumented finding at parse time would fail
+# the whole reviewer turn and throw away its real findings with the weak ones — the same
+# lose-a-round failure this project has had to undo repeatedly. The primary sees the gaps and
+# adjudicates them (a claim with no demonstrated failure mode is disputable); the human sees them
+# at the gate. Neither is silent, and neither is destructive.
+cmd_evidence_gaps() { # <doc> -> "<ns-id> <sev>" per undocumented high/med finding
+  local doc="${1:?doc}" t
+  [[ -f "$doc" ]] || die "doc not found: $doc" 1
+  t="$(_table "$doc")" || die "evidence-gaps: contract violation in $doc" 1
+  printf '%s\n' "$t" | awk -F'\t' 'NF && ($7=="high" || $7=="med") && $9=="" { print $1, $7 }'
+}
+
 # remember-set --pref-file <path> (--reviewers <csv> | --clear)
 # Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
 # (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
@@ -1044,6 +1086,7 @@ main() {
     check-converged) cmd_check_converged "$@" ;;
     gate-summary) cmd_gate_summary "$@" ;;
     round-stats) cmd_round_stats "$@" ;;
+    evidence-gaps) cmd_evidence_gaps "$@" ;;
     compose-review) cmd_compose_review "$@" ;;
     compose-inline) cmd_compose_inline "$@" ;;
     *)    die "unknown subcommand: ${cmd:-<none>}" 2 ;;
