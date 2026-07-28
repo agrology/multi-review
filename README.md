@@ -163,6 +163,7 @@ run. Reset it with a "forget the reviewers" request.
 - `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / compose
 - `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / ensure-skill / doctor / verify-vendor / vendor-of-model
 - `scripts/multi-review-pr.sh` — PR ingest (via `gh`) + the one-neutral-review publish
+- `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2 (local docs): body reduction, fence-aware region mapping, `local-copy`
 - `scripts/multi-review-core.sh` — marker state; `-wait.sh` — bounded per-copy wait;
   `-egress-guard.sh` — path validation; `-build-reviewer-bundle.sh` — regenerate the skill bundle;
   `-history-check.sh` — pre-publish sensitive-term gate (see `PUBLISHING.md`)
