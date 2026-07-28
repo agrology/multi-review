@@ -220,15 +220,36 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    again.
 
    - **Round 1** — `cp "<doc>.baseline" "<doc>.<id>"`, then rewrite that copy's header as below.
-   - **Round N ≥ 2** — build a **diff-scoped** copy instead, so the round costs what you changed
-     rather than the size of the document:
+   - **Round N ≥ 2, local doc** — build a **diff-scoped** copy instead, so the round costs what
+     you changed rather than the size of the document:
 
          "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-scope.sh" local-copy \
            --round <N> --max <MAX> \
            --prev "<doc>.baseline.rd<N-1>" --curr "<doc>.baseline.rd<N>" > "<doc>.<id>"
 
-     `local-copy` writes the whole copy, header and marker included — do NOT also rewrite the
-     header on this path.
+   - **Round N ≥ 2, PR flavor** — the primary never edits a PR diff, so the reviewable delta is
+     what the *author* pushed since the last round. **Before** seeding the copies, refresh the
+     scratch once for this round:
+
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" refresh "<doc>" <N>
+
+     `refresh` re-fetches the diff at the current head, records this round's head/merge-base,
+     captures existing anchors' line text, and replaces `## Diff` while preserving `## Review`
+     and the manifest. Then read both rounds' records and build each copy:
+
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N-1>   # -> head|merge-base
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N>
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-scope.sh" pr-copy \
+           --round <N> --max <MAX> \
+           --since <head-rd(N-1)>  --merge-base-prev <mb-rd(N-1)> \
+           --head  <head-rdN>      --merge-base      <mb-rdN> \
+           "$(git rev-parse --show-toplevel)" > "<doc>.<id>"
+
+     Exit 3 here is common and expected — a rebase, a force-push, a forward merge of the base
+     branch, or an unchanged head all trip it. Fall back exactly as below and relay the reason.
+
+     Either way, `local-copy`/`pr-copy` writes the whole copy, header and marker included — do
+     NOT also rewrite the header on this path.
 
      **Exit 3 is not a failure**: the round cannot be scoped (no retained prior baseline, or an
      empty delta). Fall back to `cp "<doc>.baseline" "<doc>.<id>"` plus the header rewrite, and
