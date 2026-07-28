@@ -598,6 +598,58 @@ printf '%s' "$body" | grep -q "anchored concern" && printf '%s' "$body" | grep -
   && ok "compose-review: both agreed findings listed" || bad "compose-review missing a finding (got: $body)"
 printf '%s' "$body" | grep -qF 'claude-opus-4-8' && ok "compose-review: primary named in footer" || bad "compose-review footer missing primary"
 
+# --- compose-review must carry quarantines into the POSTED review (issue #26) ---------------
+# gate-summary reported them; compose-review did not, so a review degraded by provider failure
+# read as a clean one on the PR — and the AI-disclosure line, built from finding raisers, silently
+# omitted the provider that was dispatched and died. The whole point of the human gate is deciding
+# with full information; a quarantine is the signal the review was thinner than it looks.
+QDOC="$(mkstar q-compose.md \
+  '> [finding:codex-rd1-a|med] a real concern' '> — via gpt-5.6-terra' '> — risk: something' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '<!-- star-quarantined: gemini · dispatch-timeout · round 1 -->')"
+body="$(bash "$SUT" compose-review "$QDOC" claude-opus-5 2>/dev/null)"
+printf '%s' "$body" | grep -qi 'quarantin' \
+  && ok "compose-review: names the quarantined secondary" || bad "compose-review dropped the quarantine: $body"
+printf '%s' "$body" | grep -qF 'gemini' \
+  && ok "compose-review: quarantine section identifies the provider" || bad "compose-review quarantine lacks provider"
+printf '%s' "$body" | grep -qF 'dispatch-timeout' \
+  && ok "compose-review: quarantine reason carried through" || bad "compose-review quarantine lacks reason"
+# the disclosure line must not silently narrow to only the models that scored
+printf '%s' "$body" | tail -2 | grep -qF 'gemini' \
+  && ok "compose-review: disclosure names the dispatched-but-quarantined provider" \
+  || bad "compose-review disclosure omits a dispatched provider: $(printf '%s' "$body" | tail -2)"
+
+# ADDITIVE: a doc with no quarantines must produce byte-identical output to before this change.
+before="$(bash "$SUT" compose-review "$ANCHORED_DOC" claude-opus-4-8 2>/dev/null)"
+printf '%s' "$before" | grep -qi 'quarantin' \
+  && bad "compose-review: emitted a quarantine section on a doc with none" \
+  || ok "compose-review: dormant when there are no quarantines"
+
+# --- the quarantine record has ONE parser, and it is fence-aware (issue #26) -----------------
+# A fenced EXAMPLE of the record is documentation, not a live quarantine. verify/check-converged
+# already strip fences before matching; gate-summary and round-stats grepped the raw file, so the
+# same doc disagreed with itself. Routing every reader through one helper is what makes that
+# impossible rather than merely fixed-for-now.
+FENCEQ="${WORK}/fenced-quarantine.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 1/5 -->'
+  echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+  echo '> [finding:codex-rd1-a|med] real concern'; echo '> — via gpt-5.6-terra'; echo '> — risk: r'
+  echo '> [agree:codex-rd1-a]'; echo '> — via claude-opus-5'
+  echo '```'
+  echo '<!-- star-quarantined: fable · THIS-IS-DOCUMENTATION · round 1 -->'
+  echo '```'
+} > "$FENCEQ"
+for sub in compose-review gate-summary; do
+  out="$(bash "$SUT" "$sub" "$FENCEQ" claude-opus-5 2>/dev/null)"
+  ! grep -qF 'THIS-IS-DOCUMENTATION' <<<"$out" \
+    && ok "${sub}: a fenced quarantine example is not treated as a live record" \
+    || bad "${sub}: fenced example counted as a real quarantine"
+done
+out="$(bash "$SUT" round-stats "$FENCEQ" 2>/dev/null)"
+! grep -qE 'fable q' <<<"$out" \
+  && ok "round-stats: a fenced quarantine example is not treated as a live record" \
+  || bad "round-stats: fenced example counted as a real quarantine: $out"
+
 # a range anchor emits start+end
 RANGE_DOC="$(mkstar range.md \
   '> [finding:codex-rd1-a|med] ranged concern' '> — via gpt-5.5' '> — risk: r' '> — at scripts/bar.sh:10-12' \
