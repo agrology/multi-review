@@ -49,10 +49,17 @@ esac
 
 [[ -d "$OURS" ]] || { echo "install-hooks: no ${OURS}/ directory here" >&2; exit 1; }
 
-# Refuse ANY pre-existing value we did not set — including one that already equals $OURS. Value
-# equality is not ownership: another tool can legitimately point core.hooksPath at .githooks, and
-# adopting it here would let a later --uninstall remove configuration this installer never created.
-if [[ -n "$current" && "$(git config --get "$OWNED" 2>/dev/null)" != "true" && "$force" != "1" ]]; then
+# Ownership requires BOTH the marker and a matching value — the same test --uninstall applies.
+#
+# Neither alone is sufficient, and each failed differently. Value equality is not ownership:
+# another tool can legitimately point core.hooksPath at .githooks, and adopting it would let a
+# later --uninstall remove config we never created. But the marker alone is not ownership either:
+# a foreign installer that takes over core.hooksPath does not clear OUR marker, so a stale
+# `true` would authorise a plain re-run to silently overwrite the replacement framework — the
+# exact clobber this guard exists to prevent.
+owned=0
+[[ "$current" == "$OURS" && "$(git config --get "$OWNED" 2>/dev/null)" == "true" ]] && owned=1
+if [[ -n "$current" && "$owned" != "1" && "$force" != "1" ]]; then
   echo "install-hooks: core.hooksPath already points at '${current}', set by something other than this installer." >&2
   echo "install-hooks: refusing to adopt it — a later --uninstall would then remove config it did not create." >&2
   echo "install-hooks: re-run with --force to take ownership of it." >&2

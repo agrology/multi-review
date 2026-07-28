@@ -178,6 +178,28 @@ r3="$(newrepo 1.1.0)"
 [[ "$(cd "$r3" && git config --get multi-review.hooksinstalled 2>/dev/null)" != "true" ]] \
   && ok "install-hooks: does not claim ownership it was refused" || bad "install-hooks wrote an ownership marker anyway"
 
+# A STALE ownership marker is not ownership either (PR#28 codex-rd4-r1 / fable-rd4-r1, found by
+# both vendors). We install, then another tool later points core.hooksPath elsewhere — foreign
+# installers do not clear our marker — so gating on the marker ALONE let a plain re-run silently
+# overwrite the replacement framework. Ownership requires BOTH the marker and a matching value,
+# which is what --uninstall already demanded.
+r4="$(newrepo 1.1.0)"
+( cd "$r4" && bash scripts/multi-review-install-hooks.sh >/dev/null 2>&1 )   # legitimate install
+( cd "$r4" && git config core.hooksPath .husky )                             # someone else takes over
+( cd "$r4" && bash scripts/multi-review-install-hooks.sh >/dev/null 2>&1 ); rc=$?
+[[ $rc -ne 0 ]] && ok "install-hooks: a stale marker does not authorise clobbering a changed path" \
+  || bad "stale marker let a re-run overwrite a foreign hooksPath"
+[[ "$(cd "$r4" && git config core.hooksPath)" == ".husky" ]] \
+  && ok "install-hooks: the replacement framework survives a re-run" \
+  || bad "re-run silently disabled the replacement hooks"
+# re-running over OUR OWN unchanged install stays idempotent
+r5="$(newrepo 1.1.0)"
+( cd "$r5" && bash scripts/multi-review-install-hooks.sh >/dev/null 2>&1 )
+( cd "$r5" && bash scripts/multi-review-install-hooks.sh >/dev/null 2>&1 ); rc=$?
+[[ $rc -eq 0 && "$(cd "$r5" && git config core.hooksPath)" == ".githooks" ]] \
+  && ok "install-hooks: re-running over its own install is idempotent" \
+  || bad "re-install over our own install failed (rc=$rc)"
+
 # an explicit --force is the way through
 ( cd "$r" && bash scripts/multi-review-install-hooks.sh --force >/dev/null 2>&1 )
 [[ "$(cd "$r" && git config core.hooksPath)" == ".githooks" ]] \
