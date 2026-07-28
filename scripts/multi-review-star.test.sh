@@ -728,6 +728,65 @@ bash "$SUT" merge --round 1 --quarantined "gemini:dispatch timed out" "$MP" "${M
   && ok "merge: a valid multi-word reason survives round-trip to the readers" \
   || bad "valid quarantine did not round-trip"
 
+# --- evidence requirement (issue #29 item 3) ------------------------------------------------
+# What separated the good findings from the weak ones across four measured reviews was not the
+# vendor or the severity tag but whether a failure MECHANISM was demonstrated. `high`/`med` now
+# carry `> — evidence:`; `low` does not have to. Enforcement is deliberately NON-destructive: a
+# missing line must never fail the parse, because that would quarantine the whole turn and lose
+# real findings — the exact failure mode this project keeps fighting. It is surfaced instead.
+EVOK="$(mkstar ev-ok.md \
+  '> [finding:codex-rd1-a|high] real defect' '> — via gpt-5.6-terra' '> — risk: breaks' \
+  '> — evidence: reproduced in a scratch repo, rc=1' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
+bash "$SUT" open-findings "$EVOK" >/dev/null 2>&1 \
+  && ok "evidence line does not break the grammar" || bad "evidence line broke the parse"
+out="$(bash "$SUT" evidence-gaps "$EVOK" 2>&1)"; rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && ok "evidence-gaps: silent when every high/med has evidence" \
+  || bad "evidence-gaps flagged a documented finding (rc=$rc): $out"
+
+# high and med without evidence are gaps; low is not
+EVGAP="$(mkstar ev-gap.md \
+  '> [finding:codex-rd1-a|high] no mechanism given' '> — via gpt-5.6-terra' '> — risk: breaks' \
+  '> [finding:codex-rd1-b|med] also none' '> — via gpt-5.6-terra' '> — risk: breaks' \
+  '> [finding:codex-rd1-c|low] a nit, no evidence needed' '> — via gpt-5.6-terra' '> — risk: minor')"
+out="$(bash "$SUT" evidence-gaps "$EVGAP" 2>/dev/null)"
+grep -q 'codex-rd1-a' <<<"$out" && ok "evidence-gaps: flags a high with no evidence" || bad "high gap missed: $out"
+grep -q 'codex-rd1-b' <<<"$out" && ok "evidence-gaps: flags a med with no evidence" || bad "med gap missed: $out"
+! grep -q 'codex-rd1-c' <<<"$out" && ok "evidence-gaps: a low needs no evidence" || bad "low wrongly flagged: $out"
+
+# a missing evidence line must NOT fail the parse — findings stay visible and answerable
+[[ "$(bash "$SUT" open-findings "$EVGAP" 2>/dev/null | grep -c .)" -eq 3 ]] \
+  && ok "evidence-gaps: undocumented findings still parse and remain answerable" \
+  || bad "a missing evidence line broke the parse — that would quarantine the turn"
+
+# evidence must attach to its OWN finding, not leak across a response boundary
+EVLEAK="$(mkstar ev-leak.md \
+  '> [finding:codex-rd1-a|high] first' '> — via gpt-5.6-terra' '> — risk: r' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> — evidence: this belongs to nothing' \
+  '> [finding:codex-rd1-b|high] second, genuinely undocumented' '> — via gpt-5.6-terra' '> — risk: r')"
+out="$(bash "$SUT" evidence-gaps "$EVLEAK" 2>/dev/null)"
+grep -q 'codex-rd1-a' <<<"$out" && ok "evidence-gaps: an evidence line after a response does not credit the finding" \
+  || bad "evidence leaked across a response boundary: $out"
+grep -q 'codex-rd1-b' <<<"$out" && ok "evidence-gaps: the later undocumented finding is still flagged" \
+  || bad "second gap missed: $out"
+
+# the gate must show the evidentiary quality of the review, not just the findings
+G2="$(mkstar ev-gate.md \
+  '> [finding:codex-rd1-a|high] undocumented' '> — via gpt-5.6-terra' '> — risk: r' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
+out="$(bash "$SUT" gate-summary "$G2" claude-opus-5 2>/dev/null)"
+grep -qi 'evidence' <<<"$out" && ok "gate-summary: reports high/med findings lacking evidence" \
+  || bad "gate-summary hides the evidence gap: $out"
+# ...and stays silent when there is nothing to report
+out="$(bash "$SUT" gate-summary "$EVOK" claude-opus-5 2>/dev/null)"
+! grep -qi 'without evidence' <<<"$out" && ok "gate-summary: dormant when evidence is complete" \
+  || bad "gate-summary cried wolf on a fully-documented review"
+
+# missing doc fails loud
+bash "$SUT" evidence-gaps "${WORK}/nope-ev.md" >/dev/null 2>&1 \
+  && bad "evidence-gaps accepted a missing doc" || ok "evidence-gaps: missing doc fails loud"
+
 # --- the quarantine record has ONE parser, and it is fence-aware (issue #26) -----------------
 # A fenced EXAMPLE of the record is documentation, not a live quarantine. verify/check-converged
 # already strip fences before matching; gate-summary and round-stats grepped the raw file, so the

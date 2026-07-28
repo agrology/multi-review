@@ -53,6 +53,17 @@ Under the copy's `## Review` heading, a secondary raises each concern as:
   Keep the concern to one short line.
 - `> — via <model>` — required disclosure line, immediately after. Must be your real model id.
 - `> — risk: <short risk>` — required, immediately after that. One clause, no paragraphs.
+- `> — evidence: <how you know>` — **required on `high` and `med`**: the mechanism that produces
+  the failure, or the reproduction that was run. `low` does not need one. Severity is a claim
+  about consequence, and `high`/`med` assert a defect exists — a concern that cannot be grounded
+  that way is still worth raising, as a `low`. Measured across four reviews (issue #29), a stated
+  mechanism was what separated findings worth acting on from speculative ones; it predicted value
+  better than either the vendor or the severity tag.
+
+  A missing evidence line is **never** a parse error. Rejecting the finding would fail the whole
+  reviewer turn and discard its good findings along with the weak one. Instead
+  `multi-review-star.sh evidence-gaps <doc>` lists undocumented `high`/`med` findings for the
+  primary at adjudication, and `gate-summary` reports the count to the human.
 - Optionally, `> — at <path>:<line>` (or `> — at <path>:<start>-<end>`) immediately after the
   risk line, using RIGHT-side new-file line numbers. This only matters when the reviewed doc
   is a PR diff scratch — omit it for a design doc. An anchor that doesn't land on a changed

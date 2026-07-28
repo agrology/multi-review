@@ -264,7 +264,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 #### Primary turn (on `awaiting-primary`)
 
 1. List the merged findings awaiting a response:
-   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh open-findings "<doc>"`.
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh open-findings "<doc>"`, and the ones
+   asserting a defect without saying how it is known:
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh evidence-gaps "<doc>"`.
+
+   An `evidence-gaps` entry is **not** an automatic dispute — the mechanism may be obvious from
+   the concern itself. It marks where to apply the "no demonstrated failure mode" test below
+   rather than deciding it for you.
 2. For each, append **exactly one** of:
    - `> [agree:<ns-id>]` + `> — via <primary-model-id>` — accept it, and address it in the doc
      body (or, for a PR, note it — the diff is read-only), or
