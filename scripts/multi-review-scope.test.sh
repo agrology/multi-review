@@ -215,6 +215,73 @@ out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/n
 grep -q '^> Removed this round, no longer present: Zeta, Alpha\.$' <<<"$out" \
   && ok "removed: listed in document order" || bad "removed order not deterministic ($(grep 'Removed this' <<<"$out"))"
 
+# ============================== Phase B: pr-copy ==============================
+# A throwaway git repo so the guards can be exercised without a network or a real PR.
+GR="${WORK}/repo"; mkdir -p "$GR"
+( cd "$GR" && git init -q && git config user.email t@t && git config user.name t \
+  && printf 'line one\nline two\n' > f.txt && git add f.txt && git commit -qm base ) >/dev/null 2>&1
+BASE="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && printf 'line one\nline CHANGED\n' > f.txt && git commit -qam r1 ) >/dev/null 2>&1
+H1="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && printf 'line one\nline CHANGED\nline added\n' > f.txt && git commit -qam r2 ) >/dev/null 2>&1
+H2="$(cd "$GR" && git rev-parse HEAD)"
+
+# --- happy path: the delta between two heads, plus the touched file's text at the head ---
+out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+        --head "$H2" --merge-base "$BASE" "$GR" 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && ok "pr-copy: exits 0 on a scopeable delta" || bad "pr-copy rc=$rc"
+grep -q '^## Changes since round 1$' <<<"$out" && ok "pr-copy: diff heading" || bad "pr-copy no diff heading"
+grep -q 'line added' <<<"$out" && ok "pr-copy: emits the delta" || bad "pr-copy delta missing"
+grep -q '^### f\.txt$' <<<"$out" && ok "pr-copy: file text demarcated by path" || bad "no ### <path> heading"
+grep -q '^<!-- multi-review: awaiting-reviewer · round 2/5 -->$' <<<"$out" \
+  && ok "pr-copy: writes a copy marker" || bad "pr-copy marker missing"
+[[ "$(grep -v '^$' <<<"$out" | tail -1)" == "## Review" ]] \
+  && ok "pr-copy: ends with an empty ## Review" || bad "pr-copy ## Review not last"
+
+# --- the file text comes from the HEAD, not the working tree ---
+( cd "$GR" && printf 'WORKTREE ONLY\n' > f.txt ) >/dev/null 2>&1
+out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+        --head "$H2" --merge-base "$BASE" "$GR" 2>/dev/null)"
+grep -q 'WORKTREE ONLY' <<<"$out" && bad "pr-copy read the working tree, not the head" \
+  || ok "pr-copy: file text read at the head (git show)"
+( cd "$GR" && git checkout -q -- f.txt ) >/dev/null 2>&1
+
+# --- exit 3: unresolvable --since ---
+bash "$SUT" pr-copy --round 2 --max 5 --since deadbeefdeadbeef --merge-base-prev "$BASE" \
+  --head "$H2" --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on unresolvable --since" || bad "unresolvable --since not exit 3"
+
+# --- exit 3: unresolvable --head (the fork case, once the fetch has failed) ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+  --head deadbeefdeadbeef --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on unresolvable --head" || bad "unresolvable --head not exit 3"
+
+# --- exit 3: the merge-base MOVED between rounds (a forward merge or a rebase) ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+  --head "$H2" --merge-base "$H1" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 when the merge-base moved" || bad "moved merge-base not exit 3"
+
+# --- exit 3: an UNKNOWN merge-base ("-") is a cannot-scope, not a silent pass ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev - \
+  --head "$H2" --merge-base - "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on an unknown merge-base" || bad "unknown merge-base not exit 3"
+
+# --- exit 3: --since is NOT an ancestor of --head (amend / force-push on the same base) ---
+( cd "$GR" && git checkout -q -b side "$H1" && printf 'line one\nline AMENDED\n' > f.txt \
+  && git commit -qam amended ) >/dev/null 2>&1
+AMEND="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && git checkout -q - ) >/dev/null 2>&1
+# H2 is not an ancestor of AMEND, and the merge-base did not move — only ancestry catches this
+bash "$SUT" pr-copy --round 3 --max 5 --since "$H2" --merge-base-prev "$BASE" \
+  --head "$AMEND" --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on a rewritten history (non-ancestor)" \
+  || bad "non-ancestor --since not exit 3 — the amend/force-push case"
+
+# --- empty delta (head unchanged since the previous round) is a converge signal, exit 3 ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H2" --merge-base-prev "$BASE" \
+  --head "$H2" --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on an empty delta" || bad "empty delta not exit 3"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
