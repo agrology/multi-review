@@ -509,6 +509,97 @@ for id in o1 o3 o1-preview o3-mini; do
     || bad "vendor mapping: '$id' unmapped -> '$out'"
 done
 
+# --- vendor mapping is CASE-INSENSITIVE (issue #24) ---
+# Observed live: `codex` disclosed `gpt-5` in one round and `GPT-5` in the next from IDENTICAL
+# dispatches. The lowercase-only patterns made the second unmappable, and verify-vendor escalates
+# unmappable to a hard failure — so a correct reviewer was quarantined and its whole round of
+# findings discarded, over the capitalisation of its own name. Model self-report is already the
+# least stable field in the protocol (#20); keying on its exact casing compounds that.
+while IFS='|' read -r id want; do
+  out="$(bash "$SUT" vendor-of-model "$id" 2>/dev/null)"
+  [[ "$out" == "$want" ]] && ok "vendor mapping: '$id' -> $want (case-insensitive)" \
+    || bad "vendor mapping: '$id' -> '$out' (want $want)"
+done <<'CASES'
+GPT-5|openai
+GPT-5.6-Terra|openai
+Gpt-5-Codex|openai
+O3-Mini|openai
+Gemini-2.5-Pro|google
+GEMINI|google
+Claude-Fable-5|anthropic
+Claude-Opus-4-8|anthropic
+CLAUDE-SONNET-4-5|anthropic
+Fable|anthropic
+CASES
+
+# The fold must not depend on the caller's locale (PR#25 gemini-rd1-r1 / fable-rd1-r1, raised
+# independently by two vendors). `[:upper:]`/`[:lower:]` are locale-dependent classes by POSIX;
+# model ids are ASCII by construction, so the mapping must be identical under any locale a user
+# happens to export. NB: the canonical Turkish dotless-i case does NOT reproduce on BSD tr — this
+# asserts the invariant directly rather than relying on one locale to expose it.
+# Capture `locale -a` ONCE, then test the captured value. Piping it into `grep -q` per locale
+# looks equivalent but is not: grep exits on first match, SIGPIPEs `locale`, and under this
+# suite's `pipefail` the pipeline reports 141 — so every locale appearing late in the output was
+# silently skipped, including tr_TR, leaving this block vacuous exactly where it mattered. Same
+# hazard cmd_ensure_skill documents ("capture then test; avoids grep -q SIGPIPE under pipefail").
+LOCALES_AVAIL="$(locale -a 2>/dev/null)"
+# Candidates are DISCOVERED from the host, not hardcoded (PR#25 gemini-rd2-r1): distros spell the
+# charset differently (`en_US.UTF-8` vs `en_US.utf8`), so an exact-name list silently matches
+# nothing on those hosts. Prefer Turkish (the canonical hostile case-folding locale), then any
+# other non-C locale, and cap the count to keep the suite fast.
+LOC_TR="$(printf '%s\n' "$LOCALES_AVAIL" | grep -iE '^tr_TR([.@]|$)' | head -2 || true)"
+LOC_OTHER="$(printf '%s\n' "$LOCALES_AVAIL" | grep -iE '^(en_US|de_DE)([.@]|$)' | head -2 || true)"
+nonc=0
+for L in C POSIX $LOC_TR $LOC_OTHER; do
+  [[ -n "$L" ]] || continue
+  out="$(LC_ALL="$L" bash "$SUT" vendor-of-model GEMINI 2>/dev/null)"
+  [[ "$out" == "google" ]] && ok "vendor mapping: 'GEMINI' -> google under LC_ALL=$L" \
+    || bad "vendor mapping: locale $L broke the fold ('GEMINI' -> '$out')"
+  out="$(LC_ALL="$L" bash "$SUT" vendor-of-model CLAUDE-OPUS-4-8 2>/dev/null)"
+  [[ "$out" == "anthropic" ]] && ok "vendor mapping: 'CLAUDE-OPUS-4-8' -> anthropic under LC_ALL=$L" \
+    || bad "vendor mapping: locale $L broke the fold ('CLAUDE-OPUS-4-8' -> '$out')"
+  case "$L" in C|POSIX) : ;; *) nonc=$((nonc+1)) ;; esac
+done
+
+# A host with NO non-C locale cannot exercise the regression at all: with only C/POSIX the fold
+# works whether or not `LC_ALL=C` is pinned, so the loop above would pass vacuously and a future
+# removal of the pin would sail through the gate (PR#25 codex-rd2-r1). There is no behavioural
+# oracle for a locale pin on a host with one locale, so fall back to asserting the pin is present
+# — narrower than a behaviour test, but non-vacuous everywhere, and stated loudly rather than
+# skipped silently (this repo's no-silent-caps rule).
+if (( nonc > 0 )); then
+  ok "locale invariance exercised under ${nonc} non-C locale(s)"
+else
+  echo "  note: no non-C locale on this host — falling back to a structural check of the pin"
+  grep -qE "LC_ALL=C[[:space:]]+tr[[:space:]]+'\[:upper:\]'" "$SUT" \
+    && ok "vendor_of_model fold is locale-pinned (structural; no non-C locale to test with)" \
+    || bad "vendor_of_model fold is not locale-pinned and no non-C locale exists to prove it"
+fi
+
+# Non-regression: case-folding must NOT widen what maps. A genuinely unknown vendor stays
+# unmappable in every casing, so verify-vendor still fails closed on it.
+for id in llama-3 LLAMA-3 Mistral-Large deepseek-v3 ""; do
+  bash "$SUT" vendor-of-model "$id" >/dev/null 2>&1 \
+    && bad "vendor mapping: '$id' should be unmappable but resolved" \
+    || ok "vendor mapping: '${id:-<empty>}' stays unmappable in any case"
+done
+
+# Non-regression: verify-vendor still REJECTS a real cross-vendor mismatch — case-folding must
+# not let an anthropic id pass as the openai provider just because the casing now normalises.
+MM="${WORK}/mismatch.md"; MMB="${WORK}/mismatch.baseline"
+printf '# T\n\n## Review\n' > "$MMB"
+{ printf '# T\n\n## Review\n'; printf '> [finding:r1|high] x\n> — via Claude-Opus-4-8\n> — risk: r\n'; } > "$MM"
+bash "$SUT" verify-vendor --baseline "$MMB" "$MM" --reviewer codex >/dev/null 2>&1 \
+  && bad "verify-vendor admitted an anthropic disclosure for the codex provider" \
+  || ok "verify-vendor still rejects a cross-vendor mismatch in mixed case"
+
+# ...and still ADMITS the correct vendor in mixed case (the bug this fixes).
+MO="${WORK}/okcase.md"
+{ printf '# T\n\n## Review\n'; printf '> [finding:r1|high] x\n> — via GPT-5\n> — risk: r\n'; } > "$MO"
+bash "$SUT" verify-vendor --baseline "$MMB" "$MO" --reviewer codex >/dev/null 2>&1 \
+  && ok "verify-vendor admits 'GPT-5' for the codex provider (issue #24 repro)" \
+  || bad "verify-vendor still quarantines a correctly-vendored uppercase disclosure"
+
 # --- advisory check: gemini (Task 1) ---
 # Deterministic env: no ambient GEMINI_* leaking in (this repo's maintainer exports the trust var).
 unset GEMINI_API_KEY GEMINI_CLI_TRUST_WORKSPACE
