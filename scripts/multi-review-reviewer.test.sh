@@ -543,15 +543,38 @@ CASES
 # silently skipped, including tr_TR, leaving this block vacuous exactly where it mattered. Same
 # hazard cmd_ensure_skill documents ("capture then test; avoids grep -q SIGPIPE under pipefail").
 LOCALES_AVAIL="$(locale -a 2>/dev/null)"
-for L in C POSIX en_US.UTF-8 tr_TR.UTF-8 tr_TR.ISO8859-9 de_DE.UTF-8; do
-  printf '%s\n' "$LOCALES_AVAIL" | grep -qix "${L}" || continue   # skip locales absent on this host
+# Candidates are DISCOVERED from the host, not hardcoded (PR#25 gemini-rd2-r1): distros spell the
+# charset differently (`en_US.UTF-8` vs `en_US.utf8`), so an exact-name list silently matches
+# nothing on those hosts. Prefer Turkish (the canonical hostile case-folding locale), then any
+# other non-C locale, and cap the count to keep the suite fast.
+LOC_TR="$(printf '%s\n' "$LOCALES_AVAIL" | grep -iE '^tr_TR([.@]|$)' | head -2 || true)"
+LOC_OTHER="$(printf '%s\n' "$LOCALES_AVAIL" | grep -iE '^(en_US|de_DE)([.@]|$)' | head -2 || true)"
+nonc=0
+for L in C POSIX $LOC_TR $LOC_OTHER; do
+  [[ -n "$L" ]] || continue
   out="$(LC_ALL="$L" bash "$SUT" vendor-of-model GEMINI 2>/dev/null)"
   [[ "$out" == "google" ]] && ok "vendor mapping: 'GEMINI' -> google under LC_ALL=$L" \
     || bad "vendor mapping: locale $L broke the fold ('GEMINI' -> '$out')"
   out="$(LC_ALL="$L" bash "$SUT" vendor-of-model CLAUDE-OPUS-4-8 2>/dev/null)"
   [[ "$out" == "anthropic" ]] && ok "vendor mapping: 'CLAUDE-OPUS-4-8' -> anthropic under LC_ALL=$L" \
     || bad "vendor mapping: locale $L broke the fold ('CLAUDE-OPUS-4-8' -> '$out')"
+  case "$L" in C|POSIX) : ;; *) nonc=$((nonc+1)) ;; esac
 done
+
+# A host with NO non-C locale cannot exercise the regression at all: with only C/POSIX the fold
+# works whether or not `LC_ALL=C` is pinned, so the loop above would pass vacuously and a future
+# removal of the pin would sail through the gate (PR#25 codex-rd2-r1). There is no behavioural
+# oracle for a locale pin on a host with one locale, so fall back to asserting the pin is present
+# — narrower than a behaviour test, but non-vacuous everywhere, and stated loudly rather than
+# skipped silently (this repo's no-silent-caps rule).
+if (( nonc > 0 )); then
+  ok "locale invariance exercised under ${nonc} non-C locale(s)"
+else
+  echo "  note: no non-C locale on this host — falling back to a structural check of the pin"
+  grep -qE "LC_ALL=C[[:space:]]+tr[[:space:]]+'\[:upper:\]'" "$SUT" \
+    && ok "vendor_of_model fold is locale-pinned (structural; no non-C locale to test with)" \
+    || bad "vendor_of_model fold is not locale-pinned and no non-C locale exists to prove it"
+fi
 
 # Non-regression: case-folding must NOT widen what maps. A genuinely unknown vendor stays
 # unmappable in every casing, so verify-vendor still fails closed on it.
