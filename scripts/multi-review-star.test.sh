@@ -1423,6 +1423,18 @@ msg="$(bash "$SUT" channel-check --baseline "$CCB" "$CCX" 2>&1 >/dev/null)"
 bash "$SUT" channel-check --baseline "${WORK}/nope.md" "$CCG" >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "channel-check: missing baseline fails" || bad "missing baseline passed"
 
+# --- the reason names the actual shape, since it becomes a quarantine reason ---
+CCH="$(mkcc cch.md '# Doc' '> [finding:r1|low] appended with no channel at all')"
+CCHB="$(mkcc cchb.md '# Doc')"
+msg="$(bash "$SUT" channel-check --baseline "$CCHB" "$CCH" 2>&1 >/dev/null)"
+[[ "$msg" == *"NO '## Review' heading"* ]] \
+  && ok "channel-check: no-heading shape is named accurately" \
+  || bad "no-heading case reported as a fenced-capture ('$msg')"
+msg="$(bash "$SUT" channel-check --baseline "$CCB" "$CCX" 2>&1 >/dev/null)"
+[[ "$msg" == *"earlier or fenced"* ]] \
+  && ok "channel-check: fenced-capture shape still named correctly" \
+  || bad "fenced-capture case mis-reported ('$msg')"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

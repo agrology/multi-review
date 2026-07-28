@@ -543,7 +543,12 @@ cmd_channel_check() {
   added_channel=$(( cc - cb ))
   (( added_total <= added_channel )) && return 0
   stray=$(( added_total - added_channel ))
-  die "reviewer added ${added_total} finding(s) but only ${added_channel} reached the '## Review' channel — ${stray} landed outside it (an earlier or fenced '## Review' captured them). Merging would record this turn as clean." 1
+  # Name the actual shape. "An earlier or fenced heading captured them" is wrong — and
+  # misleading as a quarantine reason — when the copy has no channel heading at all.
+  local why="an earlier or fenced '## Review' captured them"
+  grep -qE '^[[:space:]]*## Review[[:space:]]*$' "$copy" \
+    || why="the copy has NO '## Review' heading, so nothing could reach the channel"
+  die "reviewer added ${added_total} finding(s) but only ${added_channel} reached the '## Review' channel — ${stray} landed outside it (${why}). Merging would record this turn as clean." 1
 }
 
 # --- doc↔manifest consistency (issue #16) ----------------------------------
