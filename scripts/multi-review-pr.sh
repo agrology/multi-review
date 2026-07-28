@@ -201,6 +201,12 @@ cmd_ingest() { # [--fresh] <owner> <repo> <number> -> writes scratch file, print
   local title url author branch
   IFS=$'\t' read -r title url author branch <<< "$meta"
   cmd_seed "$out" "$title" "$url" "$author" "$branch" "$descf" "$difff"
+  # Record the round-1 head/merge-base. The record is an INPUT to the first `refresh`, not only
+  # an output of it — without this, PR scoping has no `since` revision and cannot start at all.
+  local hb hsha hmb
+  hb="$(_head_and_merge_base "$repo" "$ref" "$n")"
+  IFS='|' read -r hsha hmb <<< "$hb"
+  [[ -n "$hsha" ]] && cmd_record_head "$out" 1 "$hsha" "$hmb"
   rm -rf "$tmpd"
   echo "$out"
 }
@@ -248,10 +254,132 @@ cmd_validate_anchor() { # <scratch> <path> <start> [end] -> exit 0 if every line
   '
 }
 
+# ---- Phase B: per-round head records ----------------------------------------------------
+# A scoped PR round needs to know what the head and merge-base were at the PREVIOUS round, so
+# each round's pair is recorded durably in the scratch header. Records ACCUMULATE and are
+# immutable: publish reads them to decide whether an anchor is still resolvable, so silently
+# rewriting one would change the meaning of an already-merged finding.
+#
+# Shape mirrors the quarantine line, and therefore parses with the same kind of reader:
+#   <!-- multi-review-pr-head: <head-sha> · merge-base <sha> · round <N> -->
+#
+# "merge-base", NOT the base branch tip: the tip advances on every unrelated merge to the base
+# branch (so an equality guard would degrade every round), while the merge-base moves only when
+# the PR branch actually absorbs upstream — which is exactly the case a scoped delta must refuse.
+
+cmd_head_record() { # <scratch> <round> -> "head|merge-base"; exit 1 if this round has no record
+  local scratch="${1:?scratch}" round="${2:?round}" line
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  [[ "$round" =~ ^[0-9]+$ ]] || die "round must be a number" 1
+  while IFS= read -r line; do
+    [[ "$line" =~ multi-review-pr-head:[[:space:]]*([^[:space:]]+)[[:space:]]*·[[:space:]]*merge-base[[:space:]]+([^[:space:]]+)[[:space:]]*·[[:space:]]*round[[:space:]]+([0-9]+) ]] || continue
+    if (( ${BASH_REMATCH[3]} == round )); then
+      printf '%s|%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
+    fi
+  done < <(grep -F 'multi-review-pr-head' "$scratch" 2>/dev/null)
+  return 1
+}
+
+cmd_record_head() { # <scratch> <round> <head-sha> <merge-base-sha>
+  local scratch="${1:?scratch}" round="${2:?round}" head="${3:?head}" mb="${4:?merge-base}"
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  [[ "$round" =~ ^[0-9]+$ ]] || die "round must be a number" 1
+  cmd_head_record "$scratch" "$round" >/dev/null 2>&1 \
+    && die "head record already exists for round ${round} (records are immutable)" 1
+  # Anchor in the HEADER region (above the first "## "), after the last existing record so the
+  # rounds read in order; the Branch line is the seed-written fallback for the first record.
+  local anchor
+  anchor="$(grep -n 'multi-review-pr-head' "$scratch" | tail -1 | cut -d: -f1)"
+  [[ -n "$anchor" ]] || anchor="$(grep -n '^- \*\*Branch:\*\* ' "$scratch" | head -1 | cut -d: -f1)"
+  [[ -n "$anchor" ]] || die "no anchor in scratch header (expected '- **Branch:** '): $scratch" 1
+  local tmp; tmp="$(mktemp)" || die "mktemp failed" 1
+  {
+    head -n "$anchor" "$scratch"
+    printf '<!-- multi-review-pr-head: %s · merge-base %s · round %s -->\n' "$head" "$mb" "$round"
+    tail -n +$((anchor + 1)) "$scratch"
+  } > "$tmp" || { rm -f "$tmp"; die "cannot write head record" 1; }
+  mv "$tmp" "$scratch" || { rm -f "$tmp"; die "cannot update: $scratch" 1; }
+}
+
+cmd_replace_diff() { # <scratch> <diff-file> — swap ## Diff, preserve everything else
+  local scratch="${1:?scratch}" difff="${2:?diff-file}"
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  [[ -f "$difff"   ]] || die "diff file not found: $difff" 1
+  local dstart rstart
+  dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | head -1 | cut -d: -f1)"
+  [[ -n "$dstart" ]] || die "no '## Diff' section in: $scratch" 1
+  # Everything from the LAST "## Review" is preserved byte-identical — that is the whole point
+  # of refresh, and why ingest refuses to touch an existing scratch.
+  rstart="$(grep -n '^## Review[[:space:]]*$' "$scratch" | tail -1 | cut -d: -f1)"
+  [[ -n "$rstart" ]] || die "no '## Review' section in: $scratch" 1
+  (( rstart > dstart )) || die "'## Review' precedes '## Diff' in: $scratch" 1
+  local fence; fence="$(cmd_fence "$difff")"
+  local tmp; tmp="$(mktemp)" || die "mktemp failed" 1
+  {
+    head -n $((dstart - 1)) "$scratch"
+    printf '## Diff\n\n%s\n' "$fence"
+    cat "$difff"
+    printf '%s\n\n' "$fence"
+    tail -n +"$rstart" "$scratch"
+  } > "$tmp" || { rm -f "$tmp"; die "cannot write replacement diff" 1; }
+  mv "$tmp" "$scratch" || { rm -f "$tmp"; die "cannot update: $scratch" 1; }
+}
+
+# _head_and_merge_base <repo> <ref> <number> -> "head|merge-base"
+# merge-base is "-" when it cannot be computed locally (no git repo, unfetchable fork head, base
+# branch not present). "-" is a RECORDED UNKNOWN, not a silent zero: pr-copy treats it as a
+# cannot-scope condition and the round degrades to the full document with that reason, which is
+# strictly better than recording nothing and leaving the first refresh with no `since` to read.
+_head_and_merge_base() {
+  local repo="${1:?repo}" ref="${2:?ref}" number="${3:?number}" meta head base mb=""
+  meta="$(gh pr view "$ref" --repo "$repo" --json headRefOid,baseRefName \
+            --jq '[.headRefOid,.baseRefName] | @tsv' 2>/dev/null)" || { printf '|-\n'; return 0; }
+  IFS=$'\t' read -r head base <<< "$meta"
+  [[ -n "$head" ]] || { printf '|-\n'; return 0; }
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    # A fork PR's head is not in the local object store; GitHub exposes it on the BASE repo as
+    # refs/pull/<n>/head, so fetch that rather than degrading (the alternative disables scoping
+    # for essentially every external contribution).
+    git cat-file -e "${head}^{commit}" 2>/dev/null \
+      || git fetch -q origin "refs/pull/${number}/head" 2>/dev/null || true
+    mb="$(git merge-base "origin/${base}" "$head" 2>/dev/null)" \
+      || mb="$(git merge-base "$base" "$head" 2>/dev/null)" || mb=""
+  fi
+  printf '%s|%s\n' "$head" "${mb:--}"
+}
+
+cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head for a new round
+  local scratch="${1:?scratch}" round="${2:?round}" url o r n
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  [[ "$round" =~ ^[0-9]+$ ]] || die "round must be a number" 1
+  url="$(grep -m1 -E '^- \*\*PR:\*\* ' "$scratch" | sed -E 's/^- \*\*PR:\*\* //')"
+  [[ -n "$url" ]] || die "no PR url in scratch header ('- **PR:** ...'): $scratch" 1
+  local parsed; parsed="$(cmd_parse "$url")" || die "cannot parse PR url from scratch: $url" 1
+  IFS='|' read -r o r n <<< "$parsed"
+  [[ -n "$o" && -n "$r" && -n "$n" ]] || die "incomplete PR ref from scratch url: $url" 1
+  local tmpd; tmpd="$(mktemp -d)" || die "mktemp failed" 1
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmpd'" RETURN
+  gh pr diff "$n" --repo "${o}/${r}" > "${tmpd}/diff" \
+    || die "gh pr diff failed for ${o}/${r}#${n}" 1
+  local hb head mb
+  hb="$(_head_and_merge_base "${o}/${r}" "$n" "$n")"
+  IFS='|' read -r head mb <<< "$hb"
+  [[ -n "$head" ]] || die "could not resolve the PR head sha for ${o}/${r}#${n}" 1
+  # Record BEFORE replacing, so a failure leaves the scratch untouched rather than half-updated.
+  cmd_record_head "$scratch" "$round" "$head" "$mb"
+  cmd_replace_diff "$scratch" "${tmpd}/diff"
+  echo "$scratch"
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     parse)        cmd_parse "$@" ;;
+    refresh)      cmd_refresh "$@" ;;
+    record-head)  cmd_record_head "$@" ;;
+    head-record)  cmd_head_record "$@" ;;
+    replace-diff) cmd_replace_diff "$@" ;;
     fence)        cmd_fence "$@" ;;
     seed)         cmd_seed "$@" ;;
     ingest)       cmd_ingest "$@" ;;

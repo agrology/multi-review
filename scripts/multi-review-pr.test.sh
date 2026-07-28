@@ -579,6 +579,78 @@ else
   ok "publish-star: not the asymmetric compose"
 fi
 
+# ============================== Phase B: head records ==============================
+# mkscratch <name> -> a seeded scratch file with a diff and an empty ## Review
+mkscratch() {
+  local p="${WORK}/$1"
+  printf 'body text\n' > "${WORK}/d.desc"
+  printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-old\n+new\n' > "${WORK}/d.diff"
+  bash "$SUT" seed "$p" "T" "https://github.com/o/r/pull/9" "auth" "br" "${WORK}/d.desc" "${WORK}/d.diff"
+  echo "$p"
+}
+
+# --- record-head writes a record readable by head-record ---
+SC="$(mkscratch s1.md)"
+bash "$SUT" record-head "$SC" 1 aaaa1111 bbbb2222 2>/dev/null
+out="$(bash "$SUT" head-record "$SC" 1 2>/dev/null)"
+[[ "$out" == "aaaa1111|bbbb2222" ]] && ok "record-head: round-trips head|merge-base" || bad "head record round-trip (got '$out')"
+
+# --- the record lives in the HEADER region, above the first '## ' heading ---
+recln="$(grep -n 'multi-review-pr-head' "$SC" | head -1 | cut -d: -f1)"
+firsth="$(grep -n '^## ' "$SC" | head -1 | cut -d: -f1)"
+(( recln < firsth )) && ok "record-head: record sits in the header region" || bad "record outside header (rec=$recln first##=$firsth)"
+
+# --- records ACCUMULATE; an earlier round is never overwritten ---
+bash "$SUT" record-head "$SC" 2 cccc3333 bbbb2222 2>/dev/null
+r1="$(bash "$SUT" head-record "$SC" 1 2>/dev/null)"
+r2="$(bash "$SUT" head-record "$SC" 2 2>/dev/null)"
+[[ "$r1" == "aaaa1111|bbbb2222" && "$r2" == "cccc3333|bbbb2222" ]] \
+  && ok "record-head: rounds accumulate independently" || bad "records clobbered (r1='$r1' r2='$r2')"
+
+# --- head-record for a round with no record fails, and prints nothing ---
+out="$(bash "$SUT" head-record "$SC" 7 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 && -z "$out" ]] && ok "head-record: absent round fails loud" || bad "absent round leaked (rc=$rc out='$out')"
+
+# --- re-recording the SAME round is refused (a round's record is immutable) ---
+bash "$SUT" record-head "$SC" 1 dddd4444 bbbb2222 >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "record-head: refuses to overwrite a round" || bad "round record was overwritten"
+
+# --- replace-diff swaps ## Diff and preserves ## Review byte-identical ---
+SC2="$(mkscratch s2.md)"
+printf '> [finding:codex-rd1-r1|low] a finding\n> — via gpt-5\n> — risk: r\n' >> "$SC2"
+before_review="$(awk '/^## Review$/{f=1} f' "$SC2")"
+printf 'diff --git a/g.txt b/g.txt\n--- a/g.txt\n+++ b/g.txt\n@@ -1 +1 @@\n-p\n+q\n' > "${WORK}/d2.diff"
+bash "$SUT" replace-diff "$SC2" "${WORK}/d2.diff" 2>/dev/null
+after_review="$(awk '/^## Review$/{f=1} f' "$SC2")"
+[[ "$before_review" == "$after_review" ]] && ok "replace-diff: ## Review survives byte-identical" || bad "## Review altered by replace-diff"
+grep -q 'g.txt' "$SC2" && ok "replace-diff: new diff is present" || bad "new diff missing"
+grep -q 'f.txt' "$SC2" && bad "old diff survived replace-diff" || ok "replace-diff: old diff replaced"
+
+# --- replace-diff preserves the PR header (url/author/branch) ---
+grep -q '^- \*\*PR:\*\* https://github.com/o/r/pull/9$' "$SC2" \
+  && ok "replace-diff: PR header preserved" || bad "PR header lost"
+
+# --- replace-diff recomputes the fence for content carrying a 3-backtick run ---
+SC3="$(mkscratch s3.md)"
+printf 'diff --git a/h.md b/h.md\n--- a/h.md\n+++ b/h.md\n@@ -1 +1,2 @@\n-x\n+```\n' > "${WORK}/d3.diff"
+bash "$SUT" replace-diff "$SC3" "${WORK}/d3.diff" 2>/dev/null
+awk '/^## Diff$/{f=1;next} f&&/^`{4,}$/{n++} END{exit !(n>=2)}' "$SC3" \
+  && ok "replace-diff: fence widened past content" || bad "replace-diff fence not widened"
+
+# --- refresh: a scratch with no PR url fails loud, and does not touch the file ---
+SC4="$(mkscratch s4.md)"
+perl -ni -e 'print unless /^- \*\*PR:\*\* /' "$SC4"
+sum_before="$(shasum "$SC4" | cut -d' ' -f1)"
+bash "$SUT" refresh "$SC4" 2 >/dev/null 2>&1; rc=$?
+sum_after="$(shasum "$SC4" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$sum_before" == "$sum_after" ]] \
+  && ok "refresh: no PR url fails loud, scratch untouched" || bad "refresh mangled a url-less scratch (rc=$rc)"
+
+# --- refresh: a non-numeric round is rejected before any network call ---
+SC5="$(mkscratch s5.md)"
+bash "$SUT" refresh "$SC5" notanumber >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "refresh: non-numeric round rejected" || bad "refresh accepted a bad round"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
