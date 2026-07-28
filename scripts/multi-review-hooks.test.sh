@@ -41,6 +41,16 @@ out="$(runhook "$r" "$sha")"; rc=$?
   || bad "pre-push allowed an unbumped push (rc=$rc): $out"
 grep -qi 'plugin.json' <<<"$out" && ok "pre-push: says what to bump" || bad "refusal not actionable: $out"
 grep -qi 'no-verify' <<<"$out" && ok "pre-push: names the escape hatch" || bad "no bypass hint: $out"
+# The refusal WORDING is mode-dependent and was never asserted, so a bash-expansion bug printed
+# "this push<40-hex-sha> changes tracked files" in exactly the new hook path and no test noticed.
+grep -qE 'this push changes tracked files' <<<"$out" \
+  && ok "pre-push: refusal wording is clean in hook mode" \
+  || bad "hook-mode wording is garbled: $(grep -o 'this [^ ]* changes tracked files' <<<"$out")"
+# ...and the hand-run gate (no head ref) says "branch", not "push"
+gateout="$( cd "$r" && bash scripts/multi-review-version-check.sh main 2>&1 )"
+grep -qE 'this branch changes tracked files' <<<"$gateout" \
+  && ok "version-check: hand-run wording says branch, not push" \
+  || bad "hand-run wording wrong: $(grep -o 'this [^ ]* changes tracked files' <<<"$gateout")"
 
 # --- changed and bumped -> allowed ---
 r="$(newrepo 1.1.0)"; echo changed > "$r/file.txt"; setver "$r" 1.2.0; commit "$r"
@@ -158,6 +168,16 @@ r2="$(newrepo 1.1.0)"
     && bash scripts/multi-review-install-hooks.sh --uninstall >/dev/null 2>&1 )
 [[ -z "$(cd "$r2" && git config core.hooksPath 2>/dev/null)" ]] \
   && ok "install-hooks: --uninstall removes its own install" || bad "--uninstall could not remove its own install"
+# A pre-existing value EQUAL to ours is still not ours (PR#28 codex-rd3-r1): adopting it would let
+# a later --uninstall remove config this installer never created.
+r3="$(newrepo 1.1.0)"
+( cd "$r3" && git config core.hooksPath .githooks )      # someone else, same value, no marker
+( cd "$r3" && bash scripts/multi-review-install-hooks.sh >/dev/null 2>&1 ); rc=$?
+[[ $rc -ne 0 ]] && ok "install-hooks: refuses to adopt an unowned .githooks value" \
+  || bad "install-hooks adopted an unowned hooksPath that merely matched"
+[[ "$(cd "$r3" && git config --get multi-review.hooksinstalled 2>/dev/null)" != "true" ]] \
+  && ok "install-hooks: does not claim ownership it was refused" || bad "install-hooks wrote an ownership marker anyway"
+
 # an explicit --force is the way through
 ( cd "$r" && bash scripts/multi-review-install-hooks.sh --force >/dev/null 2>&1 )
 [[ "$(cd "$r" && git config core.hooksPath)" == ".githooks" ]] \

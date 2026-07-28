@@ -49,10 +49,13 @@ esac
 
 [[ -d "$OURS" ]] || { echo "install-hooks: no ${OURS}/ directory here" >&2; exit 1; }
 
-if [[ -n "$current" && "$current" != "$OURS" && "$force" != "1" ]]; then
-  echo "install-hooks: core.hooksPath already points at '${current}'." >&2
-  echo "install-hooks: refusing to overwrite it — that would disable the hooks it provides." >&2
-  echo "install-hooks: re-run with --force if you really want ${OURS} instead." >&2
+# Refuse ANY pre-existing value we did not set — including one that already equals $OURS. Value
+# equality is not ownership: another tool can legitimately point core.hooksPath at .githooks, and
+# adopting it here would let a later --uninstall remove configuration this installer never created.
+if [[ -n "$current" && "$(git config --get "$OWNED" 2>/dev/null)" != "true" && "$force" != "1" ]]; then
+  echo "install-hooks: core.hooksPath already points at '${current}', set by something other than this installer." >&2
+  echo "install-hooks: refusing to adopt it — a later --uninstall would then remove config it did not create." >&2
+  echo "install-hooks: re-run with --force to take ownership of it." >&2
   exit 1
 fi
 

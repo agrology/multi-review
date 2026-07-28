@@ -35,6 +35,10 @@ git rev-parse --git-dir >/dev/null 2>&1 || { note "not a git repo — nothing to
 # that simply has nothing to compare against. Silence here would read as approval.
 base="${1:-}"
 head="${2:-}"
+# What the operator is doing, for messages. Spelled out rather than folded into one expansion:
+# `${head:+push}${head:-branch}` reads as a tidy either/or but is not — when head is set,
+# `${head:-branch}` substitutes head's VALUE, producing "this push<40-hex-sha> changes ...".
+if [[ -n "$head" ]]; then what="push"; else what="branch"; fi
 if [[ -z "$base" ]]; then
   for cand in origin/main main; do
     git rev-parse --verify -q "$cand" >/dev/null 2>&1 && { base="$cand"; break; }
@@ -129,6 +133,6 @@ if semver_gt "$cur" "$old"; then
   exit 0
 fi
 
-die "this ${head:+push}${head:-branch} changes tracked files but ${MANIFEST_REL} is still ${cur} (base ${base} has ${old}).
+die "this ${what} changes tracked files but ${MANIFEST_REL} is still ${cur} (base ${base} has ${old}).
     Installed plugins decide whether to update by comparing this version, so shipping without a
     bump leaves every existing install silently on the old code. Raise it before merging." 1
