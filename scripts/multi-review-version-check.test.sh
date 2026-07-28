@@ -123,6 +123,45 @@ out="$(cd "$r" && bash scripts/multi-review-version-check.sh 2>&1)"; rc=$?
 [[ $rc -eq 0 ]] && grep -qi 'skipping' <<<"$out" \
   && ok "no base ref: passes but says why" || bad "no-base handling (rc=$rc): $out"
 
+# --- a NEW manifest must still be validated (PR#27 codex-rd2-r1 / gemini-rd2-r2) -------------
+# The "no version at base" path exited 0 BEFORE validation ran, so the first version a manifest
+# ever carries could be anything. Two vendors found this independently.
+r="${WORK}/newman"; mkdir -p "$r/scripts" "$r/.claude-plugin"; cp "$SUT" "$r/scripts/"
+echo base > "$r/file.txt"
+( cd "$r" && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm base \
+    && git branch -M main && git checkout -q -b feature )
+printf '{"name":"m","version":"v1.0"}\n' > "$r/.claude-plugin/plugin.json"
+( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm add )
+out="$(run "$r")"; rc=$?
+[[ $rc -eq 2 ]] && ok "new manifest: an invalid first version is still rejected" \
+  || bad "new manifest bypassed validation (rc=$rc): $out"
+# ...and a VALID first version is accepted
+printf '{"name":"m","version":"0.1.0"}\n' > "$r/.claude-plugin/plugin.json"
+( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm fix )
+[[ "$(run "$r" >/dev/null 2>&1; echo $?)" == "0" ]] \
+  && ok "new manifest: a valid first version is accepted" || bad "new manifest rejected a valid first version"
+
+# --- leading zeros (PR#27 gemini-rd2-r1 / fable-rd2-r1) --------------------------------------
+# Semver forbids leading zeros, and bash arithmetic makes them actively dangerous: `08`/`09` raise
+# "value too great for base" (both compares then read false, failing a legitimate bump), and
+# octal-valid strings are silently reinterpreted — 1.017.0 → 1.16.0 compares 16 > 15 and PASSES
+# while the plugin UI's decimal compare sees a DECREASE. A real false pass, found by two vendors.
+for v in 1.08.0 1.017.0 01.2.3 1.2.03; do
+  r="$(newrepo 1.1.0)"; echo changed > "$r/file.txt"; setver "$r" "$v"
+  ( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+  out="$(run "$r")"; rc=$?
+  [[ $rc -eq 2 ]] && ok "leading-zero version '$v' rejected" || bad "leading-zero '$v' rc=$rc: $out"
+done
+# the specific false pass: base 1.017.0 (octal 15) vs current 1.16.0 — decimal says DECREASE
+r="$(newrepo 1.017.0)"; echo changed > "$r/file.txt"; setver "$r" 1.16.0
+( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+out="$(run "$r")"; rc=$?
+[[ $rc -ne 0 ]] && ok "octal-valid leading zeros cannot produce a false pass" \
+  || bad "FALSE PASS: 1.017.0 -> 1.16.0 accepted as a bump: $out"
+# no stray arithmetic error text leaks either
+! grep -qi 'value too great' <<<"$out" && ok "no bash octal error leaks to the operator" \
+  || bad "octal arithmetic error surfaced: $out"
+
 # --- not a git repo -> pass with a reason (a tarball install must not fail the gate) ---
 r="${WORK}/nogit"; mkdir -p "$r/scripts" "$r/.claude-plugin"; cp "$SUT" "$r/scripts/"
 printf '{"name":"multi-review","version":"1.0.0"}\n' > "$r/.claude-plugin/plugin.json"

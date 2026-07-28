@@ -52,24 +52,36 @@ version_at() { # <ref-or-empty> -> version string ("" if unreadable)
 cur="$(version_at "")"
 old="$(version_at "$base")"
 [[ -n "$cur" ]] || die "cannot read a version from ${MANIFEST_REL}" 2
-# No version on the base (the manifest is new here) — any current version is an increase.
-[[ -n "$old" ]] || { note "no version at ${base} — treating '${cur}' as the first"; exit 0; }
 
 # Validate the WHOLE string BEFORE comparing. Validating per-component inside the compare loop was
 # not equivalent: the loop returns as soon as one component differs, so `1.2` beat `1.1.0` on the
 # minor field and never looked at the missing patch, and `1.2.4.0` compared as `1.2.4` with the
 # trailing field ignored. A release gate that accepts a version the plugin UI then has to parse is
 # worse than no gate.
-semver_valid() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+# LEADING ZEROS ARE REJECTED, per semver, and not merely for spec purity: bash arithmetic treats
+# them as octal, which makes them actively dangerous here. `08`/`09` raise "value too great for
+# base" so BOTH comparisons read false and a legitimate bump silently fails; and an octal-valid
+# string is reinterpreted — base 1.017.0 vs current 1.16.0 compares 16 > 15 and PASSES the gate
+# while the plugin UI, comparing decimally, sees a DECREASE and never offers the update. That is a
+# false pass in the one check whose whole job is preventing a silent non-release.
+semver_valid() { [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; }
 
-for v in "$old:base ${base}" "$cur:current"; do
-  ver="${v%%:*}"; which="${v#*:}"
-  semver_valid "$ver" && continue
-  case "$ver" in
-    *-*|*+*) die "${which} version '${ver}' uses a pre-release/build suffix; this gate compares MAJOR.MINOR.PATCH only" 2 ;;
-    *)       die "${which} version '${ver}' is not MAJOR.MINOR.PATCH" 2 ;;
+validate() { # <version> <which>
+  semver_valid "$1" && return 0
+  case "$1" in
+    *-*|*+*) die "$2 version '$1' uses a pre-release/build suffix; this gate compares MAJOR.MINOR.PATCH only" 2 ;;
+    0[0-9]*|*.0[0-9]*) die "$2 version '$1' has a leading-zero component; semver forbids it and it would be read as octal" 2 ;;
+    *)       die "$2 version '$1' is not MAJOR.MINOR.PATCH" 2 ;;
   esac
-done
+}
+
+# Validate the CURRENT version before any early exit. The no-version-at-base path used to return
+# success first, so the very first version a manifest carried was never checked at all — and every
+# later bump is then compared against an invalid baseline (codex-rd2-r1, gemini-rd2-r2).
+validate "$cur" "current"
+# No version on the base (the manifest is new here) — any valid current version is an increase.
+[[ -n "$old" ]] || { note "no version at ${base} — treating '${cur}' as the first"; exit 0; }
+validate "$old" "base ${base}"
 
 # Strictly-greater compare, numeric per component so 1.10.0 > 1.9.0 (a lexical compare gets that
 # backwards, and the plugin UI would never offer the update).
@@ -77,8 +89,10 @@ semver_gt() { # <a> <b> -> 0 if a > b
   local a="$1" b="$2" i av bv
   for i in 1 2 3; do
     av="$(printf '%s' "$a" | cut -d. -f"$i")"; bv="$(printf '%s' "$b" | cut -d. -f"$i")"
-    (( av > bv )) && return 0
-    (( av < bv )) && return 1
+    # 10# explicitly: validation already forbids leading zeros, but this is the line where an
+    # octal reinterpretation would silently invert the verdict, so it does not rely on that alone.
+    (( 10#$av > 10#$bv )) && return 0
+    (( 10#$av < 10#$bv )) && return 1
   done
   return 1                                   # equal is NOT greater
 }

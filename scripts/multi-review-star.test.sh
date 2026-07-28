@@ -681,11 +681,37 @@ body="$(bash "$SUT" compose-review "$BLANKQ" claude-opus-5 2>&1)"
   || bad "compose-review disclosure corrupted by a malformed record: $body"
 
 # ...and merge refuses to WRITE one, so the malformed record cannot reach a doc in the first place.
-MB="${WORK}/mb.md"; mkbase "$MB"
+# Self-contained: mkbase is defined further down this file, and a call before its definition
+# silently fails — which made an earlier revision of this very assertion pass vacuously.
+MB="${WORK}/mb.md"
+{ echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$MB"
 mkcopy "${MB}.codex" '> [finding:r1|high] a' '> — via gpt-5.6-terra' '> — risk: r'
 bash "$SUT" merge --round 1 --quarantined "gemini:   " "$MB" "${MB}.codex" >/dev/null 2>&1 \
   && bad "merge accepted a blank quarantine reason" \
   || ok "merge: refuses a blank quarantine reason at the source"
+
+# merge must validate the PROVIDER too (PR#27 fable-rd2-r2). Validating only the reason left a
+# hole in the same shape as the bug it fixed: a provider outside [a-z0-9]+ (or a --quarantined arg
+# with no colon, which makes the whole string the "reason" and passes the non-blank check) writes
+# a record every _quarantines reader silently drops — re-opening #26's invisibility through the
+# unvalidated field.
+for badq in "Gemini:timeout" "gem ini:timeout" "noColonAtAll" ":timeout"; do
+  MP="${WORK}/mp$RANDOM.md"
+  { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$MP"
+  mkcopy "${MP}.codex" '> [finding:r1|high] a' '> — via gpt-5.6-terra' '> — risk: r'
+  bash "$SUT" merge --round 1 --quarantined "$badq" "$MP" "${MP}.codex" >/dev/null 2>&1 \
+    && bad "merge accepted a malformed --quarantined arg: '$badq'" \
+    || ok "merge: rejects malformed --quarantined '$badq'"
+done
+# a well-formed one still works
+MP="${WORK}/mpok.md"
+{ echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$MP"
+mkcopy "${MP}.codex" '> [finding:r1|high] a' '> — via gpt-5.6-terra' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined "gemini:dispatch timed out" "$MP" "${MP}.codex" >/dev/null 2>&1 \
+  && ok "merge: still accepts a well-formed quarantine" || bad "merge rejected a valid quarantine"
+[[ "$(bash "$SUT" gate-summary "$MP" claude-opus-5 2>/dev/null | grep -c 'gemini · dispatch timed out')" -ge 1 ]] \
+  && ok "merge: a valid multi-word reason survives round-trip to the readers" \
+  || bad "valid quarantine did not round-trip"
 
 # --- the quarantine record has ONE parser, and it is fence-aware (issue #26) -----------------
 # A fenced EXAMPLE of the record is documentation, not a live quarantine. verify/check-converged

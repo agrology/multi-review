@@ -644,9 +644,14 @@ cmd_merge() {
   local qprovider qreason qmirror=""
   for q in "${quarantined[@]:-}"; do
     [[ -z "$q" ]] && continue
+    # Fail loud at the source. Validating only the REASON left a hole the same shape as the bug it
+    # fixed: a provider outside [a-z0-9]+ — or an arg with no colon at all, which makes the whole
+    # string the "reason" and sails past a non-blank check — writes a record that every
+    # _quarantines reader silently drops, re-opening #26's invisibility through the other field.
+    [[ "$q" == *:* ]] || die "merge: --quarantined must be <provider>:<reason>, got '${q}'" 2
     qprovider="${q%%:*}"; qreason="${q#*:}"
-    # Fail loud at the source: a blank reason produces a record the readers cannot parse, and a
-    # quarantine whose reason is empty tells the human gate nothing anyway.
+    [[ "$qprovider" =~ ^[a-z0-9]+$ ]] \
+      || die "merge: quarantine provider '${qprovider}' must match [a-z0-9]+ (the record grammar); a record with any other provider is silently unreadable" 2
     [[ -n "${qreason//[[:space:]]/}" ]] || die "merge: quarantine reason for '${qprovider}' is empty — give a reason" 2
     [[ "$qreason" != *·* ]] || die "merge: quarantine reason for '${qprovider}' must not contain '·' (the field separator)" 2
     # Canonical quarantine-record format (parsed by check-converged guard (d), the gate-summary
