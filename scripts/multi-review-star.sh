@@ -91,6 +91,40 @@ cmd_mode() { # <doc> -> "star" or defer (empty, exit 1)
   echo "star"
 }
 
+# The ONE parser for the durable quarantine record. Canonical shape, written by cmd_merge:
+#
+#     <!-- star-quarantined: <provider> · <reason> · round <N> -->
+#
+# <provider> is a registry key ([a-z0-9]+); <reason> may contain spaces ([^·]+); <N> is [0-9]+.
+# Emits "<provider><TAB><reason><TAB><round>" per record, in document order.
+#
+# Every FIELD-reading consumer goes through this (gate-summary's readability list and independence
+# scan, round-stats, compose-review) — four independent greps had accumulated, and issue #26 was
+# a fifth about to be written. One reader means they cannot drift.
+#
+# FENCE-AWARE, and deliberately so: a fenced example of the record is documentation, not a live
+# quarantine. `_structural_consistency` already strips fences before matching (#17-refix r2 was
+# exactly this bug), while gate-summary and round-stats grepped the raw file — so one doc could
+# disagree with itself about who was quarantined. Same `review_section | strip_fences` input the
+# consistency guard uses, so the two can never diverge again.
+#
+# NB: `_structural_consistency` guard (d) still consumes RAW record lines, not these fields — it
+# hashes them against the manifest, so it needs the byte-exact line. That is a different question
+# (integrity, not identity) and correctly stays separate.
+_quarantines() { # <doc> -> provider<TAB>reason<TAB>round per record
+  # grep and sed MUST agree on what a valid record is. They did not: `[^·]+` accepted a
+  # whitespace-only reason that the sed then refused to transform, so the raw comment line fell
+  # through the pipeline and was printed verbatim as an entry — and space-split into garbage
+  # tokens in the disclosure line. Both now require a non-space in the reason, and the trailing
+  # grep is a belt-and-braces guarantee that nothing untransformed can ever escape: a row here is
+  # three tab-separated fields or it does not exist.
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -oE '^<!-- star-quarantined: [a-z0-9]+ · *[^ ·][^·]* · round [0-9]+ -->' \
+    | sed -E 's/^<!-- star-quarantined: ([a-z0-9]+) · *(.*[^ ]) *· round ([0-9]+) -->$/\1'$'\t''\2'$'\t''\3/' \
+    | grep -v '^<!--' \
+    || true
+}
+
 STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
 REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
@@ -358,11 +392,25 @@ anchor_of() { # <doc> <ns-id> -> "path\tstart\tend" or empty; exit 2 on malforme
 }
 
 cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on stdout
-  local doc="${1:?doc}" primary="${2:?primary-model}" t
+  local doc="${1:?doc}" primary="${2:?primary-model}" t qlist qprov
   t="$(_table "$doc")" || die "cannot compose: contract violation in $doc" 1
+  # Quarantines belong in the POSTED review, not just the local gate (issue #26). A review
+  # degraded by provider failure otherwise reads as a clean one, and the disclosure line — built
+  # from finding raisers — silently omits a provider that was dispatched and died. The human gate
+  # exists so a person decides with full information; a quarantine is precisely the signal that
+  # the review was thinner than it looks.
+  qlist="$(_quarantines "$doc")"
+  # Only providers that contributed NOTHING anywhere in the doc get appended to the disclosure.
+  # A provider quarantined in one round may have raised findings in another (PR #25's own shape) —
+  # it is then already represented there by its raiser model id, and adding "<id> (quarantined)"
+  # names the same reviewer twice under a different spelling, inflating the apparent agent count.
+  # Contributors are exactly the ns-id prefixes, the same split gate-summary uses.
+  local contributed; contributed="$(printf '%s\n' "$t" | awk -F'\t' 'NF{p=$1; sub(/-rd.*/,"",p); print p}' | sort -u)"
+  qprov="$(printf '%s' "$qlist" | awk -F'\t' 'NF{print $1}' | sort -u \
+           | grep -vxF -f <(printf '%s\n' "$contributed") 2>/dev/null | tr '\n' ' ')"
   # _table columns (tab-separated): id, raiser, state, responder, concern, dwhy, sev, risk.
   # Use awk -F'\t' to avoid bash IFS-whitespace collapsing of adjacent empty tab fields.
-  printf '%s\n' "$t" | awk -F'\t' -v primary="$primary" '
+  printf '%s\n' "$t" | QLIST="$qlist" QPROV="$qprov" awk -F'\t' -v primary="$primary" '
     function emit(want,   lvl, i, levels) {
       split("high med low", levels, " ")
       for (lvl = 1; lvl <= 3; lvl++)
@@ -393,8 +441,24 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
         if (dissent_n > 0) { printf "**Disagreements (%d)**\n",   dissent_n; emit("dissent") }
         if (open_n    > 0) { printf "**Open / unresolved (%d)**\n", open_n;  emit("open") }
       }
+      # Quarantined secondaries, from the shared parser (ENVIRON, not -v: reasons contain spaces
+      # and the list is newline-separated, which -v cannot carry).
+      nq = split(ENVIRON["QLIST"], qrec, "\n")
+      shown = 0
+      for (i = 1; i <= nq; i++) {
+        if (qrec[i] == "") continue
+        if (!shown) { printf "**Quarantine events (secondary did not review that round; its findings for that round are excluded)**\n"; shown = 1 }
+        split(qrec[i], qf, "\t")
+        printf "- %s · %s · round %s\n", qf[1], qf[2], qf[3]
+      }
+      if (shown) printf "\n"
+
+      # The disclosure must name who was DISPATCHED, not merely who scored. Built from finding
+      # raisers alone, it silently narrowed whenever a provider was quarantined.
       models = primary
       for (i = 1; i <= nsec; i++) models = models " + " seclist[i]
+      np = split(ENVIRON["QPROV"], qp, " ")
+      for (i = 1; i <= np; i++) if (qp[i] != "") models = models " + " qp[i] " (quarantined)"
       printf "———\n🤖 Posted by AI agents (%s) via multi-review star review.\n", models
     }
   '
@@ -524,6 +588,29 @@ cmd_merge() {
   done
   [[ "$round" =~ ^[0-9]+$ ]] || die "--round <N> required (integer)" 2
   [[ -n "$doc" && -f "$doc" ]] || die "merge: doc not found: ${doc:-<none>}" 1
+
+  # Validate every --quarantined arg NOW, before the doc is touched. Validating it later — in the
+  # loop that writes the records — meant a malformed arg died AFTER the findings block had already
+  # been appended, leaving a mutated doc with no manifest: a partial merge that a retry would
+  # duplicate. "Fail loud at the source" has to mean before the first write, not before the last.
+  #
+  # The grammar these guard is the record's own: a provider outside [a-z0-9]+, an arg with no
+  # colon (which makes the whole string the "reason" and sails past a non-blank check), a blank
+  # reason, a `·` (the field separator), or any control character (the record is ONE line) each
+  # produce a record every _quarantines reader silently drops — re-opening #26's invisibility
+  # through whichever field was left unchecked.
+  local _q _qp _qr
+  for _q in "${quarantined[@]:-}"; do
+    [[ -z "$_q" ]] && continue
+    [[ "$_q" == *:* ]] || die "merge: --quarantined must be <provider>:<reason>, got '${_q}'" 2
+    _qp="${_q%%:*}"; _qr="${_q#*:}"
+    [[ "$_qp" =~ ^[a-z0-9]+$ ]] \
+      || die "merge: quarantine provider '${_qp}' must match [a-z0-9]+ (the record grammar); a record with any other provider is silently unreadable" 2
+    [[ -n "${_qr//[[:space:]]/}" ]] || die "merge: quarantine reason for '${_qp}' is empty — give a reason" 2
+    [[ "$_qr" != *·* ]] || die "merge: quarantine reason for '${_qp}' must not contain '·' (the field separator)" 2
+    [[ "$_qr" =~ ^[^[:cntrl:]]+$ ]] \
+      || die "merge: quarantine reason for '${_qp}' contains a control character (newline/tab); the record is one line" 2
+  done
 
   # Refuse to merge onto a doc already inconsistent with its manifest — fail loud at THIS
   # handoff rather than compounding the corruption into later rounds (issue #16). Round 1 has
@@ -671,11 +758,11 @@ cmd_gate_summary() {
       if(d>0){ print "Disputes (high→low):"; emit("dissent"); print "" }
     }'
 
-  # quarantined secondaries (readability channel: the in-doc records)
-  if grep -qE '^<!-- star-quarantined: ' "$doc"; then
+  # quarantined secondaries (readability channel: the in-doc records, via the shared parser)
+  local qlist; qlist="$(_quarantines "$doc")"
+  if [[ -n "$qlist" ]]; then
     echo "Quarantined secondaries (findings excluded):"
-    grep -oE '^<!-- star-quarantined: [a-z0-9]+ · [^·]+· round [0-9]+ -->' "$doc" \
-      | sed -E 's/^<!-- star-quarantined: (.*) -->$/  - \1/'
+    printf '%s\n' "$qlist" | awk -F'\t' 'NF{ printf "  - %s · %s · round %s\n", $1, $2, $3 }'
     echo
   fi
 
@@ -708,8 +795,8 @@ cmd_gate_summary() {
       [[ -n "$v" && "$v" != "$pvendor" ]] && admitted_xvendor=1
     done
     if (( ! admitted_xvendor )); then
-      q_xvendor="$(grep -oE '^<!-- star-quarantined: [a-z0-9]+ ' "$doc" | awk '{print $3}' \
-        | while read -r qp; do qv="$("$REVIEWER_SH" resolve --reviewer "$qp" 2>/dev/null | cut -d'|' -f2)"; [[ -n "$qv" && "$qv" != "$pvendor" ]] && echo "$qp"; done | head -1)"
+      q_xvendor="$(_quarantines "$doc" | cut -f1 | sort -u \
+        | while read -r qp; do [[ -z "$qp" ]] && continue; qv="$("$REVIEWER_SH" resolve --reviewer "$qp" 2>/dev/null | cut -d'|' -f2)"; [[ -n "$qv" && "$qv" != "$pvendor" ]] && echo "$qp"; done | head -1)"
       if [[ -n "$q_xvendor" ]]; then
         echo "⚠ Independence: a cross-vendor secondary (${q_xvendor}) was attempted but quarantined — this run has no independent cross-vendor perspective."
       else
@@ -758,9 +845,8 @@ cmd_round_stats() {
   esac
   t="$(_table "$doc")" || die "round-stats: contract violation in $doc" 1
 
-  # Canonical quarantine-record shape, same as gate-summary / check-converged guard (d).
-  quar="$(grep -oE '^<!-- star-quarantined: [a-z0-9]+ · [^·]+· round [0-9]+ -->' "$doc" \
-          | sed -E 's/^<!-- star-quarantined: ([a-z0-9]+) · .*· round ([0-9]+) -->$/\1 \2/' || true)"
+  # Shared parser (fence-aware) -> the "provider round" pairs this awk expects.
+  quar="$(_quarantines "$doc" | awk -F'\t' 'NF{print $1, $3}')"
   # `reviewers:` list off the mode hint; `[^-]*` stops at the `-->` (provider ids are [a-z0-9]).
   hintp="$(header_region "$doc" | grep -o 'reviewers:[^-]*' | head -1 | sed 's/reviewers://' || true)"
 

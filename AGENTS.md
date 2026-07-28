@@ -352,8 +352,17 @@ If you are asked to review a doc that is under a multi-review review, read
   Small docs/chore changes may land directly on `main` at the maintainer's discretion;
   substantive changes go through a PR.
 - **Test gate:** the verification gate is `for t in scripts/*.test.sh; do bash "$t"; done`
-  plus `shellcheck --severity=warning scripts/multi-review-*.sh`. A line-coverage percentage
-  is not meaningful for this bash test suite.
+  plus `shellcheck --severity=warning scripts/multi-review-*.sh` **plus
+  `scripts/multi-review-version-check.sh`**. A line-coverage percentage is not meaningful for
+  this bash test suite.
+- **Version bump is required to ship.** Anything that reaches `main` MUST raise
+  `.claude-plugin/plugin.json`'s `version`. Installed copies decide whether to offer an update
+  by comparing it, so landing a change without a bump leaves every existing install silently on
+  the old code — the bump is the only signal downstream gets, not bookkeeping. Semver: patch for
+  fixes, minor for new behavior/subcommands, major for a breaking protocol or CLI change.
+  `scripts/multi-review-version-check.sh` enforces this (strictly-greater, numeric per component)
+  and is part of the gate above; it no-ops on `main` itself and says so when it cannot compute a
+  delta rather than passing silently.
 - **AI disclosure form:** inside review docs, agent comments disclose via the protocol's
   `> — via <model>` continuation lines (see `docs/multi-review.md`) rather than the
   baseline's banner format; same norm, doc-native shape.
