@@ -695,13 +695,20 @@ bash "$SUT" merge --round 1 --quarantined "gemini:   " "$MB" "${MB}.codex" >/dev
 # with no colon, which makes the whole string the "reason" and passes the non-blank check) writes
 # a record every _quarantines reader silently drops — re-opening #26's invisibility through the
 # unvalidated field.
-for badq in "Gemini:timeout" "gem ini:timeout" "noColonAtAll" ":timeout"; do
+# A NEWLINE in the reason (PR#27, found independently by codex, gemini AND fable) passed all four
+# checks and wrote a two-line record no reader can parse — caught only by the POST-merge
+# self-check, which reports "missing or tampered" and leaves the corrupted doc in place. That is
+# the same shape as the hole this validation closed, so it must die before anything is written.
+for badq in "Gemini:timeout" "gem ini:timeout" "noColonAtAll" ":timeout" "$(printf 'gemini:timed\nout')" "$(printf 'gemini:timed\tout')"; do
   MP="${WORK}/mp$RANDOM.md"
   { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$MP"
   mkcopy "${MP}.codex" '> [finding:r1|high] a' '> — via gpt-5.6-terra' '> — risk: r'
   bash "$SUT" merge --round 1 --quarantined "$badq" "$MP" "${MP}.codex" >/dev/null 2>&1 \
     && bad "merge accepted a malformed --quarantined arg: '$badq'" \
-    || ok "merge: rejects malformed --quarantined '$badq'"
+    || ok "merge: rejects malformed --quarantined '$(printf '%s' "$badq" | tr '\n\t' '~~')'"
+  [[ ! -f "${MP}.manifest" ]] \
+    && ok "merge: refuses BEFORE writing anything (no manifest left behind)" \
+    || bad "merge wrote state despite refusing: ${MP}.manifest exists"
 done
 # a well-formed one still works
 MP="${WORK}/mpok.md"

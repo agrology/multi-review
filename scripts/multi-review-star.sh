@@ -654,6 +654,13 @@ cmd_merge() {
       || die "merge: quarantine provider '${qprovider}' must match [a-z0-9]+ (the record grammar); a record with any other provider is silently unreadable" 2
     [[ -n "${qreason//[[:space:]]/}" ]] || die "merge: quarantine reason for '${qprovider}' is empty — give a reason" 2
     [[ "$qreason" != *·* ]] || die "merge: quarantine reason for '${qprovider}' must not contain '·' (the field separator)" 2
+    # The record is a SINGLE LINE by construction, so any control character (newline, tab, CR)
+    # splits or mangles it into something no reader can parse. Without this the write succeeded and
+    # only the POST-merge self-check noticed — reporting "quarantine record missing or tampered"
+    # and leaving the corrupted doc in place, instead of the clean pre-write refusal every sibling
+    # malformed case gets. Found independently by all three secondaries.
+    [[ "$qreason" =~ ^[^[:cntrl:]]+$ ]] \
+      || die "merge: quarantine reason for '${qprovider}' contains a control character (newline/tab); the record is one line" 2
     # Canonical quarantine-record format (parsed by check-converged guard (d), the gate-summary
     # readability list, and the independence scan): "star-quarantined: <provider> · <reason> ·
     # round <N>". <provider> is a registry key ([a-z0-9]+); <reason> may contain spaces ([^·]+);

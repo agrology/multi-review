@@ -102,6 +102,19 @@ out="$(run "$r")"; rc=$?
   && ok "pre-release version: rejected with a diagnosis that names why" \
   || bad "pre-release diagnosis unclear (rc=$rc): $out"
 
+# ...but hyphenated GARBAGE must not be mis-diagnosed as a pre-release (PR#27 fable-rd3-r2): the
+# suffix arm ran before any shape check, sending the operator to look for a suffix that is not
+# there. Exit code was right; the message was not.
+r="$(newrepo 1.1.0)"
+echo changed > "$r/file.txt"; setver "$r" "not-a-version"
+( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+out="$(run "$r")"; rc=$?
+[[ $rc -eq 2 ]] && ! grep -qi 'pre-release' <<<"$out" \
+  && ok "hyphenated garbage is not mis-diagnosed as a pre-release" \
+  || bad "mis-diagnosis persists (rc=$rc): $out"
+grep -qi 'MAJOR.MINOR.PATCH' <<<"$out" \
+  && ok "hyphenated garbage gets the shape diagnosis instead" || bad "no actionable diagnosis: $out"
+
 # --- the base ref is IDENTIFIED, so a stale one is visible (PR#27 fable-rd1-r3) ---------------
 # The check compares against a local origin/main it never fetches. It cannot know it is stale, so
 # it must at least name what it compared against — a gate documented as "fails loud" must not

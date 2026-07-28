@@ -68,8 +68,16 @@ semver_valid() { [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ 
 
 validate() { # <version> <which>
   semver_valid "$1" && return 0
+  # Diagnose by SHAPE, most specific first. The suffix arm used to run before any shape check, so
+  # hyphenated garbage ("not-a-version") was reported as "uses a pre-release/build suffix" — the
+  # exit code was right but the message sent the operator looking for a suffix that is not there.
+  # Only claim a suffix when what precedes it actually is MAJOR.MINOR.PATCH.
   case "$1" in
-    *-*|*+*) die "$2 version '$1' uses a pre-release/build suffix; this gate compares MAJOR.MINOR.PATCH only" 2 ;;
+    *[0-9].[0-9]*[-+]*)
+      [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+[-+] ]] \
+        && die "$2 version '$1' uses a pre-release/build suffix; this gate compares MAJOR.MINOR.PATCH only" 2 ;;
+  esac
+  case "$1" in
     0[0-9]*|*.0[0-9]*) die "$2 version '$1' has a leading-zero component; semver forbids it and it would be read as octal" 2 ;;
     *)       die "$2 version '$1' is not MAJOR.MINOR.PATCH" 2 ;;
   esac
