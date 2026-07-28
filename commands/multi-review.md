@@ -198,11 +198,40 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 #### Fan-out (on `awaiting-secondaries`)
 
 1. **Snapshot the baseline.** Copy `<doc>` to `<doc>.baseline`. In that COPY ONLY, truncate
-   everything after the doc's LAST `## Review` heading — keep the heading line, drop everything
-   after it (any prior round's merged findings/responses). `<doc>` itself is untouched.
+   everything after the doc's LAST `## Review` heading **that is not inside a fenced code block**
+   — keep the heading line, drop everything after it (any prior round's merged
+   findings/responses). A doc whose merged findings quote a fenced `## Review` would otherwise
+   move the truncation point and carry a previous round's findings into the baseline. `<doc>`
+   itself is untouched.
+
+   Then copy `<doc>.baseline` to `<doc>.baseline.rd<N>` for this round and **retain it** — round
+   N+1 diffs against it. `<doc>.baseline` keeps its current meaning (the snapshot `verify-vendor`
+   diffs against for the CURRENT round), so that guard is unaffected.
 2. **Seed one copy per provider**, using the SAME resolved set from §2 — a later round does not
    shrink the set, even for a provider quarantined earlier; it gets a fresh independent copy
-   again. For each id: `cp "<doc>.baseline" "<doc>.<id>"`, then rewrite that copy's header to:
+   again.
+
+   - **Round 1** — `cp "<doc>.baseline" "<doc>.<id>"`, then rewrite that copy's header as below.
+   - **Round N ≥ 2** — build a **diff-scoped** copy instead, so the round costs what you changed
+     rather than the size of the document:
+
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-scope.sh" local-copy \
+           --round <N> --max <MAX> \
+           --prev "<doc>.baseline.rd<N-1>" --curr "<doc>.baseline.rd<N>" > "<doc>.<id>"
+
+     `local-copy` writes the whole copy, header and marker included — do NOT also rewrite the
+     header on this path.
+
+     **Exit 3 is not a failure**: the round cannot be scoped (no retained prior baseline, or an
+     empty delta). Fall back to `cp "<doc>.baseline" "<doc>.<id>"` plus the header rewrite, and
+     **relay the reason it printed** in the round's message — a degraded round is never silent.
+     Any other non-zero exit is a real error: stop and surface it.
+
+     An **empty delta** also means nothing changed since the last round, which is a converge
+     signal — prefer converging over re-fanning. The decision stays yours; #30's triggers govern
+     *whether* to re-fan, and this step governs only what a re-fan costs.
+
+   For the round-1 path (and the exit-3 fallback), rewrite that copy's header to:
 
         <!-- multi-review: awaiting-reviewer · round <N>/<MAX> -->
         <!-- multi-review-mode: star -->
@@ -259,7 +288,8 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    <id>:<reason> ...] "<doc>" <admitted copies...>`.
 8. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
-   `<doc>.manifest`, and `<doc>.baseline` — the terminal gate releases them.
+   `<doc>.manifest`, `<doc>.baseline`, and every `<doc>.baseline.rd<N>` — the terminal gate
+   releases them.
 
 #### Primary turn (on `awaiting-primary`)
 
@@ -363,7 +393,8 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
 
   This is the **human gate**: never implement, commit, or open/merge a PR from this command. Only
   once the engineer confirms the review is done, remove the retained working files
-  (`<doc>.<id>` for every provider, `<doc>.manifest`, `<doc>.baseline`) — never before the gate,
+  (`<doc>.<id>` for every provider, `<doc>.manifest`, `<doc>.baseline`, and every
+  `<doc>.baseline.rd<N>`) — never before the gate,
   since the gate is presented FROM them (`check-converged`/`gate-summary` read the manifest).
 
 ## Guardrails
