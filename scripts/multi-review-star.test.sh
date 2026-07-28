@@ -702,13 +702,21 @@ bash "$SUT" merge --round 1 --quarantined "gemini:   " "$MB" "${MB}.codex" >/dev
 for badq in "Gemini:timeout" "gem ini:timeout" "noColonAtAll" ":timeout" "$(printf 'gemini:timed\nout')" "$(printf 'gemini:timed\tout')"; do
   MP="${WORK}/mp$RANDOM.md"
   { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$MP"
+  MP_BEFORE="$(shasum "$MP" | cut -d' ' -f1)"
   mkcopy "${MP}.codex" '> [finding:r1|high] a' '> — via gpt-5.6-terra' '> — risk: r'
   bash "$SUT" merge --round 1 --quarantined "$badq" "$MP" "${MP}.codex" >/dev/null 2>&1 \
     && bad "merge accepted a malformed --quarantined arg: '$badq'" \
     || ok "merge: rejects malformed --quarantined '$(printf '%s' "$badq" | tr '\n\t' '~~')'"
+  # "Before writing anything" must mean the DOC too, not just the manifest (PR#27 codex-rd4-r1).
+  # Validation used to run in the record-writing loop, which is AFTER the findings block is
+  # appended — so a malformed arg left a mutated doc with no manifest: a partial merge a retry
+  # would duplicate. The earlier version of this assertion checked only the manifest and passed.
   [[ ! -f "${MP}.manifest" ]] \
-    && ok "merge: refuses BEFORE writing anything (no manifest left behind)" \
-    || bad "merge wrote state despite refusing: ${MP}.manifest exists"
+    && ok "merge: refuses without leaving a manifest" \
+    || bad "merge wrote a manifest despite refusing: ${MP}.manifest exists"
+  [[ "$(shasum "$MP" | cut -d' ' -f1)" == "$MP_BEFORE" ]] \
+    && ok "merge: refuses without mutating the doc" \
+    || bad "merge mutated the doc despite refusing: $MP"
 done
 # a well-formed one still works
 MP="${WORK}/mpok.md"

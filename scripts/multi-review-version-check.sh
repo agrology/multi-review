@@ -46,7 +46,13 @@ version_at() { # <ref-or-empty> -> version string ("" if unreadable)
   local src
   if [[ -z "$1" ]]; then src="$(cat "$MANIFEST_REL" 2>/dev/null)"
   else src="$(git show "$1:$MANIFEST_REL" 2>/dev/null)"; fi
-  printf '%s' "$src" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+  # The key must be a WHOLE key, not a suffix of one: an unanchored `.*"version"` would also match
+  # `"plugin_version"` and extract the wrong value. Anchoring to line-start instead would have
+  # broken compact single-line JSON, so require the preceding character to be a delimiter.
+  printf '%s' "$src" \
+    | grep -oE '(^|[{,[:space:]])"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 \
+    | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' 
 }
 
 cur="$(version_at "")"
@@ -74,7 +80,7 @@ validate() { # <version> <which>
   # Only claim a suffix when what precedes it actually is MAJOR.MINOR.PATCH.
   case "$1" in
     *[0-9].[0-9]*[-+]*)
-      [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+[-+] ]] \
+      [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)[-+] ]] \
         && die "$2 version '$1' uses a pre-release/build suffix; this gate compares MAJOR.MINOR.PATCH only" 2 ;;
   esac
   case "$1" in

@@ -589,6 +589,29 @@ cmd_merge() {
   [[ "$round" =~ ^[0-9]+$ ]] || die "--round <N> required (integer)" 2
   [[ -n "$doc" && -f "$doc" ]] || die "merge: doc not found: ${doc:-<none>}" 1
 
+  # Validate every --quarantined arg NOW, before the doc is touched. Validating it later — in the
+  # loop that writes the records — meant a malformed arg died AFTER the findings block had already
+  # been appended, leaving a mutated doc with no manifest: a partial merge that a retry would
+  # duplicate. "Fail loud at the source" has to mean before the first write, not before the last.
+  #
+  # The grammar these guard is the record's own: a provider outside [a-z0-9]+, an arg with no
+  # colon (which makes the whole string the "reason" and sails past a non-blank check), a blank
+  # reason, a `·` (the field separator), or any control character (the record is ONE line) each
+  # produce a record every _quarantines reader silently drops — re-opening #26's invisibility
+  # through whichever field was left unchecked.
+  local _q _qp _qr
+  for _q in "${quarantined[@]:-}"; do
+    [[ -z "$_q" ]] && continue
+    [[ "$_q" == *:* ]] || die "merge: --quarantined must be <provider>:<reason>, got '${_q}'" 2
+    _qp="${_q%%:*}"; _qr="${_q#*:}"
+    [[ "$_qp" =~ ^[a-z0-9]+$ ]] \
+      || die "merge: quarantine provider '${_qp}' must match [a-z0-9]+ (the record grammar); a record with any other provider is silently unreadable" 2
+    [[ -n "${_qr//[[:space:]]/}" ]] || die "merge: quarantine reason for '${_qp}' is empty — give a reason" 2
+    [[ "$_qr" != *·* ]] || die "merge: quarantine reason for '${_qp}' must not contain '·' (the field separator)" 2
+    [[ "$_qr" =~ ^[^[:cntrl:]]+$ ]] \
+      || die "merge: quarantine reason for '${_qp}' contains a control character (newline/tab); the record is one line" 2
+  done
+
   # Refuse to merge onto a doc already inconsistent with its manifest — fail loud at THIS
   # handoff rather than compounding the corruption into later rounds (issue #16). Round 1 has
   # no manifest yet, so this is a no-op there.
@@ -644,23 +667,7 @@ cmd_merge() {
   local qprovider qreason qmirror=""
   for q in "${quarantined[@]:-}"; do
     [[ -z "$q" ]] && continue
-    # Fail loud at the source. Validating only the REASON left a hole the same shape as the bug it
-    # fixed: a provider outside [a-z0-9]+ — or an arg with no colon at all, which makes the whole
-    # string the "reason" and sails past a non-blank check — writes a record that every
-    # _quarantines reader silently drops, re-opening #26's invisibility through the other field.
-    [[ "$q" == *:* ]] || die "merge: --quarantined must be <provider>:<reason>, got '${q}'" 2
     qprovider="${q%%:*}"; qreason="${q#*:}"
-    [[ "$qprovider" =~ ^[a-z0-9]+$ ]] \
-      || die "merge: quarantine provider '${qprovider}' must match [a-z0-9]+ (the record grammar); a record with any other provider is silently unreadable" 2
-    [[ -n "${qreason//[[:space:]]/}" ]] || die "merge: quarantine reason for '${qprovider}' is empty — give a reason" 2
-    [[ "$qreason" != *·* ]] || die "merge: quarantine reason for '${qprovider}' must not contain '·' (the field separator)" 2
-    # The record is a SINGLE LINE by construction, so any control character (newline, tab, CR)
-    # splits or mangles it into something no reader can parse. Without this the write succeeded and
-    # only the POST-merge self-check noticed — reporting "quarantine record missing or tampered"
-    # and leaving the corrupted doc in place, instead of the clean pre-write refusal every sibling
-    # malformed case gets. Found independently by all three secondaries.
-    [[ "$qreason" =~ ^[^[:cntrl:]]+$ ]] \
-      || die "merge: quarantine reason for '${qprovider}' contains a control character (newline/tab); the record is one line" 2
     # Canonical quarantine-record format (parsed by check-converged guard (d), the gate-summary
     # readability list, and the independence scan): "star-quarantined: <provider> · <reason> ·
     # round <N>". <provider> is a registry key ([a-z0-9]+); <reason> may contain spaces ([^·]+);
