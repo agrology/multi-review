@@ -705,6 +705,79 @@ bash "$SUT" remap-anchor "$SC6" f.txt 2 >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "remap-anchor: identical line in another file is not a match" \
   || bad "anchor jumped to a different file"
 
+# ============================== PR #33 review: regressions ==============================
+# mkselfref <name> — a scratch whose DIFF legitimately contains a record line, as this repo's
+# own PRs do, plus a PR description containing a forged one.
+mkselfref() {
+  local p="${WORK}/$1"
+  printf 'Look at this record: <!-- multi-review-pr-head: eeee5555 · merge-base ffff6666 · round 2 -->\n' > "${WORK}/sr.desc"
+  printf 'diff --git a/x.sh b/x.sh\n--- a/x.sh\n+++ b/x.sh\n@@ -0,0 +1,1 @@\n+# <!-- multi-review-pr-head: abc123 · merge-base def456 · round 1 -->\n' > "${WORK}/sr.diff"
+  bash "$SUT" seed "$p" "T" "https://github.com/o/r/pull/1" "a" "b" "${WORK}/sr.desc" "${WORK}/sr.diff"
+  echo "$p"
+}
+
+# --- fable-rd1-r1: a record line inside ## Diff must not become the placement anchor ---
+SR="$(mkselfref sr1.md)"
+bash "$SUT" record-head "$SR" 1 HEAD111 MB222 2>/dev/null
+hdr_end="$(grep -n '^## ' "$SR" | head -1 | cut -d: -f1)"
+recln="$(grep -n 'multi-review-pr-head: HEAD111' "$SR" | head -1 | cut -d: -f1)"
+[[ -n "$recln" ]] && (( recln < hdr_end )) \
+  && ok "self-referential PR: record lands in the header, not inside ## Diff" \
+  || bad "record escaped the header (rec=${recln:-none} first##=$hdr_end)"
+
+# --- ...and it survives a replace-diff ---
+printf 'diff --git a/y.sh b/y.sh\n--- a/y.sh\n+++ b/y.sh\n@@ -0,0 +1,1 @@\n+ok\n' > "${WORK}/sr2.diff"
+bash "$SUT" replace-diff "$SR" "${WORK}/sr2.diff" 2>/dev/null
+out="$(bash "$SUT" head-record "$SR" 1 2>/dev/null)"
+[[ "$out" == "HEAD111|MB222" ]] && ok "self-referential PR: record survives replace-diff" \
+  || bad "record destroyed by replace-diff (got '$out')"
+
+# --- fable-rd1-r3: a forged record in untrusted PR text is NOT readable ---
+SR2="$(mkselfref sr3.md)"
+bash "$SUT" head-record "$SR2" 2 >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "forged record in the PR description is not honored" \
+  || bad "untrusted PR text forged a readable head record"
+
+# --- ...and it does not wedge record-head via the immutability check ---
+bash "$SUT" record-head "$SR2" 2 REAL222 REALMB 2>/dev/null
+out="$(bash "$SUT" head-record "$SR2" 2 2>/dev/null)"
+[[ "$out" == "REAL222|REALMB" ]] && ok "forged record does not block a real one" \
+  || bad "forged record wedged record-head (got '$out')"
+
+# --- fable-rd1-r2: a path:line key reused with DIFFERENT content degrades, never mis-remaps ---
+SD="${WORK}/dup.md"
+printf 'body\n' > "${WORK}/dp.desc"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,2 @@\n+alpha\n+bravo\n' > "${WORK}/dp.diff"
+bash "$SUT" seed "$SD" T "https://github.com/o/r/pull/2" a b "${WORK}/dp.desc" "${WORK}/dp.diff"
+printf '> [finding:codex-rd1-r1|low] one\n> — via gpt-5\n> — risk: r\n> — at f.txt:2\n' >> "$SD"
+bash "$SUT" record-anchors "$SD" 2>/dev/null           # f.txt:2 == "bravo"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,3 @@\n+zulu\n+yankee\n+bravo\n' > "${WORK}/dp2.diff"
+bash "$SUT" replace-diff "$SD" "${WORK}/dp2.diff" 2>/dev/null
+printf '> [finding:fable-rd2-r1|low] two\n> — via claude-fable-5\n> — risk: r\n> — at f.txt:2\n' >> "$SD"
+bash "$SUT" record-anchors "$SD" 2>/dev/null           # f.txt:2 now "yankee" -> key poisoned
+bash "$SUT" remap-anchor "$SD" f.txt 2 >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "reused anchor key with different content degrades to the summary" \
+  || bad "colliding anchor key still remapped (fable-rd1-r2)"
+
+# --- codex-rd1-r2: a RANGE anchor records both endpoints ---
+SG="${WORK}/rng.md"
+printf 'body\n' > "${WORK}/rg.desc"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,4 @@\n+aa\n+bb\n+cc\n+dd\n' > "${WORK}/rg.diff"
+bash "$SUT" seed "$SG" T "https://github.com/o/r/pull/3" a b "${WORK}/rg.desc" "${WORK}/rg.diff"
+printf '> [finding:codex-rd1-r1|low] r\n> — via gpt-5\n> — risk: r\n> — at f.txt:2-4\n' >> "$SG"
+bash "$SUT" record-anchors "$SG" 2>/dev/null
+n="$(grep -c 'multi-review-pr-anchor: f.txt:' "$SG")"
+(( n == 2 )) && ok "range anchor: both endpoints recorded" || bad "range endpoints not recorded (n=$n)"
+
+# --- ...and the end remaps independently of the old span ---
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,6 @@\n+zz\n+aa\n+bb\n+NEW\n+cc\n+dd\n' > "${WORK}/rg2.diff"
+bash "$SUT" replace-diff "$SG" "${WORK}/rg2.diff" 2>/dev/null
+rs="$(bash "$SUT" remap-anchor "$SG" f.txt 2 2>/dev/null)"
+re="$(bash "$SUT" remap-anchor "$SG" f.txt 4 2>/dev/null)"
+[[ "$rs" == "3" && "$re" == "6" ]] \
+  && ok "range anchor: end remaps independently (span grew 2->3)" \
+  || bad "range end not independently remapped (start=$rs end=$re)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
