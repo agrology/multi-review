@@ -625,6 +625,68 @@ printf '%s' "$before" | grep -qi 'quarantin' \
   && bad "compose-review: emitted a quarantine section on a doc with none" \
   || ok "compose-review: dormant when there are no quarantines"
 
+# --- a provider quarantined in ONE round may have contributed in another (PR#27) -------------
+# PR #25's own shape: fable raised findings in round 1, was quarantined in round 2. The section
+# header claimed "did not review; findings excluded" while its findings were listed right above,
+# and the disclosure named it twice — once by raiser model, once as "(quarantined)" — overstating
+# the agent count. Raised independently by gemini and fable; it is the same misinformation-at-the-
+# gate failure #26 set out to remove.
+PARTQ="$(mkstar partq.md \
+  '> [finding:codex-rd1-a|med] contributed in round 1' '> — via gpt-5.6-terra' '> — risk: r' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '<!-- star-quarantined: codex · dispatch-timeout · round 2 -->')"
+body="$(bash "$SUT" compose-review "$PARTQ" claude-opus-5 2>/dev/null)"
+disc="$(printf '%s' "$body" | tail -2)"
+# The provider contributed, so it is ALREADY represented in the disclosure by its raiser model id
+# (gpt-5.6-terra). Appending "codex (quarantined)" names the same reviewer a second time under a
+# different string and inflates the apparent agent count — which a bare "codex" occurrence count
+# would not catch, since the two spellings differ.
+! grep -qF 'codex (quarantined)' <<<"$disc" \
+  && ok "compose-review: a contributing provider is not re-listed as quarantined" \
+  || bad "compose-review disclosure double-lists a contributing provider: $disc"
+! grep -qi 'did not review; findings excluded' <<<"$body" \
+  && ok "compose-review: header does not claim findings were excluded when they were not" \
+  || bad "compose-review header is false for a partly-quarantined provider: $body"
+grep -qF 'round 2' <<<"$body" \
+  && ok "compose-review: the quarantine event is still reported with its round" \
+  || bad "compose-review lost the quarantine event: $body"
+
+# A provider quarantined in EVERY round it appears (never contributed) must still be disclosed —
+# that is the case #26 existed for, and it must not regress while fixing the double-listing.
+ALLQ="$(mkstar allq.md \
+  '> [finding:codex-rd1-a|med] c' '> — via gpt-5.6-terra' '> — risk: r' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '<!-- star-quarantined: gemini · dispatch-timeout · round 1 -->')"
+body="$(bash "$SUT" compose-review "$ALLQ" claude-opus-5 2>/dev/null)"
+printf '%s' "$body" | tail -2 | grep -qF 'gemini' \
+  && ok "compose-review: a never-contributing quarantined provider is still disclosed" \
+  || bad "compose-review dropped a fully-quarantined provider from the disclosure"
+
+# --- a malformed quarantine record must fail loud, not corrupt the posted review (PR#27) -----
+# grep accepted a whitespace-only reason ([^·]+ matches a lone space) while sed required a
+# non-space, so the raw comment line fell through untransformed — printed verbatim as an entry
+# and space-split into garbage "(quarantined)" tokens in the disclosure.
+BLANKQ="${WORK}/blank-reason.md"
+{ echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo
+  echo '> [finding:codex-rd1-a|med] c'; echo '> — via gpt-5.6-terra'; echo '> — risk: r'
+  echo '> [agree:codex-rd1-a]'; echo '> — via claude-opus-5'
+  echo '<!-- star-quarantined: gemini ·   · round 1 -->'
+} > "$BLANKQ"
+body="$(bash "$SUT" compose-review "$BLANKQ" claude-opus-5 2>&1)"
+! grep -qF '<!-- star-quarantined' <<<"$body" \
+  && ok "compose-review: never emits a raw record line into the body" \
+  || bad "compose-review leaked an untransformed record: $body"
+! grep -qE '\-\-> \(quarantined\)|star-quarantined: \(quarantined\)' <<<"$body" \
+  && ok "compose-review: a malformed record cannot shred the disclosure line" \
+  || bad "compose-review disclosure corrupted by a malformed record: $body"
+
+# ...and merge refuses to WRITE one, so the malformed record cannot reach a doc in the first place.
+MB="${WORK}/mb.md"; mkbase "$MB"
+mkcopy "${MB}.codex" '> [finding:r1|high] a' '> — via gpt-5.6-terra' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined "gemini:   " "$MB" "${MB}.codex" >/dev/null 2>&1 \
+  && bad "merge accepted a blank quarantine reason" \
+  || ok "merge: refuses a blank quarantine reason at the source"
+
 # --- the quarantine record has ONE parser, and it is fence-aware (issue #26) -----------------
 # A fenced EXAMPLE of the record is documentation, not a live quarantine. verify/check-converged
 # already strip fences before matching; gate-summary and round-stats grepped the raw file, so the

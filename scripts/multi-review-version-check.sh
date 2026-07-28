@@ -55,25 +55,41 @@ old="$(version_at "$base")"
 # No version on the base (the manifest is new here) — any current version is an increase.
 [[ -n "$old" ]] || { note "no version at ${base} — treating '${cur}' as the first"; exit 0; }
 
-# Strictly-greater semver compare, numeric per component so 1.10.0 > 1.9.0 (a string compare gets
-# that backwards, and the plugin UI would never offer the update).
+# Validate the WHOLE string BEFORE comparing. Validating per-component inside the compare loop was
+# not equivalent: the loop returns as soon as one component differs, so `1.2` beat `1.1.0` on the
+# minor field and never looked at the missing patch, and `1.2.4.0` compared as `1.2.4` with the
+# trailing field ignored. A release gate that accepts a version the plugin UI then has to parse is
+# worse than no gate.
+semver_valid() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+
+for v in "$old:base ${base}" "$cur:current"; do
+  ver="${v%%:*}"; which="${v#*:}"
+  semver_valid "$ver" && continue
+  case "$ver" in
+    *-*|*+*) die "${which} version '${ver}' uses a pre-release/build suffix; this gate compares MAJOR.MINOR.PATCH only" 2 ;;
+    *)       die "${which} version '${ver}' is not MAJOR.MINOR.PATCH" 2 ;;
+  esac
+done
+
+# Strictly-greater compare, numeric per component so 1.10.0 > 1.9.0 (a lexical compare gets that
+# backwards, and the plugin UI would never offer the update).
 semver_gt() { # <a> <b> -> 0 if a > b
   local a="$1" b="$2" i av bv
   for i in 1 2 3; do
     av="$(printf '%s' "$a" | cut -d. -f"$i")"; bv="$(printf '%s' "$b" | cut -d. -f"$i")"
-    [[ "$av" =~ ^[0-9]+$ ]] || return 2
-    [[ "$bv" =~ ^[0-9]+$ ]] || return 2
     (( av > bv )) && return 0
     (( av < bv )) && return 1
   done
   return 1                                   # equal is NOT greater
 }
 
-semver_gt "$cur" "$old"; rc=$?
-case "$rc" in
-  0) note "version ${old} → ${cur} (ok)"; exit 0 ;;
-  2) die "version is not numeric semver (base '${old}', current '${cur}')" 2 ;;
-esac
+if semver_gt "$cur" "$old"; then
+  # Name the base COMMIT, not just the ref. This gate compares against a local origin/main it
+  # never fetches, so it cannot tell a stale base from a current one — the least it can do is show
+  # which commit decided the verdict, rather than hiding the one input the answer depends on.
+  note "version ${old} → ${cur} (ok; base ${base} @ $(git rev-parse --short "$base"))"
+  exit 0
+fi
 
 die "this branch changes tracked files but ${MANIFEST_REL} is still ${cur} (base ${base} has ${old}).
     Installed plugins decide whether to update by comparing this version, so shipping without a

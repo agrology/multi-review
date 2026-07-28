@@ -112,9 +112,16 @@ cmd_mode() { # <doc> -> "star" or defer (empty, exit 1)
 # hashes them against the manifest, so it needs the byte-exact line. That is a different question
 # (integrity, not identity) and correctly stays separate.
 _quarantines() { # <doc> -> provider<TAB>reason<TAB>round per record
+  # grep and sed MUST agree on what a valid record is. They did not: `[^·]+` accepted a
+  # whitespace-only reason that the sed then refused to transform, so the raw comment line fell
+  # through the pipeline and was printed verbatim as an entry — and space-split into garbage
+  # tokens in the disclosure line. Both now require a non-space in the reason, and the trailing
+  # grep is a belt-and-braces guarantee that nothing untransformed can ever escape: a row here is
+  # three tab-separated fields or it does not exist.
   review_section "$1" | strip_fences /dev/stdin \
-    | grep -oE '^<!-- star-quarantined: [a-z0-9]+ · [^·]+· round [0-9]+ -->' \
-    | sed -E 's/^<!-- star-quarantined: ([a-z0-9]+) · (.*[^ ]) *· round ([0-9]+) -->$/\1'$'\t''\2'$'\t''\3/' \
+    | grep -oE '^<!-- star-quarantined: [a-z0-9]+ · *[^ ·][^·]* · round [0-9]+ -->' \
+    | sed -E 's/^<!-- star-quarantined: ([a-z0-9]+) · *(.*[^ ]) *· round ([0-9]+) -->$/\1'$'\t''\2'$'\t''\3/' \
+    | grep -v '^<!--' \
     || true
 }
 
@@ -393,7 +400,14 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
   # exists so a person decides with full information; a quarantine is precisely the signal that
   # the review was thinner than it looks.
   qlist="$(_quarantines "$doc")"
-  qprov="$(printf '%s' "$qlist" | awk -F'\t' 'NF{print $1}' | sort -u | tr '\n' ' ')"
+  # Only providers that contributed NOTHING anywhere in the doc get appended to the disclosure.
+  # A provider quarantined in one round may have raised findings in another (PR #25's own shape) —
+  # it is then already represented there by its raiser model id, and adding "<id> (quarantined)"
+  # names the same reviewer twice under a different spelling, inflating the apparent agent count.
+  # Contributors are exactly the ns-id prefixes, the same split gate-summary uses.
+  local contributed; contributed="$(printf '%s\n' "$t" | awk -F'\t' 'NF{p=$1; sub(/-rd.*/,"",p); print p}' | sort -u)"
+  qprov="$(printf '%s' "$qlist" | awk -F'\t' 'NF{print $1}' | sort -u \
+           | grep -vxF -f <(printf '%s\n' "$contributed") 2>/dev/null | tr '\n' ' ')"
   # _table columns (tab-separated): id, raiser, state, responder, concern, dwhy, sev, risk.
   # Use awk -F'\t' to avoid bash IFS-whitespace collapsing of adjacent empty tab fields.
   printf '%s\n' "$t" | QLIST="$qlist" QPROV="$qprov" awk -F'\t' -v primary="$primary" '
@@ -433,7 +447,7 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
       shown = 0
       for (i = 1; i <= nq; i++) {
         if (qrec[i] == "") continue
-        if (!shown) { printf "**Quarantined secondaries (did not review; findings excluded)**\n"; shown = 1 }
+        if (!shown) { printf "**Quarantine events (secondary did not review that round; its findings for that round are excluded)**\n"; shown = 1 }
         split(qrec[i], qf, "\t")
         printf "- %s · %s · round %s\n", qf[1], qf[2], qf[3]
       }
@@ -631,6 +645,10 @@ cmd_merge() {
   for q in "${quarantined[@]:-}"; do
     [[ -z "$q" ]] && continue
     qprovider="${q%%:*}"; qreason="${q#*:}"
+    # Fail loud at the source: a blank reason produces a record the readers cannot parse, and a
+    # quarantine whose reason is empty tells the human gate nothing anyway.
+    [[ -n "${qreason//[[:space:]]/}" ]] || die "merge: quarantine reason for '${qprovider}' is empty — give a reason" 2
+    [[ "$qreason" != *·* ]] || die "merge: quarantine reason for '${qprovider}' must not contain '·' (the field separator)" 2
     # Canonical quarantine-record format (parsed by check-converged guard (d), the gate-summary
     # readability list, and the independence scan): "star-quarantined: <provider> · <reason> ·
     # round <N>". <provider> is a registry key ([a-z0-9]+); <reason> may contain spaces ([^·]+);

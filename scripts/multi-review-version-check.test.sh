@@ -79,6 +79,42 @@ echo changed > "$r/file.txt"; setver "$r" "not-a-version"
 out="$(run "$r")"; rc=$?
 [[ $rc -eq 2 ]] && ok "malformed version: exits 2, not a pass" || bad "malformed version rc=$rc (want 2): $out"
 
+# --- the WHOLE string must be MAJOR.MINOR.PATCH (PR#27 codex-rd1-r1) -------------------------
+# semver_gt read only the first three dot-separated fields, so `1.2.4.0` compared as 1.2.4 and
+# shipped through the gate as a valid bump. A release gate that accepts an invalid version is
+# worse than none: the plugin UI is the thing that has to parse it downstream.
+for badv in 1.2.4.0 1.2 1 "1.2.x" "v1.2.3" "1.2.3 " ""; do
+  r="$(newrepo 1.1.0)"
+  echo changed > "$r/file.txt"; setver "$r" "$badv"
+  ( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+  out="$(run "$r")"; rc=$?
+  [[ $rc -eq 2 ]] && ok "malformed version '${badv:-<empty>}' exits 2" \
+    || bad "malformed version '${badv:-<empty>}' rc=$rc (want 2): $out"
+done
+
+# A pre-release suffix is valid semver but deliberately unsupported by this gate — the message
+# must SAY that rather than calling it malformed, so the diagnosis is actionable.
+r="$(newrepo 1.1.0)"
+echo changed > "$r/file.txt"; setver "$r" "1.2.0-rc1"
+( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+out="$(run "$r")"; rc=$?
+[[ $rc -eq 2 ]] && grep -qi 'pre-release' <<<"$out" \
+  && ok "pre-release version: rejected with a diagnosis that names why" \
+  || bad "pre-release diagnosis unclear (rc=$rc): $out"
+
+# --- the base ref is IDENTIFIED, so a stale one is visible (PR#27 fable-rd1-r3) ---------------
+# The check compares against a local origin/main it never fetches. It cannot know it is stale, so
+# it must at least name what it compared against — a gate documented as "fails loud" must not
+# hide the one input that decides its verdict.
+r="$(newrepo 1.1.0)"
+echo changed > "$r/file.txt"; setver "$r" 1.2.0
+( cd "$r" && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+out="$(run "$r")"
+base_sha="$(cd "$r" && git rev-parse --short main)"
+grep -qF "$base_sha" <<<"$out" \
+  && ok "pass output identifies the base commit it compared against" \
+  || bad "base commit not identified, so staleness is invisible: $out"
+
 # --- no base ref -> loud skip, not a silent pass (an unverifiable state must say so) ---
 r="${WORK}/nobase"; mkdir -p "$r/scripts" "$r/.claude-plugin"; cp "$SUT" "$r/scripts/"
 printf '{"name":"multi-review","version":"1.0.0"}\n' > "$r/.claude-plugin/plugin.json"
