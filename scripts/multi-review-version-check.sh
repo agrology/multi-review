@@ -10,7 +10,13 @@
 # Contract: if this branch changes any TRACKED file relative to the base branch, the version must
 # be strictly greater than the base's (semver, numeric per-component).
 #
-# Usage: multi-review-version-check.sh [base-ref]      (default: origin/main, else main)
+# Usage: multi-review-version-check.sh [base-ref] [head-ref]
+#   base-ref  default: origin/main, else main
+#   head-ref  the commit to JUDGE. Default is the working tree, which is what a human running the
+#             gate means. The pre-push hook passes the sha actually being pushed instead: judging
+#             the checkout there is wrong content — an unbumped branch pushed from a bumped
+#             checkout produced a FALSE PASS, and an uncommitted manifest edit excused a commit
+#             that did not carry it.
 # Exit: 0 ok / nothing to check, 1 missing-or-non-increasing bump, 2 usage or malformed version.
 set -uo pipefail
 
@@ -28,6 +34,7 @@ git rev-parse --git-dir >/dev/null 2>&1 || { note "not a git repo — nothing to
 # checkout, a fresh init) cannot compute a delta — say so and pass, rather than failing a repo
 # that simply has nothing to compare against. Silence here would read as approval.
 base="${1:-}"
+head="${2:-}"
 if [[ -z "$base" ]]; then
   for cand in origin/main main; do
     git rev-parse --verify -q "$cand" >/dev/null 2>&1 && { base="$cand"; break; }
@@ -36,9 +43,12 @@ fi
 [[ -n "$base" ]] || { note "no base ref (origin/main or main) — cannot compute a delta, skipping"; exit 0; }
 git rev-parse --verify -q "$base" >/dev/null 2>&1 || die "base ref not found: $base" 2
 
+[[ -z "$head" ]] || git rev-parse --verify -q "$head" >/dev/null 2>&1 || die "head ref not found: $head" 2
+
 # Tracked-file delta vs the base. --quiet exits 1 when there IS a difference.
-if git diff --quiet "$base" -- . 2>/dev/null; then
-  note "no tracked changes vs ${base} — nothing to bump"
+# With an explicit head this compares two commits; without one it compares the working tree.
+if git diff --quiet "$base" ${head:+"$head"} -- . 2>/dev/null; then
+  note "no tracked changes vs ${base}${head:+ (at ${head})} — nothing to bump"
   exit 0
 fi
 
@@ -55,7 +65,7 @@ version_at() { # <ref-or-empty> -> version string ("" if unreadable)
     | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' 
 }
 
-cur="$(version_at "")"
+cur="$(version_at "$head")"
 old="$(version_at "$base")"
 [[ -n "$cur" ]] || die "cannot read a version from ${MANIFEST_REL}" 2
 
@@ -115,10 +125,10 @@ if semver_gt "$cur" "$old"; then
   # Name the base COMMIT, not just the ref. This gate compares against a local origin/main it
   # never fetches, so it cannot tell a stale base from a current one — the least it can do is show
   # which commit decided the verdict, rather than hiding the one input the answer depends on.
-  note "version ${old} → ${cur} (ok; base ${base} @ $(git rev-parse --short "$base"))"
+  note "version ${old} → ${cur} (ok; base ${base} @ $(git rev-parse --short "$base")${head:+, head $(git rev-parse --short "$head")})"
   exit 0
 fi
 
-die "this branch changes tracked files but ${MANIFEST_REL} is still ${cur} (base ${base} has ${old}).
+die "this push changes tracked files but ${MANIFEST_REL} is still ${cur} (base ${base} has ${old}).
     Installed plugins decide whether to update by comparing this version, so shipping without a
     bump leaves every existing install silently on the old code. Raise it before merging." 1
