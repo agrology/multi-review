@@ -73,7 +73,13 @@ if [[ -f "$DR" ]]; then
     || bad "multi-review.md does not resolve-set --fable-floor"
   grep -qi 'attended' "$DR" && bad "multi-review.md still mentions the removed --attended route" \
     || ok "no --attended route (star is autonomous-only)"
-  grep -qiE 'degrad|falling back' "$DR" && bad "multi-review.md still documents degrade-to-manual" \
+  # Guards the PROPERTY (star never hands the loop back to a human mid-review), not the word.
+  # A bare 'degrad' ban was a proxy for it, and it became wrong once diff-scoping landed: a
+  # round that cannot be scoped degrades to the FULL DOCUMENT and keeps running autonomously,
+  # which the spec requires be described as a visible degraded path (§4.6). Widened here to the
+  # thing actually removed — degrading or falling back to a manual/attended/two-session flow.
+  grep -qiE '(degrad[a-z]*|fall[a-z]* back)[^.]{0,40}(manual|attended|two-session|second session)' "$DR" \
+    && bad "multi-review.md still documents degrade-to-manual" \
     || ok "no degrade-to-manual path"
 fi
 
