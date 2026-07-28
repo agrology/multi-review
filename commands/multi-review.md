@@ -231,6 +231,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      signal — prefer converging over re-fanning. The decision stays yours; #30's triggers govern
      *whether* to re-fan, and this step governs only what a re-fan costs.
 
+   **Snapshot each copy as dispatched:** once its header is final, `cp "<doc>.<id>"
+   "<doc>.<id>.seed"`. Step 6's `channel-check` diffs against this, and it is the only
+   representation of what the reviewer was actually handed — for a scoped round, `<doc>.baseline`
+   is not it. Retain it with the other working files; the terminal gate releases it.
+
    For the round-1 path (and the exit-3 fallback), rewrite that copy's header to:
 
         <!-- multi-review: awaiting-reviewer · round <N>/<MAX> -->
@@ -282,8 +287,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    `verify-vendor`'s message, or "no response within the wait bound" from step 5).
 
    **Then check the findings actually reached the channel** (issue #32):
-   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh channel-check --baseline "<doc>.baseline"
-   "<doc>.<id>"`. `merge` reads only the text after the LAST `## Review`, so a reviewer that
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh channel-check --seed "<doc>.<id>.seed"
+   "<doc>.<id>"`. **`--seed` is the copy AS DISPATCHED, not `<doc>.baseline`** — from round 2 a
+   copy may be a scoped reduction, and differencing that against the full baseline lets absent
+   lines absorb misplaced findings, which would miss the very incident #32 came from.
+   **Exit 1 means stray findings → quarantine that provider. Exit 2 is a usage/infra error on
+   YOUR side** (bad path, missing value) — fix the invocation; never quarantine a reviewer for it. `merge` reads only the text after the LAST `## Review`, so a reviewer that
    appended under an earlier one — a `## Review` inside a fenced example, which any doc about
    this protocol legitimately contains — has its **entire turn silently discarded**: nothing else
    catches it, and `gate-summary` then shows that provider as admitted with zero findings,
@@ -299,8 +308,8 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    <id>:<reason> ...] "<doc>" <admitted copies...>`.
 8. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
-   `<doc>.manifest`, `<doc>.baseline`, and every `<doc>.baseline.rd<N>` — the terminal gate
-   releases them.
+   `<doc>.<id>.seed` for every provider, `<doc>.manifest`, `<doc>.baseline`, and every
+   `<doc>.baseline.rd<N>` — the terminal gate releases them.
 
 #### Primary turn (on `awaiting-primary`)
 
@@ -404,8 +413,8 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
 
   This is the **human gate**: never implement, commit, or open/merge a PR from this command. Only
   once the engineer confirms the review is done, remove the retained working files
-  (`<doc>.<id>` for every provider, `<doc>.manifest`, `<doc>.baseline`, and every
-  `<doc>.baseline.rd<N>`) — never before the gate,
+  (`<doc>.<id>` and `<doc>.<id>.seed` for every provider, `<doc>.manifest`, `<doc>.baseline`,
+  and every `<doc>.baseline.rd<N>`) — never before the gate,
   since the gate is presented FROM them (`check-converged`/`gate-summary` read the manifest).
 
 ## Guardrails

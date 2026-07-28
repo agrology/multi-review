@@ -13,7 +13,7 @@
 #   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
 #                              and a converge/re-fan verdict (advisory; pure read)
 #   evidence-gaps <doc>     -> high/med findings lacking a "> — evidence:" line (report, not gate)
-#   channel-check --baseline <b> <copy> -> exit 1 if a reviewer's findings landed outside the
+#   channel-check --seed <seed> <copy> -> exit 1 if a reviewer's findings landed outside the
 #                              merged '## Review' channel (issue #32); the turn would merge clean
 #   compose-review <doc> <primary-model-id>  -> neutral PR review body (dormant; Task A4)
 #   compose-inline <doc>                     -> "path\tstart\tend\tbody" per agreed+anchored
@@ -507,7 +507,7 @@ cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored f
 }
 
 
-# channel-check --baseline <baseline> <copy> — did the reviewer's findings reach the channel?
+# channel-check --seed <copy-as-dispatched> <copy> — did the reviewer's findings reach the channel?
 #
 # Issue #32. `merge` reads only the text after the LAST "## Review", so a reviewer that appends
 # under an EARLIER one — e.g. a `## Review` inside a fenced example, which any doc about this
@@ -516,39 +516,53 @@ cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored f
 # is recorded, and gate-summary shows the provider as admitted with zero findings, which is
 # indistinguishable from a reviewer that genuinely found nothing.
 #
-# Counts are taken against the BASELINE, not in absolute terms: a doc whose body documents the
-# grammar carries `> [finding:...]` lines of its own, and those appear in baseline and copy
-# alike, so differencing cancels them. That also means no fence tracking is needed here — which
-# matters, since strip_fences is backtick-only and would miss a ~~~ block.
+# Two things this must get right, both found by review of the first attempt:
+#
+#   * Compare against the copy AS DISPATCHED (its seed), NOT `<doc>.baseline`. From round 2 a
+#     copy may be a SCOPED reduction, so baseline lines absent from it deflate the additions and
+#     each absent `> [finding:` example silently absorbs one misplaced finding — which made the
+#     first version miss #32's own motivating incident (codex, round 2, fenced grammar examples).
+#   * Count what MERGE actually ingests — `review_section | strip_fences` — not raw lines after
+#     the heading. A turn written inside a fence AFTER the real heading is stripped by merge and
+#     would otherwise pass.
+#
+# Additions are compared with `comm`, not by net count, so deleting a pre-existing finding line
+# cannot offset a misplaced one back to zero.
 cmd_channel_check() {
   local base="" copy=""
   while (( $# )); do
     case "$1" in
-      --baseline)
-        (( $# >= 2 )) || die "--baseline requires a value" 2
+      --baseline|--seed)
+        (( $# >= 2 )) || die "$1 requires a value" 2
         base="$2"; shift 2 ;;
       *) [[ -n "$copy" ]] || copy="$1"; shift ;;
     esac
   done
-  [[ -n "$base" ]] || die "channel-check requires --baseline <snapshot>" 2
-  [[ -f "$base" ]] || die "baseline not found: $base" 2
+  [[ -n "$base" ]] || die "channel-check requires --seed <copy-as-dispatched>" 2
+  [[ -f "$base" ]] || die "seed not found: $base" 2
   [[ -n "$copy" && -f "$copy" ]] || die "copy not found: ${copy:-<unset>}" 2
 
-  local tb tc cb cc added_total added_channel stray
-  tb="$(grep -c '^> \[finding:' "$base" 2>/dev/null || true)"
-  tc="$(grep -c '^> \[finding:' "$copy" 2>/dev/null || true)"
-  cb="$(review_section "$base" | grep -c '^> \[finding:' 2>/dev/null || true)"
-  cc="$(review_section "$copy" | grep -c '^> \[finding:' 2>/dev/null || true)"
-  added_total=$(( tc - tb ))
-  added_channel=$(( cc - cb ))
-  (( added_total <= added_channel )) && return 0
-  stray=$(( added_total - added_channel ))
-  # Name the actual shape. "An earlier or fenced heading captured them" is wrong — and
-  # misleading as a quarantine reason — when the copy has no channel heading at all.
+  local sa sv ca cv added_total added_visible stray
+  sa="$(mktemp)"; sv="$(mktemp)"; ca="$(mktemp)"; cv="$(mktemp)"
+  # ALL finding lines anywhere in the file...
+  grep '^> \[finding:' "$base" 2>/dev/null | sort > "$sa" || true
+  grep '^> \[finding:' "$copy" 2>/dev/null | sort > "$ca" || true
+  # ...versus exactly what MERGE will ingest: the last ## Review section, fences stripped.
+  review_section "$base" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | sort > "$sv" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | sort > "$cv" || true
+
+  # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
+  # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
+  added_total="$(comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
+  added_visible="$(comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
+  rm -f "$sa" "$sv" "$ca" "$cv"
+
+  (( added_total <= added_visible )) && return 0
+  stray=$(( added_total - added_visible ))
   local why="an earlier or fenced '## Review' captured them"
-  grep -qE '^[[:space:]]*## Review[[:space:]]*$' "$copy" \
+  grep -q '^## Review[[:space:]]*$' "$copy" \
     || why="the copy has NO '## Review' heading, so nothing could reach the channel"
-  die "reviewer added ${added_total} finding(s) but only ${added_channel} reached the '## Review' channel — ${stray} landed outside it (${why}). Merging would record this turn as clean." 1
+  die "reviewer added ${added_total} finding(s) but only ${added_visible} are in what merge ingests — ${stray} landed outside it (${why}). Merging would record this turn as clean." 1
 }
 
 # --- doc↔manifest consistency (issue #16) ----------------------------------
