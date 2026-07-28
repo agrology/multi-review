@@ -96,6 +96,9 @@ convergence impossible.
   round with zero trustworthy findings.
 - A later round re-dispatches the FULL resolved secondary set, not just previously-admitted
   ones — a provider quarantined in round 1 gets a fresh independent copy again in round 2.
+  The set never shrinks on its own: a secondary that went dry can still catch something in text
+  written since, so saturation is not grounds for dropping it automatically. `round-stats`
+  reports each provider's dry streak so the primary can drop one **knowingly** instead.
 - The gate summary warns when the round's admitted secondaries are all same-vendor as the
   primary: `⚠ Independence: ... no independent cross-vendor perspective this run.` Add
   `--reviewers codex` (or `gemini`) for architectural independence.
@@ -103,11 +106,26 @@ convergence impossible.
 ## Bounds & terminal state
 
 Round = one secondary fan-out pass + one primary adjudication pass. **Adaptive re-fan-out**:
-the primary re-enters `awaiting-secondaries` only while the previous round produced at least
-one new admitted finding and the round is still under `max`; it converges as soon as a round
-goes dry. At `round > max` the doc marker becomes `exhausted`. Convergence or exhaustion both
-stop the loop and present the annotated doc; a **human approves** before any implementation or
-PR.
+the primary re-enters `awaiting-secondaries` only while the round is still under `max`, the
+previous round produced at least one new admitted finding, **and the finding rate is still
+decaying** — round 1 excepted, since it has no prior round to compare against and so always
+re-fans if it found anything. It converges as soon as a round goes dry *or the rate stops
+falling*. At
+`round > max` the doc marker becomes `exhausted`. Convergence or exhaustion both stop the loop
+and present the annotated doc; a **human approves** before any implementation or PR.
+
+The decay condition is not a refinement of "goes dry" — it is what makes stopping reachable at
+all. The primary must address each agreed finding in the doc body between rounds, so round N+1
+reviews prose written during round N. Every round supplies fresh, never-reviewed text, and the
+per-round count can flatten rather than fall to zero: a rule keyed only on "did this round find
+anything" keeps firing for as long as the primary keeps editing — which the protocol obliges it
+to do. Coverage convergence (every finding has a response) is reachable by construction; quality
+convergence (no new findings) is not, and nothing but `max` bounded it before.
+
+`multi-review-star.sh round-stats <doc>` reports per-round × per-provider counts, the trend, each
+provider's dry streak, and a converge/re-fan verdict, all read from the doc itself. It is
+**advisory** — the primary decides. Reaching `max` on a doc the primary rewrites substantially
+each round is a normal terminal outcome, not a failure state.
 
 ## Egress
 

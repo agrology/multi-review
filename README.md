@@ -26,7 +26,7 @@ flowchart TB
     M --> J["primary agrees /<br/>disputes each"]
     J -- "new findings →<br/>re-fan-out" --> P
   end
-  J -- "round went dry → converge" --> H["HUMAN GATE<br/>+ warn if no cross-vendor reviewer"]
+  J -- "dry, or rate stopped<br/>decaying → converge" --> H["HUMAN GATE<br/>+ warn if no cross-vendor reviewer"]
   H -- "PR only, on approval" --> Pub["one neutral gh pr review"]
 ```
 
@@ -40,6 +40,17 @@ flowchart TB
 Installs the `/multi-review` command + its scripts. The marketplace path also lists the plugin in
 Claude Code's plugin UI with version tracking / update prompts. Reviewer setup depends on which
 reviewers you add (below) — `fable` needs none.
+
+**If your design docs don't live in `docs/specs/` or `docs/plans/`,** set `MULTI_REVIEW_DOC_DIRS`
+before the first run — the egress guard refuses to arm on a path outside it, so a repo with any
+other layout is blocked until it is set:
+
+```jsonc
+// .claude/settings.json
+{ "env": { "MULTI_REVIEW_DOC_DIRS": "docs/design docs/rfcs" } }
+```
+
+Space-separated; individual dirs cannot contain spaces.
 
 ## Use it
 
@@ -87,8 +98,15 @@ refuses to run until you remove it, and `--check-reviewers`/`doctor` will flag t
    method") *and* disables file edits, so the reviewer can't write the doc.
 2. An API key — `export GEMINI_API_KEY=…`, or drop `GEMINI_API_KEY=…` in `~/.gemini/.env` (or your
    repo's `.env`). **It auto-loads once the workspace is trusted.**
-3. `.gemini/settings.json` → `{"context":{"fileFiltering":{"respectGitIgnore":false}}}` (review docs
-   are gitignored). The free tier's daily cap will exhaust a multi-round review.
+3. `.gemini/settings.json` → `{"context":{"fileFiltering":{"respectGitIgnore":false}}}`. Needed
+   whenever the docs gemini must read are gitignored — your doc dirs, or PR mode's
+   `.multi-review/` scratch — which is the common case. `--check-reviewers` names the exact
+   paths when this applies and stays silent when it does not, and `doctor` reports it separately
+   from auth (a reviewer that authenticates but cannot read the doc is not "ready").
+   The free tier's daily cap will exhaust a multi-round review.
+
+Gemini does **not** need the protocol on disk: skill-less reviewers get the contract inlined in
+their dispatch prompt, so it reaches them regardless of workspace root or ignore rules.
 
 Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a glance.
 

@@ -10,6 +10,8 @@
 #   merge --round N [--quarantined p:reason ...] <doc> <copy> ...
 #   check-converged <doc>
 #   gate-summary <doc> <primary-model-id>
+#   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
+#                              and a converge/re-fan verdict (advisory; pure read)
 #   compose-review <doc> <primary-model-id>  -> neutral PR review body (dormant; Task A4)
 #   compose-inline <doc>                     -> "path\tstart\tend\tbody" per agreed+anchored
 #                                                finding (dormant; Task A4)
@@ -717,6 +719,185 @@ cmd_gate_summary() {
   fi
 }
 
+# round-stats — per-round × per-provider admitted-finding counts, the trend between rounds, and
+# per-provider dry streaks. A PURE READ: every number comes from the doc's own ns-ids
+# (<provider>-rd<N>-<id>) plus its durable quarantine records. No new state, no manifest.
+#
+# Why a trend and not just a count (issue #22). The re-fan rule was "re-fan while the previous
+# round produced ≥1 new admitted finding", i.e. loop-until-dry. Loop-until-dry terminates only if
+# the reviewed artifact holds still. This one does not: the primary turn REQUIRES addressing each
+# agreed finding in the doc body before the next fan-out, so round N+1 reviews prose written
+# during round N. Every round supplies fresh, never-reviewed text; the rate can flatten instead of
+# decaying, and a dry round is not reachable by construction — only the ceiling is. Observed over
+# five rounds on one design doc: 9, 3, 3, 3, 3. Surfacing the trend lets the primary stop on
+# evidence instead of grinding to MULTI_REVIEW_MAX_ROUNDS.
+#
+# The round count comes from the MARKER, not from the highest round seen in the ns-ids: a round in
+# which every secondary found nothing merges no findings and is therefore invisible in the doc.
+# Sourcing it from the ids would silently drop exactly the round that means "converge".
+#
+# Provider columns are the union of the mode hint's `reviewers:` list, providers that raised a
+# finding, and providers with a quarantine record. A provider that was in the set, was never
+# quarantined, and found nothing in ANY round is visible only via the hint — outside that, the
+# doc holds no record it ran.
+cmd_round_stats() {
+  local doc="${1:?doc}" marker state round max t quar hintp
+  [[ -f "$doc" ]] || die "doc not found: $doc" 1
+  marker="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null)" \
+    || die "no valid multi-review marker in: $doc" 1
+  state="$(awk '{print $1}' <<<"$marker")"
+  round="$(awk '{print $2}' <<<"$marker")"; max="$(awk '{print $3}' <<<"$marker")"
+
+  # The state is not decoration — a verdict is only meaningful once the round's findings are
+  # merged. On `awaiting-secondaries` the current round has fanned out but merged nothing, so it
+  # carries no ns-ids; reading that as a zero count produced a confident
+  # "converge — round N went dry" for a round still in flight. Refuse loudly instead.
+  case "$state" in
+    awaiting-primary|converged|exhausted) : ;;
+    *) die "round-stats needs a merged round: marker says '${state}' (round ${round} is still in flight — nothing merged yet). Run it in the primary turn, after merge." 1 ;;
+  esac
+  t="$(_table "$doc")" || die "round-stats: contract violation in $doc" 1
+
+  # Canonical quarantine-record shape, same as gate-summary / check-converged guard (d).
+  quar="$(grep -oE '^<!-- star-quarantined: [a-z0-9]+ · [^·]+· round [0-9]+ -->' "$doc" \
+          | sed -E 's/^<!-- star-quarantined: ([a-z0-9]+) · .*· round ([0-9]+) -->$/\1 \2/' || true)"
+  # `reviewers:` list off the mode hint; `[^-]*` stops at the `-->` (provider ids are [a-z0-9]).
+  hintp="$(header_region "$doc" | grep -o 'reviewers:[^-]*' | head -1 | sed 's/reviewers://' || true)"
+
+  # quar/hintp go through the ENVIRONMENT, not `awk -v`: -v values cannot contain a literal
+  # newline (two quarantine records in one doc made awk die "newline in string"), and -v also
+  # escape-processes backslashes. Same reason cmd_merge passes its block via ENVIRON.
+  printf '%s\n' "$t" | RS_QUAR="$quar" RS_HINTP="$hintp" awk -F'\t' -v rounds="$round" -v maxr="$max" '
+    BEGIN {
+      nq = split(ENVIRON["RS_QUAR"], ql, "\n")
+      for (i = 1; i <= nq; i++) {
+        if (ql[i] == "") continue
+        split(ql[i], q, " "); Q[q[1] SUBSEP (q[2]+0)] = 1; provs[q[1]] = 1
+      }
+      np = split(ENVIRON["RS_HINTP"], hp, " ")
+      for (i = 1; i <= np; i++) if (hp[i] != "") provs[hp[i]] = 1
+    }
+    NF {
+      # provider is the ns-id prefix before "-rd"; round is the digits that follow it. Same
+      # split gate-summary uses, so the two can never disagree about who raised what.
+      split($1, pp, "-rd")
+      p = pp[1]; r = pp[2]; sub(/-.*/, "", r)
+      if (p == "" || r+0 < 1) next
+      C[p SUBSEP (r+0)]++; provs[p] = 1
+    }
+    END {
+      n = 0; for (p in provs) sorted[++n] = p
+      for (i = 2; i <= n; i++) { v = sorted[i]; j = i - 1
+        while (j >= 1 && sorted[j] > v) { sorted[j+1] = sorted[j]; j-- }
+        sorted[j+1] = v }
+
+      # Per round: raw admitted total, and how many providers were admitted at all.
+      for (r = 1; r <= rounds; r++) {
+        tot[r] = 0; nadm[r] = 0
+        for (i = 1; i <= n; i++) {
+          p = sorted[i]
+          if ((p SUBSEP r) in Q) continue
+          nadm[r]++; tot[r] += C[p SUBSEP r] + 0
+        }
+      }
+
+      # The trend must compare LIKE WITH LIKE. Raw totals move with the admitted-provider set, so
+      # a single quarantine can make a still-decaying review read as flat or rising. Compare only
+      # the providers admitted in BOTH of the two rounds being compared.
+      # Was anyone silenced in the FINAL round? That, not the comparison window, is what makes a
+      # dry reading partial — and unlike cmp_partial it is defined for round 1 too.
+      qcur = 0
+      for (i = 1; i <= n; i++) if ((sorted[i] SUBSEP rounds) in Q) qcur = 1
+
+      cmp_ok = 0; cmp_prev = 0; cmp_last = 0; cmp_partial = 0
+      if (rounds >= 2) {
+        for (i = 1; i <= n; i++) {
+          p = sorted[i]
+          if ((p SUBSEP rounds) in Q || (p SUBSEP (rounds-1)) in Q) { cmp_partial = 1; continue }
+          cmp_ok = 1
+          cmp_prev += C[p SUBSEP (rounds-1)] + 0
+          cmp_last += C[p SUBSEP rounds] + 0
+        }
+      }
+
+      for (r = 1; r <= rounds; r++) {
+        line = "rd" r
+        for (i = 1; i <= n; i++) {
+          p = sorted[i]
+          if ((p SUBSEP r) in Q) line = line "  " p " q"      # never spoke — not a zero
+          else line = line "  " p " " (C[p SUBSEP r] + 0)
+        }
+        line = line "  = " tot[r]
+        if (r >= 2) {
+          # The glyph is the row headline at the gate, so it must rest on the SAME basis as the
+          # verdict: the providers admitted in both compared rounds. Comparing raw totals here
+          # printed `↑ rising` directly above `verdict: re-fan — still decaying` whenever a
+          # quarantine moved the denominator.
+          sp = 0; sl = 0; any = 0
+          for (i = 1; i <= n; i++) {
+            p = sorted[i]
+            if ((p SUBSEP r) in Q || (p SUBSEP (r-1)) in Q) continue
+            any = 1; sp += C[p SUBSEP (r-1)] + 0; sl += C[p SUBSEP r] + 0
+          }
+          # Dryness and direction are different questions. DRY means nothing was admitted at
+          # all, which is the raw total; DIRECTION is only meaningful on the comparable subset.
+          # Keying dryness off the subset printed `✗ dry` on a round that plainly found things,
+          # whenever a provider quarantined in r-1 returned in r (subset -> 0, raw > 0).
+          if (nadm[r] == 0)      line = line "  ‼ all-quarantined"
+          else if (tot[r] == 0)  line = line "  ✗ dry"
+          else if (!any)         line = line "  ? no comparable provider"
+          else if (sl < sp)      line = line "  ↓ decaying"
+          else if (sl == sp)     line = line "  → flat"
+          else                   line = line "  ↑ rising"
+        }
+        print line
+      }
+
+      # Per-provider dry streak: consecutive MOST RECENT rounds with zero findings. A quarantined
+      # round breaks the streak rather than extending it — the provider never got to speak, so it
+      # is no evidence of saturation, and counting it would advise dropping a reviewer that was
+      # merely broken that round.
+      streaks = ""
+      for (i = 1; i <= n; i++) {
+        p = sorted[i]; s = 0
+        for (r = rounds; r >= 1; r--) {
+          if ((p SUBSEP r) in Q) break
+          if (C[p SUBSEP r] + 0 > 0) break
+          s++
+        }
+        if (s >= 2) streaks = streaks "  " p " " s
+      }
+      if (streaks != "") print "dry-streak:" streaks
+
+      if (rounds >= 2 && cmp_partial && cmp_ok)
+        print "note: trend computed on the providers admitted in BOTH rounds " (rounds-1) " and " rounds " (" cmp_prev " → " cmp_last "); a quarantine changed the raw totals, which are not comparable"
+
+      if (nadm[rounds] == 0)
+        v = "stop — every secondary was quarantined in round " rounds "; nobody reviewed, so this is absence of evidence, not a dry round (protocol anomaly stop)"
+      else if (rounds + 0 >= maxr + 0)
+        v = "converge — round ceiling " maxr " reached"
+      else if (tot[rounds] == 0 && qcur)
+        v = "converge — round " rounds " went dry for every ADMITTED provider, but some were quarantined and never spoke; treat the dry reading as partial and check the quarantine reasons at the gate"
+      else if (tot[rounds] == 0)
+        v = "converge — round " rounds " went dry"
+      else if (rounds + 0 < 2)
+        v = "re-fan — round 1, no trend yet"
+      else if (!cmp_ok)
+        v = "re-fan — no provider was admitted in both rounds " (rounds-1) " and " rounds ", so there is no comparable trend"
+      else if (cmp_last < cmp_prev)
+        v = "re-fan — the finding rate is still decaying (" cmp_prev " → " cmp_last ")"
+      else if (cmp_last == cmp_prev)
+        v = "converge — the finding rate went flat at round " rounds " (" cmp_prev " → " cmp_last ")"
+      else
+        # A RISE is not saturation. It usually means the between-round edits made by the primary
+        # introduced new problems, so it stops the loop for a different reason than a plateau and
+        # the human gate should be able to tell the two apart. NB: no apostrophes in this awk
+        # program — it is single-quoted in the shell, and one would terminate it.
+        v = "converge — the finding rate ROSE at round " rounds " (" cmp_prev " → " cmp_last "); the new findings most likely concern the between-round edits, not the original doc — review them at the gate"
+      print "verdict: " v
+    }'
+}
+
 # remember-set --pref-file <path> (--reviewers <csv> | --clear)
 # Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
 # (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
@@ -776,6 +957,7 @@ main() {
     verify) cmd_verify "$@" ;;
     check-converged) cmd_check_converged "$@" ;;
     gate-summary) cmd_gate_summary "$@" ;;
+    round-stats) cmd_round_stats "$@" ;;
     compose-review) cmd_compose_review "$@" ;;
     compose-inline) cmd_compose_inline "$@" ;;
     *)    die "unknown subcommand: ${cmd:-<none>}" 2 ;;
