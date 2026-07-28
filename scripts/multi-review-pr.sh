@@ -109,7 +109,23 @@ cmd_post_review() { # <scratch> <url> <summary-file> <script-dir> [inline-script
     end="$(awk -F'\t' '{print $3}' <<< "$rec")"
     body="$(awk -F'\t' '{print $4}' <<< "$rec")"
     [[ -n "$path" ]] || continue
-    if cmd_validate_anchor "$scratch" "$path" "$start" "${end:-$start}"; then
+    # Re-resolve the anchor by CONTENT before validating. A no-op unless a refresh replaced the
+    # diff under this finding; when one did, this follows the anchored line to its new number
+    # instead of trusting a number that now points somewhere else. A line that vanished or went
+    # ambiguous fails here and the finding degrades to the summary — deliberately, rather than
+    # posting inline at a plausible-looking wrong place.
+    local rstart rend
+    if rstart="$(cmd_remap_anchor "$scratch" "$path" "$start" 2>/dev/null)"; then
+      if [[ -n "$end" && "$end" != "$start" ]]; then
+        rend=$(( rstart + (end - start) ))
+      else
+        rend="$rstart"
+      fi
+      start="$rstart"; end="$rend"
+    else
+      start=""; end=""
+    fi
+    if [[ -n "$start" ]] && cmd_validate_anchor "$scratch" "$path" "$start" "${end:-$start}"; then
       if [[ -z "$end" || "$end" == "$start" ]]; then
         jq -n --arg path "$path" --argjson line "$start" --arg body "$body" \
           '{path:$path, line:$line, side:"RIGHT", body:$body}' >> "$carr"
@@ -368,8 +384,92 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
   [[ -n "$head" ]] || die "could not resolve the PR head sha for ${o}/${r}#${n}" 1
   # Record BEFORE replacing, so a failure leaves the scratch untouched rather than half-updated.
   cmd_record_head "$scratch" "$round" "$head" "$mb"
+  # Capture each existing anchor's line text while the OLD diff is still present — after the
+  # swap that text is unrecoverable, and the anchor's number means nothing.
+  cmd_record_anchors "$scratch"
   cmd_replace_diff "$scratch" "${tmpd}/diff"
   echo "$scratch"
+}
+
+# ---- Phase B: anchor survival across a refresh -------------------------------------------
+# `refresh` replaces ## Diff under findings that were anchored against the OLD one, so their
+# RIGHT-side line numbers stop meaning anything. Left alone, a stale number either lands on no
+# changed line (degrading to the summary with no notice) or — worse — lands on a DIFFERENT
+# changed line and posts an agreed finding inline at the wrong place, which looks authoritative.
+#
+# Fix: capture the anchored line's TEXT while the old diff is still present, then re-resolve it
+# by content at publish. Line numbers are not carried forward; the line's content is the
+# identity, which is the only thing that stays meaningful once a fix commit renumbers the file.
+#
+# Deliberately head-equality's alternative: "post inline only if the finding's round head equals
+# the publish head" would demote EVERY earlier-round anchor the moment the author pushes, and
+# round 1 is where the serious findings are.
+#
+# This lives in pr.sh, not merge: it is only reachable once a refresh happens, so the manifest,
+# the finding hashes, coverage and check-converged stay untouched.
+
+_anchor_line_text() { # <scratch> <path> <line> -> the RIGHT-side line's text, or empty
+  local scratch="$1" path="$2" line="$3"
+  cmd_diff_lines_with_text "$scratch" | awk -F'\t' -v p="$path" -v l="$line" \
+    '$1 == p && $2 == l { sub(/^[^\t]*\t[^\t]*\t/, ""); print; exit }'
+}
+
+cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side diff lines
+  local scratch="${1:?scratch}"
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  awk '
+    /^## Diff[[:space:]]*$/ { ind = 1; next }
+    /^## Review[[:space:]]*$/ { ind = 0 }
+    !ind { next }
+    /^\+\+\+ / { p = $2; sub(/^b\//, "", p); next }
+    /^@@ / { n = substr($3, 2); split(n, a, ","); ln = a[1] + 0; next }
+    p == "" || ln == 0 { next }
+    /^\+/ { print p "\t" ln "\t" substr($0, 2); ln++; next }
+    /^ /  { print p "\t" ln "\t" substr($0, 2); ln++; next }
+    /^-/  { next }
+  ' "$scratch"
+}
+
+cmd_record_anchors() { # <scratch> — capture each anchor's line text BEFORE the diff is replaced
+  local scratch="${1:?scratch}" line path ln text anchor
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  local recs=""
+  while IFS= read -r line; do
+    [[ "$line" =~ ^\>[[:space:]]*—[[:space:]]*at[[:space:]]+([^:[:space:]]+):([0-9]+) ]] || continue
+    path="${BASH_REMATCH[1]}"; ln="${BASH_REMATCH[2]}"
+    grep -qF "multi-review-pr-anchor: ${path}:${ln} " "$scratch" && continue
+    text="$(_anchor_line_text "$scratch" "$path" "$ln")"
+    [[ -n "$text" ]] || continue
+    anchor="$(printf '%s' "$text" | shasum | cut -d' ' -f1)"
+    recs="${recs}<!-- multi-review-pr-anchor: ${path}:${ln} · ${anchor} -->"$'\n'
+  done < <(grep -E '^>[[:space:]]*—[[:space:]]*at[[:space:]]' "$scratch" 2>/dev/null)
+  [[ -n "$recs" ]] || return 0
+  local target tmp
+  target="$(grep -n '^- \*\*Branch:\*\* ' "$scratch" | head -1 | cut -d: -f1)"
+  [[ -n "$target" ]] || die "no anchor point in scratch header: $scratch" 1
+  tmp="$(mktemp)" || die "mktemp failed" 1
+  { head -n "$target" "$scratch"; printf '%s' "$recs"; tail -n +$((target + 1)) "$scratch"; } > "$tmp" \
+    || { rm -f "$tmp"; die "cannot write anchor records" 1; }
+  mv "$tmp" "$scratch" || { rm -f "$tmp"; die "cannot update: $scratch" 1; }
+}
+
+cmd_remap_anchor() { # <scratch> <path> <line> -> the line's CURRENT number, or exit 1
+  local scratch="${1:?scratch}" path="${2:?path}" ln="${3:?line}" rec want hits
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  rec="$(grep -F "multi-review-pr-anchor: ${path}:${ln} " "$scratch" 2>/dev/null | head -1)"
+  # No record means no refresh has replaced the diff under this anchor — the number still means
+  # what it meant, so remapping is a no-op rather than a failure.
+  [[ -n "$rec" ]] || { printf '%s\n' "$ln"; return 0; }
+  [[ "$rec" =~ ·[[:space:]]*([0-9a-f]+)[[:space:]]*--\> ]] || return 1
+  want="${BASH_REMATCH[1]}"
+  hits="$(cmd_diff_lines_with_text "$scratch" | awk -F'\t' -v p="$path" '
+            $1 == p { t = $0; sub(/^[^\t]*\t[^\t]*\t/, "", t); print $2 "\t" t }' \
+          | while IFS=$'\t' read -r n t; do
+              [[ "$(printf '%s' "$t" | shasum | cut -d' ' -f1)" == "$want" ]] && printf '%s\n' "$n"
+            done)"
+  local count; count="$(printf '%s\n' "$hits" | grep -c '[0-9]' || true)"
+  (( count == 1 )) || return 1     # gone, or ambiguous -> caller degrades to the summary
+  printf '%s\n' "$hits" | grep '[0-9]' | head -1
 }
 
 main() {
@@ -377,6 +477,9 @@ main() {
   case "$cmd" in
     parse)        cmd_parse "$@" ;;
     refresh)      cmd_refresh "$@" ;;
+    record-anchors) cmd_record_anchors "$@" ;;
+    remap-anchor)   cmd_remap_anchor "$@" ;;
+    diff-lines-with-text) cmd_diff_lines_with_text "$@" ;;
     record-head)  cmd_record_head "$@" ;;
     head-record)  cmd_head_record "$@" ;;
     replace-diff) cmd_replace_diff "$@" ;;

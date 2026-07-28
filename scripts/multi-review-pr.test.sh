@@ -651,6 +651,60 @@ SC5="$(mkscratch s5.md)"
 bash "$SUT" refresh "$SC5" notanumber >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "refresh: non-numeric round rejected" || bad "refresh accepted a bad round"
 
+# ============================== Phase B: anchor remapping ==============================
+# mkanchored <name> -> scratch whose diff has 3 added lines in f.txt and one anchored finding
+mkanchored() {
+  local p="${WORK}/$1"
+  printf 'body\n' > "${WORK}/a.desc"
+  printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,3 @@\n+alpha\n+bravo\n+charlie\n' > "${WORK}/a.diff"
+  bash "$SUT" seed "$p" "T" "https://github.com/o/r/pull/9" "auth" "br" "${WORK}/a.desc" "${WORK}/a.diff"
+  {
+    printf '> [finding:codex-rd1-r1|med] concern\n> — via gpt-5\n> — risk: r\n> — at f.txt:2\n'
+    printf '> [agree:codex-rd1-r1]\n> — via claude-opus-5\n'
+  } >> "$p"
+  echo "$p"
+}
+
+# --- with no recorded anchors, remap is a no-op (nothing refreshed yet) ---
+SA="$(mkanchored a1.md)"
+out="$(bash "$SUT" remap-anchor "$SA" f.txt 2 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 && "$out" == "2" ]] && ok "remap-anchor: no-op before any refresh" || bad "remap no-op (rc=$rc out='$out')"
+
+# --- record-anchors captures the text the anchor points at TODAY ---
+bash "$SUT" record-anchors "$SA" 2>/dev/null
+grep -q 'multi-review-pr-anchor: f.txt:2' "$SA" && ok "record-anchors: records the anchored line" \
+  || bad "no anchor record written"
+
+# --- after the diff shifts, the anchor remaps to the line's NEW number ---
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,5 @@\n+zero\n+one\n+alpha\n+bravo\n+charlie\n' > "${WORK}/a2.diff"
+bash "$SUT" replace-diff "$SA" "${WORK}/a2.diff" 2>/dev/null
+out="$(bash "$SUT" remap-anchor "$SA" f.txt 2 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 && "$out" == "4" ]] && ok "remap-anchor: follows the line to its new number" \
+  || bad "remap did not follow the line (rc=$rc out='$out')"
+
+# --- a line that no longer exists does NOT remap (degrades to the summary) ---
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,2 @@\n+zero\n+one\n' > "${WORK}/a3.diff"
+bash "$SUT" replace-diff "$SA" "${WORK}/a3.diff" 2>/dev/null
+bash "$SUT" remap-anchor "$SA" f.txt 2 >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "remap-anchor: vanished line fails (-> summary)" || bad "vanished line still remapped"
+
+# --- an AMBIGUOUS match (same text twice) does not remap ---
+SB="$(mkanchored a4.md)"
+bash "$SUT" record-anchors "$SB" 2>/dev/null
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,3 @@\n+bravo\n+x\n+bravo\n' > "${WORK}/a5.diff"
+bash "$SUT" replace-diff "$SB" "${WORK}/a5.diff" 2>/dev/null
+bash "$SUT" remap-anchor "$SB" f.txt 2 >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "remap-anchor: ambiguous match fails (-> summary)" || bad "ambiguous match remapped"
+
+# --- the match is scoped to the anchor's own PATH ---
+SC6="$(mkanchored a6.md)"
+bash "$SUT" record-anchors "$SC6" 2>/dev/null
+printf 'diff --git a/other.txt b/other.txt\n--- a/other.txt\n+++ b/other.txt\n@@ -0,0 +1,1 @@\n+bravo\n' > "${WORK}/a7.diff"
+bash "$SUT" replace-diff "$SC6" "${WORK}/a7.diff" 2>/dev/null
+bash "$SUT" remap-anchor "$SC6" f.txt 2 >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "remap-anchor: identical line in another file is not a match" \
+  || bad "anchor jumped to a different file"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
