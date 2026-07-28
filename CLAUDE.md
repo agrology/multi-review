@@ -363,6 +363,13 @@ If you are asked to review a doc that is under a multi-review review, read
   `scripts/multi-review-version-check.sh` enforces this (strictly-greater, numeric per component)
   and is part of the gate above; it no-ops on `main` itself and says so when it cannot compute a
   delta rather than passing silently.
+- **Install the hooks once per clone:** `scripts/multi-review-install-hooks.sh` points
+  `core.hooksPath` at the versioned `.githooks/`, whose `pre-push` runs the version check before
+  any push. `.git/hooks/` is untracked, so a committed hook does nothing until a clone opts in.
+  The hook runs the version check ONLY, not the suite — a push happens many times a branch, and
+  the bump is the thing that gets silently forgotten. Bypass a WIP push with
+  `git push --no-verify`. A merge performed on GitHub runs no local hook, so the branch push is
+  the last point where a missing bump is still cheap to fix.
 - **AI disclosure form:** inside review docs, agent comments disclose via the protocol's
   `> — via <model>` continuation lines (see `docs/multi-review.md`) rather than the
   baseline's banner format; same norm, doc-native shape.

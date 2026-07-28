@@ -52,6 +52,11 @@ other layout is blocked until it is set:
 
 Space-separated; individual dirs cannot contain spaces.
 
+**Contributing to this repo?** Run `scripts/multi-review-install-hooks.sh` once per clone. It
+points `core.hooksPath` at the versioned `.githooks/`, whose `pre-push` refuses a push that has
+not raised `.claude-plugin/plugin.json`'s `version` — the comparison installed copies use to
+decide whether to offer an update. `git push --no-verify` bypasses it for a WIP branch.
+
 ## Use it
 
 ```bash
