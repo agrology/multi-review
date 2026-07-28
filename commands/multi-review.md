@@ -280,6 +280,17 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    "<doc>.baseline" "<doc>.<id>" --reviewer <id>`. Pass → admit the copy into the merge. Fail →
    quarantine: exclude it and record `--quarantined <id>:<reason>` (the reason is
    `verify-vendor`'s message, or "no response within the wait bound" from step 5).
+
+   **Then check the findings actually reached the channel** (issue #32):
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh channel-check --baseline "<doc>.baseline"
+   "<doc>.<id>"`. `merge` reads only the text after the LAST `## Review`, so a reviewer that
+   appended under an earlier one — a `## Review` inside a fenced example, which any doc about
+   this protocol legitimately contains — has its **entire turn silently discarded**: nothing else
+   catches it, and `gate-summary` then shows that provider as admitted with zero findings,
+   indistinguishable from one that genuinely found nothing. Non-zero → quarantine that provider
+   with the message as the reason, exactly like a `verify-vendor` failure. If a re-dispatch is
+   cheap, prefer re-running that secondary with an explicit instruction to append under the LAST
+   `## Review`, outside any fence — the findings are usually real and merely misplaced.
    - **All secondaries quarantined** (including `fable`) → an **anomaly stop**: do not advance the
      marker; surface every quarantine reason and STOP. A round with zero trustworthy findings
      cannot merge. (In practice `fable` runs in-harness and should always be admissible, so this

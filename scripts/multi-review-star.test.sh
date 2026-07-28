@@ -1383,6 +1383,46 @@ RSNM="${WORK}/rs-nomarker.md"
 bash "$SUT" round-stats "$RSNM" >/dev/null 2>&1 \
   && bad "round-stats accepted a doc with no marker" || ok "round-stats: missing marker fails loud"
 
+# --- channel-check: reviewer findings that land outside the merged region (issue #32) ---
+# mkcopy <name> <body-lines...> : a working copy; the LAST "## Review" is the finding channel
+mkcc() { local p="${WORK}/$1"; shift; printf '%s\n' "$@" > "$p"; echo "$p"; }
+
+# a doc whose BODY documents the grammar inside a fence — findings there are documentation,
+# present in BOTH baseline and copy, and must not be mistaken for misplaced reviewer output
+CCB="$(mkcc ccb.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review')"
+
+# (a) a conforming turn: findings under the LAST ## Review
+CCG="$(mkcc ccg.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review' \
+  '> [finding:r1|med] a real finding' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --baseline "$CCB" "$CCG" >/dev/null 2>&1 \
+  && ok "channel-check: conforming turn passes" || bad "channel-check rejected a conforming turn"
+
+# (b) the #32 shape: findings appended under the FENCED ## Review, before the real one
+CCX="$(mkcc ccx.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' \
+  '> [finding:r9|high] a REAL finding written in the wrong place' '> — via gpt-5' '> — risk: r' \
+  '```' '' '## Review')"
+bash "$SUT" channel-check --baseline "$CCB" "$CCX" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: findings outside the channel fail loud" \
+  || bad "a whole reviewer turn outside the channel was accepted (issue #32)"
+
+# (c) a silent turn (no findings at all) is NOT an error — a reviewer may genuinely find nothing
+CCN="$(mkcc ccn.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review')"
+bash "$SUT" channel-check --baseline "$CCB" "$CCN" >/dev/null 2>&1 \
+  && ok "channel-check: a genuinely empty turn passes" || bad "empty turn rejected"
+
+# (d) the message names the counts, so the quarantine reason is actionable
+msg="$(bash "$SUT" channel-check --baseline "$CCB" "$CCX" 2>&1 >/dev/null)"
+[[ "$msg" == *"outside"* && "$msg" == *"1"* ]] && ok "channel-check: reason names the count" \
+  || bad "unhelpful channel-check message ('$msg')"
+
+# (e) a missing baseline is a usage error, not a silent pass
+bash "$SUT" channel-check --baseline "${WORK}/nope.md" "$CCG" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: missing baseline fails" || bad "missing baseline passed"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

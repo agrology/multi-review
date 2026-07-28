@@ -13,6 +13,8 @@
 #   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
 #                              and a converge/re-fan verdict (advisory; pure read)
 #   evidence-gaps <doc>     -> high/med findings lacking a "> — evidence:" line (report, not gate)
+#   channel-check --baseline <b> <copy> -> exit 1 if a reviewer's findings landed outside the
+#                              merged '## Review' channel (issue #32); the turn would merge clean
 #   compose-review <doc> <primary-model-id>  -> neutral PR review body (dormant; Task A4)
 #   compose-inline <doc>                     -> "path\tstart\tend\tbody" per agreed+anchored
 #                                                finding (dormant; Task A4)
@@ -502,6 +504,46 @@ cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored f
     body="${body})"
     printf '%s\t%s\t%s\t%s\n' "$path" "$start" "$end" "$body"
   done <<< "$t"
+}
+
+
+# channel-check --baseline <baseline> <copy> — did the reviewer's findings reach the channel?
+#
+# Issue #32. `merge` reads only the text after the LAST "## Review", so a reviewer that appends
+# under an EARLIER one — e.g. a `## Review` inside a fenced example, which any doc about this
+# protocol legitimately contains — has its entire turn silently discarded. Nothing catches it
+# today: verify-vendor passes, merge exits 0, `verify` reports the doc consistent, no quarantine
+# is recorded, and gate-summary shows the provider as admitted with zero findings, which is
+# indistinguishable from a reviewer that genuinely found nothing.
+#
+# Counts are taken against the BASELINE, not in absolute terms: a doc whose body documents the
+# grammar carries `> [finding:...]` lines of its own, and those appear in baseline and copy
+# alike, so differencing cancels them. That also means no fence tracking is needed here — which
+# matters, since strip_fences is backtick-only and would miss a ~~~ block.
+cmd_channel_check() {
+  local base="" copy=""
+  while (( $# )); do
+    case "$1" in
+      --baseline)
+        (( $# >= 2 )) || die "--baseline requires a value" 2
+        base="$2"; shift 2 ;;
+      *) [[ -n "$copy" ]] || copy="$1"; shift ;;
+    esac
+  done
+  [[ -n "$base" ]] || die "channel-check requires --baseline <snapshot>" 2
+  [[ -f "$base" ]] || die "baseline not found: $base" 2
+  [[ -n "$copy" && -f "$copy" ]] || die "copy not found: ${copy:-<unset>}" 2
+
+  local tb tc cb cc added_total added_channel stray
+  tb="$(grep -c '^> \[finding:' "$base" 2>/dev/null || true)"
+  tc="$(grep -c '^> \[finding:' "$copy" 2>/dev/null || true)"
+  cb="$(review_section "$base" | grep -c '^> \[finding:' 2>/dev/null || true)"
+  cc="$(review_section "$copy" | grep -c '^> \[finding:' 2>/dev/null || true)"
+  added_total=$(( tc - tb ))
+  added_channel=$(( cc - cb ))
+  (( added_total <= added_channel )) && return 0
+  stray=$(( added_total - added_channel ))
+  die "reviewer added ${added_total} finding(s) but only ${added_channel} reached the '## Review' channel — ${stray} landed outside it (an earlier or fenced '## Review' captured them). Merging would record this turn as clean." 1
 }
 
 # --- doc↔manifest consistency (issue #16) ----------------------------------
@@ -1087,6 +1129,7 @@ main() {
     gate-summary) cmd_gate_summary "$@" ;;
     round-stats) cmd_round_stats "$@" ;;
     evidence-gaps) cmd_evidence_gaps "$@" ;;
+    channel-check) cmd_channel_check "$@" ;;
     compose-review) cmd_compose_review "$@" ;;
     compose-inline) cmd_compose_inline "$@" ;;
     *)    die "unknown subcommand: ${cmd:-<none>}" 2 ;;
