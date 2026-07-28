@@ -114,7 +114,7 @@ cmd_post_review() { # <scratch> <url> <summary-file> <script-dir> [inline-script
     # instead of trusting a number that now points somewhere else. A line that vanished or went
     # ambiguous fails here and the finding degrades to the summary — deliberately, rather than
     # posting inline at a plausible-looking wrong place.
-    local rstart rend
+    local rstart rend orig_start="$start" orig_end="$end"
     if rstart="$(cmd_remap_anchor "$scratch" "$path" "$start" 2>/dev/null)"; then
       if [[ -n "$end" && "$end" != "$start" ]]; then
         # Remap the END independently. Recreating it as rstart+(end-start) assumes the range's
@@ -143,7 +143,9 @@ cmd_post_review() { # <scratch> <url> <summary-file> <script-dir> [inline-script
       inline_n=$(( inline_n + 1 ))
     else
       concern_only="${body%% — 🤖 *}"
-      degraded+="- ${path}:${start}${end:+-${end}} — ${concern_only}"$'\n'
+      # Report the ORIGINAL anchor: a failed remap clears start/end, and printing those
+      # would render "- path: — concern" with no location at all (fable-rd2-r6).
+      degraded+="- ${path}:${orig_start}${orig_end:+-${orig_end}} — ${concern_only}"$'\n'
       degraded_n=$(( degraded_n + 1 ))
     fi
   done <<< "$inline_records"
@@ -290,12 +292,14 @@ cmd_validate_anchor() { # <scratch> <path> <start> [end] -> exit 0 if every line
 # branch (so an equality guard would degrade every round), while the merge-base moves only when
 # the PR branch actually absorbs upstream — which is exactly the case a scoped delta must refuse.
 
-# _header_region <scratch> — lines ABOVE the first "## " heading.
-# Every record read or written lives here, and NOWHERE else. The scratch's ## Diff and
-# ## PR description are UNTRUSTED: the diff can legitimately contain a record line (this repo's
-# own PRs do), and the description is written by the PR author. Scanning the whole file let both
-# forge a readable record and displace a real one (fable-rd1-r1, fable-rd1-r3).
-_header_region() { awk '/^## /{ exit } { print }' "$1"; }
+# Control records live in a SIDECAR, never in the scratch. There is no region of the scratch
+# that is safe to hold them: the diff legitimately contains record lines (this repo's own PRs
+# do), the PR description is author-written, and so is the TITLE — which seed embeds verbatim as
+# line 1, inside what a "header region" rule would call trusted (fable-rd2-r1). Any in-document
+# scheme is a parsing problem over attacker-influenced text. A sidecar removes the class: the
+# file is written only by this script, so nothing a PR author controls can ever appear in it.
+# Same pattern the manifest already uses.
+_records_path() { printf '%s.records\n' "$1"; }
 
 cmd_head_record() { # <scratch> <round> -> "head|merge-base"; exit 1 if this round has no record
   local scratch="${1:?scratch}" round="${2:?round}" line
@@ -306,7 +310,7 @@ cmd_head_record() { # <scratch> <round> -> "head|merge-base"; exit 1 if this rou
     if (( ${BASH_REMATCH[3]} == round )); then
       printf '%s|%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; return 0
     fi
-  done < <(_header_region "$scratch" | grep -F 'multi-review-pr-head' 2>/dev/null)
+  done < <(grep -F 'multi-review-pr-head' "$(_records_path "$scratch")" 2>/dev/null)
   return 1
 }
 
@@ -316,26 +320,9 @@ cmd_record_head() { # <scratch> <round> <head-sha> <merge-base-sha>
   [[ "$round" =~ ^[0-9]+$ ]] || die "round must be a number" 1
   cmd_head_record "$scratch" "$round" >/dev/null 2>&1 \
     && die "head record already exists for round ${round} (records are immutable)" 1
-  # Anchor in the HEADER region (above the first "## "), after the last existing record so the
-  # rounds read in order; the Branch line is the seed-written fallback for the first record.
-  local anchor hdr_end
-  hdr_end="$(grep -n '^## ' "$scratch" | head -1 | cut -d: -f1)"
-  hdr_end="${hdr_end:-0}"
-  # Search for the insertion point ONLY within the header region — never past the first "## ",
-  # or a record line inside ## Diff becomes the anchor and the new record lands inside the fence,
-  # where the next replace-diff destroys it (fable-rd1-r1).
-  anchor="$(_header_region "$scratch" | grep -n 'multi-review-pr-head' | tail -1 | cut -d: -f1)"
-  [[ -n "$anchor" ]] \
-    || anchor="$(_header_region "$scratch" | grep -n '^- \*\*Branch:\*\* ' | head -1 | cut -d: -f1)"
-  [[ -n "$anchor" ]] || die "no anchor in scratch header (expected '- **Branch:** '): $scratch" 1
-  (( hdr_end == 0 || anchor < hdr_end )) || die "computed anchor escapes the header region" 1
-  local tmp; tmp="$(mktemp)" || die "mktemp failed" 1
-  {
-    head -n "$anchor" "$scratch"
-    printf '<!-- multi-review-pr-head: %s · merge-base %s · round %s -->\n' "$head" "$mb" "$round"
-    tail -n +$((anchor + 1)) "$scratch"
-  } > "$tmp" || { rm -f "$tmp"; die "cannot write head record" 1; }
-  mv "$tmp" "$scratch" || { rm -f "$tmp"; die "cannot update: $scratch" 1; }
+  local rf; rf="$(_records_path "$scratch")"
+  printf '<!-- multi-review-pr-head: %s · merge-base %s · round %s -->\n' "$head" "$mb" "$round" \
+    >> "$rf" || die "cannot write head record: $rf" 1
 }
 
 cmd_replace_diff() { # <scratch> <diff-file> — swap ## Diff, preserve everything else
@@ -377,9 +364,13 @@ _head_and_merge_base() {
   # computed against an unrelated history (moving between rounds purely via a fetch, and
   # producing a misleading "branch absorbed upstream" reason) and the fetch writes into an
   # unrelated object store (fable-rd1-r4).
-  local origin_url=""
+  # EXACT owner/repo match on the URL's path, not a substring: `o/r` matches inside
+  # `.../o/r2.git`, and `o/ba` matches across the slash in `.../foo/bar.git`, so a substring test
+  # re-admits the very failure it was added to prevent (codex-rd2-r2, fable-rd2-r2).
+  local origin_url="" origin_slug=""
   origin_url="$(git remote get-url origin 2>/dev/null || true)"
-  if [[ "$origin_url" != *"${repo}"* ]]; then
+  origin_slug="$(printf '%s' "$origin_url" | sed -E 's#^[^:]+://[^/]+/##; s#^[^:]+:##; s#\.git$##; s#/+$##')"
+  if [[ "$origin_slug" != "$repo" ]]; then
     printf '%s|-\n' "$head"; return 0
   fi
   if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -400,6 +391,11 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
   [[ "$round" =~ ^[0-9]+$ ]] || die "round must be a number" 1
   url="$(grep -m1 -E '^- \*\*PR:\*\* ' "$scratch" | sed -E 's/^- \*\*PR:\*\* //')"
   [[ -n "$url" ]] || die "no PR url in scratch header ('- **PR:** ...'): $scratch" 1
+  # Refuse an already-recorded round UP FRONT. Discovering it at record-head time is too late:
+  # record-anchors and replace-diff have already run, poisoning every shifted anchor before the
+  # immutability check fires (fable-rd2-r4).
+  cmd_head_record "$scratch" "$round" >/dev/null 2>&1 \
+    && die "round ${round} already refreshed (records are immutable) — use the next round number" 1
   local parsed; parsed="$(cmd_parse "$url")" || die "cannot parse PR url from scratch: $url" 1
   IFS='|' read -r o r n <<< "$parsed"
   [[ -n "$o" && -n "$r" && -n "$n" ]] || die "incomplete PR ref from scratch url: $url" 1
@@ -417,13 +413,18 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
   gh pr diff "$n" --repo "${o}/${r}" > "${tmpd}/diff" \
     || die "gh pr diff failed for ${o}/${r}#${n}" 1
   head_after="$(gh pr view "$n" --repo "${o}/${r}" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
-  [[ -z "$head_after" || "$head_after" == "$head" ]] \
+  # Fail CLOSED: an unreadable confirm cannot distinguish "unchanged" from "moved", and skipping
+  # the check on error would silently drop the guard the comment claims (fable-rd2-r5).
+  [[ -n "$head_after" ]] \
+    || die "could not re-confirm the PR head after fetching the diff — re-run refresh for round ${round}" 1
+  [[ "$head_after" == "$head" ]] \
     || die "the PR moved during refresh (${head} -> ${head_after}) — re-run refresh for round ${round}" 1
   # Order matters (fable-rd1-r5). Anchors MUST be captured while the old diff is still present.
   # The head record is written LAST, after the swap succeeds: it is immutable, so writing it
   # first would wedge the round on any later failure — re-running refresh would die on the
   # immutability check with no exit-3 fallback and no documented recovery. record-anchors is
-  # idempotent (it skips keys it already holds), so a retry after a mid-refresh failure is safe.
+  # idempotent for keys it already holds. A retry for the SAME round is refused up front (above),
+  # because after a diff swap re-running would poison shifted anchors rather than no-op.
   cmd_record_anchors "$scratch"
   cmd_replace_diff "$scratch" "${tmpd}/diff"
   cmd_record_head "$scratch" "$round" "$head" "$mb"
@@ -470,13 +471,14 @@ cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side
 }
 
 _poison_anchor() { # <scratch> <path> <line> — mark a reused key ambiguous
-  local scratch="$1" path="$2" ln="$3" tmp
+  local scratch="$1" path="$2" ln="$3" rf tmp
+  rf="$(_records_path "$scratch")"; [[ -f "$rf" ]] || return 0
   tmp="$(mktemp)" || die "mktemp failed" 1
   awk -v k="multi-review-pr-anchor: ${path}:${ln} " '
     index($0, k) && !done { sub(/· [0-9a-f-]+ -->/, "· - -->"); done = 1 }
     { print }
-  ' "$scratch" > "$tmp" || { rm -f "$tmp"; die "cannot poison anchor record" 1; }
-  mv "$tmp" "$scratch" || { rm -f "$tmp"; die "cannot update: $scratch" 1; }
+  ' "$rf" > "$tmp" || { rm -f "$tmp"; die "cannot poison anchor record" 1; }
+  mv "$tmp" "$rf" || { rm -f "$tmp"; die "cannot update: $rf" 1; }
 }
 
 cmd_record_anchors() { # <scratch> — capture each anchor's line text BEFORE the diff is replaced
@@ -498,7 +500,7 @@ cmd_record_anchors() { # <scratch> — capture each anchor's line text BEFORE th
       # path:line at different content. Silently keeping the first would remap the second to the
       # first's line (fable-rd1-r2). Same text -> keep one; different text -> poison the key with
       # "-", which remap treats as unresolvable so that finding degrades to the summary.
-      prior="$(_header_region "$scratch" | grep -F "multi-review-pr-anchor: ${path}:${ln} " | head -1)"
+      prior="$(grep -F "multi-review-pr-anchor: ${path}:${ln} " "$(_records_path "$scratch")" 2>/dev/null | head -1)"
       if [[ -n "$prior" ]]; then
         [[ "$prior" == *" ${anchor} "* ]] || _poison_anchor "$scratch" "$path" "$ln"
         continue
@@ -508,21 +510,21 @@ cmd_record_anchors() { # <scratch> — capture each anchor's line text BEFORE th
       esac
       recs="${recs}<!-- multi-review-pr-anchor: ${path}:${ln} · ${anchor} -->"$'\n'""
     done
-  done < <(grep -E '^>[[:space:]]*—[[:space:]]*at[[:space:]]' "$scratch" 2>/dev/null)
+    # Discover anchors ONLY in the review channel — the text after the LAST "## Review".
+    # Scanning the whole scratch let the UNTRUSTED PR description plant anchor records
+    # (codex-rd2-r1, fable-rd2-r3). The review section is the protocol's own channel, written by
+    # secondaries under the trust contract, not by the PR author.
+  done < <(awk '{a[NR]=$0} /^## Review[[:space:]]*$/{last=NR}
+                END{ for (i=last+1; i<=NR; i++) print a[i] }' "$scratch" 2>/dev/null \
+           | grep -E '^>[[:space:]]*—[[:space:]]*at[[:space:]]' 2>/dev/null)
   [[ -n "$recs" ]] || return 0
-  local target tmp
-  target="$(_header_region "$scratch" | grep -n '^- \*\*Branch:\*\* ' | head -1 | cut -d: -f1)"
-  [[ -n "$target" ]] || die "no anchor point in scratch header: $scratch" 1
-  tmp="$(mktemp)" || die "mktemp failed" 1
-  { head -n "$target" "$scratch"; printf '%s' "$recs"; tail -n +$((target + 1)) "$scratch"; } > "$tmp" \
-    || { rm -f "$tmp"; die "cannot write anchor records" 1; }
-  mv "$tmp" "$scratch" || { rm -f "$tmp"; die "cannot update: $scratch" 1; }
+  printf '%s' "$recs" >> "$(_records_path "$scratch")" || die "cannot write anchor records" 1
 }
 
 cmd_remap_anchor() { # <scratch> <path> <line> -> the line's CURRENT number, or exit 1
   local scratch="${1:?scratch}" path="${2:?path}" ln="${3:?line}" rec want hits
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
-  rec="$(_header_region "$scratch" | grep -F "multi-review-pr-anchor: ${path}:${ln} " 2>/dev/null | head -1)"
+  rec="$(grep -F "multi-review-pr-anchor: ${path}:${ln} " "$(_records_path "$scratch")" 2>/dev/null | head -1)"
   # No record means no refresh has replaced the diff under this anchor — the number still means
   # what it meant, so remapping is a no-op rather than a failure.
   [[ -n "$rec" ]] || { printf '%s\n' "$ln"; return 0; }
