@@ -16,6 +16,10 @@
 set -uo pipefail
 
 OURS=".githooks"
+OWNED="multi-review.hooksinstalled"     # our marker: proves WE set core.hooksPath, not just that
+                                        # the value happens to match. Another tool could point at
+                                        # .githooks itself, and unsetting that would disable hooks
+                                        # this installer never wired up.
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || { echo "install-hooks: not a git repo" >&2; exit 2; }
@@ -29,11 +33,12 @@ case "${1:-}" in
     if [[ -z "$current" ]]; then
       echo "install-hooks: core.hooksPath is not set — nothing to remove"; exit 0
     fi
-    if [[ "$current" != "$OURS" ]]; then
+    if [[ "$current" != "$OURS" || "$(git config --get "$OWNED" 2>/dev/null)" != "true" ]]; then
       echo "install-hooks: core.hooksPath points at '${current}', which this installer did not set — leaving it alone" >&2
       exit 1
     fi
     git config --unset core.hooksPath
+    git config --unset "$OWNED" 2>/dev/null
     echo "install-hooks: core.hooksPath unset — hooks disabled for this clone"
     exit 0
     ;;
@@ -52,5 +57,6 @@ if [[ -n "$current" && "$current" != "$OURS" && "$force" != "1" ]]; then
 fi
 
 git config core.hooksPath "$OURS" || { echo "install-hooks: could not set core.hooksPath" >&2; exit 1; }
+git config "$OWNED" true
 echo "install-hooks: core.hooksPath -> ${OURS}"
 echo "install-hooks: active hooks: $(ls "$OURS" | tr '\n' ' ')"

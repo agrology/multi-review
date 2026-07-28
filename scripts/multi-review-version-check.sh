@@ -129,6 +129,6 @@ if semver_gt "$cur" "$old"; then
   exit 0
 fi
 
-die "this push changes tracked files but ${MANIFEST_REL} is still ${cur} (base ${base} has ${old}).
+die "this ${head:+push}${head:-branch} changes tracked files but ${MANIFEST_REL} is still ${cur} (base ${base} has ${old}).
     Installed plugins decide whether to update by comparing this version, so shipping without a
     bump leaves every existing install silently on the old code. Raise it before merging." 1

@@ -103,6 +103,33 @@ out="$( cd "$r" && printf 'refs/heads/feature %s refs/heads/feature %s\n' "$(git
 [[ $rc -eq 1 ]] && ok "pre-push: an uncommitted bump does not excuse the pushed commit" \
   || bad "uncommitted worktree bump produced a false pass (rc=$rc): $out"
 
+# --- a TAG push is not a content push to main (PR#28 fable-rd2-r1) ---------------------------
+# The per-ref loop judged EVERY non-deletion ref against origin/main, tags included. Pushing a
+# release tag for anything but the exact main tip — retro-tagging an already-released commit, the
+# normal case — was refused with a bogus "bump the version" demand. This repo's own adoption docs
+# tell users to pin release tags, so that path matters.
+r="$(newrepo 1.0.0)"
+( cd "$r" && git checkout -q main && echo more > file.txt \
+    && git add -A && git -c user.email=t@t -c user.name=t commit -qm second \
+    && git tag v0.9.0 HEAD~1 && git tag v1.0.0 HEAD )
+for t in v0.9.0 v1.0.0; do
+  tsha="$(cd "$r" && git rev-parse "${t}^{commit}")"
+  out="$( cd "$r" && printf 'refs/tags/%s %s refs/tags/%s %s\n' "$t" "$tsha" "$t" "$ZERO" \
+          | .githooks/pre-push 2>&1 )"; rc=$?
+  [[ $rc -eq 0 ]] && ok "pre-push: tag push ($t) is not blocked" \
+    || bad "tag push $t wrongly refused (rc=$rc): $out"
+done
+# a branch in the same push is still judged
+( cd "$r" && git checkout -q -b unbumped2 && echo x > file.txt \
+    && git add -A && git -c user.email=t@t -c user.name=t commit -qm nb )
+tagsha="$(cd "$r" && git rev-parse "v1.0.0^{commit}")"
+brsha="$(cd "$r" && git rev-parse unbumped2)"
+out="$( cd "$r" && { printf 'refs/tags/v1.0.0 %s refs/tags/v1.0.0 %s\n' "$tagsha" "$ZERO"
+                     printf 'refs/heads/unbumped2 %s refs/heads/unbumped2 %s\n' "$brsha" "$ZERO"; } \
+        | .githooks/pre-push 2>&1 )"; rc=$?
+[[ $rc -eq 1 ]] && ok "pre-push: skipping tags does not excuse a branch in the same push" \
+  || bad "branch alongside a tag escaped the check (rc=$rc): $out"
+
 # --- installer must not clobber someone else's hooks setup (PR#28 codex-rd1-r2 / fable-rd1-r2) ---
 r="$(newrepo 1.1.0)"
 ( cd "$r" && git config core.hooksPath .husky )
@@ -117,6 +144,20 @@ r="$(newrepo 1.1.0)"
 [[ "$(cd "$r" && git config core.hooksPath)" == ".husky" ]] \
   && ok "install-hooks: --uninstall leaves a foreign hooksPath alone" \
   || bad "--uninstall destroyed a hooksPath it did not set"
+# Ownership is tracked explicitly, not inferred from the VALUE (PR#28 codex-rd2-r1): another tool
+# could legitimately point core.hooksPath at .githooks itself, and unsetting that would disable
+# hooks this installer never wired up.
+r2="$(newrepo 1.1.0)"
+( cd "$r2" && git config core.hooksPath .githooks )      # set by someone else, same value
+( cd "$r2" && bash scripts/multi-review-install-hooks.sh --uninstall >/dev/null 2>&1 )
+[[ "$(cd "$r2" && git config core.hooksPath)" == ".githooks" ]] \
+  && ok "install-hooks: --uninstall spares a .githooks value it did not set" \
+  || bad "--uninstall removed a matching value it never owned"
+# ...but its OWN install is removable
+( cd "$r2" && git config --unset core.hooksPath; bash scripts/multi-review-install-hooks.sh >/dev/null 2>&1 \
+    && bash scripts/multi-review-install-hooks.sh --uninstall >/dev/null 2>&1 )
+[[ -z "$(cd "$r2" && git config core.hooksPath 2>/dev/null)" ]] \
+  && ok "install-hooks: --uninstall removes its own install" || bad "--uninstall could not remove its own install"
 # an explicit --force is the way through
 ( cd "$r" && bash scripts/multi-review-install-hooks.sh --force >/dev/null 2>&1 )
 [[ "$(cd "$r" && git config core.hooksPath)" == ".githooks" ]] \
