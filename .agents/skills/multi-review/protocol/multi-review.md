@@ -78,6 +78,13 @@ convergence: `> [observation] <text>` + `> — via <primary-model-id>`.
 Convergence is **coverage, not consensus**: every merged finding needs exactly one
 `agree`/`dispute`; disputes are expected and do not block. The human gate settles disputes.
 
+The primary **adjudicates rather than rubber-stamps**. It disputes a finding with no demonstrated
+failure mode, one about the PR description or code the change does not touch, one hardening a case
+that cannot occur, or one already answered — stating the reason in a line so the gate can overrule
+it. It does **not** dispute to save a round: a finding it cannot refute on the merits is one it
+agrees with, however inconvenient. Leniency is not neutral — every `agree` obliges an edit, and
+those edits are what later rounds spend their time reviewing.
+
 **Model-id distinctness:** every secondary and the primary discloses its own *real* model id
 on `> — via <model>`. The primary's disclosed id must differ from every secondary's — the
 self-response guard fails a response whose model equals the finding's raiser model, so a
@@ -105,22 +112,30 @@ convergence impossible.
 
 ## Bounds & terminal state
 
-Round = one secondary fan-out pass + one primary adjudication pass. **Adaptive re-fan-out**:
-the primary re-enters `awaiting-secondaries` only while the round is still under `max`, the
-previous round produced at least one new admitted finding, **and the finding rate is still
-decaying** — round 1 excepted, since it has no prior round to compare against and so always
-re-fans if it found anything. It converges as soon as a round goes dry *or the rate stops
-falling*. At
+Round = one secondary fan-out pass + one primary adjudication pass. **One round is the default**:
+the primary converges after round 1 unless it agreed to a `high`-severity finding whose fix was
+non-trivial, its between-round edits introduced new logic no reviewer has seen, or the engineer
+asked for depth. Measured over four self-reviews (issue #29), round 1 produced 38% of findings and
+every serious one, while rounds 2+ produced the rest almost entirely about the primary's own
+mid-review patches — at the cost of re-reading the whole doc each time.
+
+When the primary does re-fan, the bound still applies: it re-enters `awaiting-secondaries` only
+while the round is under `max`, the previous round produced at least one new admitted finding,
+**and the finding rate is still decaying**. It converges as soon as a round goes dry *or the rate
+stops falling*. At
 `round > max` the doc marker becomes `exhausted`. Convergence or exhaustion both stop the loop
 and present the annotated doc; a **human approves** before any implementation or PR.
 
-The decay condition is not a refinement of "goes dry" — it is what makes stopping reachable at
-all. The primary must address each agreed finding in the doc body between rounds, so round N+1
-reviews prose written during round N. Every round supplies fresh, never-reviewed text, and the
-per-round count can flatten rather than fall to zero: a rule keyed only on "did this round find
-anything" keeps firing for as long as the primary keeps editing — which the protocol obliges it
-to do. Coverage convergence (every finding has a response) is reachable by construction; quality
-convergence (no new findings) is not, and nothing but `max` bounded it before.
+Why stopping needs a rule at all: the primary must address each agreed finding in the doc body
+between rounds, so round N+1 reviews prose written during round N. Every round supplies fresh,
+never-reviewed text, and the per-round count can flatten rather than fall to zero — a rule keyed
+only on "did this round find anything" keeps firing for as long as the primary keeps editing,
+which the protocol obliges it to do. Coverage convergence (every finding has a response) is
+reachable by construction; quality convergence (no new findings) is not.
+
+**Whatever the terminal state, the primary's last round of fixes is unreviewed**, and it says so
+at the gate. That is inherent to a loop where the author patches between rounds; the human gate,
+not another round, is what covers it.
 
 `multi-review-star.sh round-stats <doc>` reports per-round × per-provider counts, the trend, each
 provider's dry streak, and a converge/re-fan verdict, all read from the doc itself. It is

@@ -24,9 +24,9 @@ flowchart TB
     P -- blind copy --> G["gemini"]
     F & C & G -- findings --> M["merge + verify-vendor<br/>(impostor → quarantine, not fail)"]
     M --> J["primary agrees /<br/>disputes each"]
-    J -- "new findings →<br/>re-fan-out" --> P
+    J -- "re-fan only on a<br/>high-severity fix" --> P
   end
-  J -- "dry, or rate stopped<br/>decaying → converge" --> H["HUMAN GATE<br/>+ warn if no cross-vendor reviewer"]
+  J -- "converge (1 round<br/>by default)" --> H["HUMAN GATE<br/>+ warn if no cross-vendor reviewer"]
   H -- "PR only, on approval" --> Pub["one neutral gh pr review"]
 ```
 
