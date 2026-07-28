@@ -270,6 +270,24 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      body (or, for a PR, note it — the diff is read-only), or
    - `> [dispute:<ns-id>] <one-line reason>` + `> — via <primary-model-id>` — reject it, tersely.
 
+   **Adjudicate, do not rubber-stamp.** Every `agree` obliges an edit, every edit is fresh
+   unreviewed text, and that is the engine that drives extra rounds — so a lenient primary is
+   expensive as well as uncritical. **Dispute** a finding when any of these holds:
+   - **No demonstrated failure mode.** It says something *could* break without a mechanism or a
+     case that reaches it. (A stated mechanism is enough; a pasted reproduction is not required.)
+   - **Out of scope.** It is about the PR description, the commit message, or code the change
+     does not touch, rather than the diff.
+   - **Speculative hardening.** It guards a case that cannot occur — the same bar §1.2 of this
+     repo's working agreement sets for the code itself.
+   - **Already answered.** It restates a finding this review has responded to.
+
+   Disputing is cheap and correct: convergence is **coverage, not consensus**, so a dispute never
+   blocks and the human gate settles it. State the reason in one line so the gate can overrule you.
+
+   Equally, do not dispute to save a round. A finding you cannot refute on the merits is one you
+   `agree` with, even when it is inconvenient — the point of the review is the findings you did
+   not expect. If you are unsure, agree and fix; being wrong in that direction is cheaper.
+
    Caution: `<primary-model-id>` must differ from every secondary's disclosed `> — via` model id
    — the self-response guard fails a response whose model equals the finding's raiser model, so
    colliding with a Claude-family secondary like `fable` would make convergence impossible.
@@ -281,26 +299,34 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    First run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh round-stats "<doc>"`. It prints
    the per-round × per-provider counts, the trend, any dry streaks, and a `verdict:` line.
 
-   **Adaptive re-fan-out** is the rule: re-fan **only while the round is `< MAX`, the previous
-   round produced ≥1 new admitted finding, AND the finding rate is still decaying** — round 1 is
-   excepted, having no prior round to compare against, so it re-fans whenever it found anything.
-   Converge as soon as a round goes dry, the rate stops falling, or the ceiling is hit. The
-   `verdict:` line applies exactly this rule — follow it unless you have a specific reason not
-   to, and say so if you override it.
+   **ONE ROUND IS THE DEFAULT. Converge after round 1 unless a listed trigger fires.**
 
-   Run `round-stats` **after the merge**, in this turn — it refuses to render a verdict while a
-   round is still in flight, because an unmerged round has no findings in the doc yet and would
-   read as dry.
+   Measured over four self-reviews (issue #29): round 1 produced 38% of all findings and every
+   serious one; rounds 2+ produced the other 62%, almost entirely about patches the primary wrote
+   *during* the review — obtained by re-reading the whole diff each time. Re-fanning is therefore
+   opt-in, not the standing behaviour.
 
-   A `↑ rising` round still stops the loop, but for a different reason than a plateau: the new
-   findings are most likely about the edits you just made, not the original doc. Say so at the
-   gate rather than presenting it as saturation.
+   **Re-fan only if at least one of these is true:**
+   - you agreed to a **`high`**-severity finding and your fix was non-trivial — the fix is now the
+     least-reviewed code in the change, and highs are where the real defects were;
+   - your between-round edits introduced **new logic** (not wording, not a comment, not a test
+     name) that no reviewer has seen;
+   - the engineer asked for depth on this review.
 
-   The decay condition is what makes stopping reachable: step 2 obliges you to address every
-   agreed finding in the doc body, so the next round reviews text you wrote minutes ago. The
-   count can flatten instead of falling to zero, and "did this round find anything" would keep
-   re-firing indefinitely. Hitting `MAX` on a doc you rewrite substantially each round is a
-   normal outcome, not a failure — report it as such.
+   Otherwise converge, even when the round found plenty. "It found things" is not a reason to go
+   again — round 1 finding a lot is the system working, not evidence that round 2 will.
+
+   When you do re-fan, `round-stats`' `verdict:` line still bounds it: stop as soon as a round
+   goes dry, the rate stops falling, or the ceiling is hit. Run it **after the merge**, in this
+   turn — it refuses to render a verdict while a round is in flight, because an unmerged round has
+   no findings in the doc yet and would read as dry.
+
+   A `↑ rising` round stops the loop for a different reason than a plateau: the new findings are
+   most likely about the edits you just made, not the original doc. Say so at the gate rather than
+   presenting it as saturation.
+
+   Whatever the reason for stopping, **say plainly at the gate that your last round of fixes is
+   unreviewed.** That is true of every terminal state and is exactly what the human gate is for.
 
    A `dry-streak:` line is **advisory only**. Never drop a secondary from the set on your own:
    a saturated reviewer can still catch something in newly written text. Surface the streak at

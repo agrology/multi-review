@@ -129,9 +129,16 @@ if [[ -f "$DR" ]]; then
   else
     bad "baseline/dispatch ordering wrong (cp=$cp_line dispatch=$dispatch_line gate=$gate_line)"
   fi
-  grep -qiE 'adaptive re-fan-out' "$DR" \
-    && ok "primary turn documents adaptive re-fan-out" \
-    || bad "multi-review.md does not document adaptive re-fan-out"
+  # The primary turn must state WHEN it re-fans. This used to pin the phrase "adaptive
+  # re-fan-out"; issue #29 made one round the default and re-fan conditional, so the phrase went
+  # away while the contract it guarded got stricter. Pin the contract instead of the wording:
+  # a stated default, and a named trigger for going again.
+  grep -qiE 'one round is the default' "$DR" \
+    && ok "primary turn states the one-round default" \
+    || bad "multi-review.md does not state the one-round default"
+  grep -qiE 're-fan only if' "$DR" \
+    && ok "primary turn names the re-fan triggers" \
+    || bad "multi-review.md does not say when re-fanning is allowed"
 fi
 
 # --- no dangling references to the removed /multi-review-auto command ---
