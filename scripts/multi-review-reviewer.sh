@@ -45,8 +45,20 @@ provider_row() { # <id> -> "id|vendor|dispatch-kind|model|has-skill"
 # name with no version suffix is common in practice — Gemini discloses `gemini`, and Codex's
 # own help documents `model="o3"` — and a suffix-only pattern leaves those unmappable, which
 # `verify-vendor` escalates to a hard failure and takes the whole route down.
+#
+# Matching is CASE-INSENSITIVE (issue #24). Observed live: `codex` disclosed `gpt-5` in one round
+# and `GPT-5` in the next from identical dispatches; the lowercase-only patterns made the second
+# unmappable, quarantining a correct reviewer and discarding its whole round over the casing of
+# its own name. Model self-report is already the least stable field in the protocol (#20), so
+# depending on its exact casing compounds an unreliable signal.
+#
+# This does NOT weaken the guard: an id that maps to the WRONG vendor still fails, and an
+# unmappable id still fails. Only the casing dimension is removed, and no impostor is constrained
+# by casing — a model claiming to be something it is not would not be stopped by it.
+# `printf`, not `echo`: an id beginning with a dash must not be eaten as a flag.
 vendor_of_model() { # <model-id> -> vendor
-  case "$1" in
+  local id; id="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$id" in
     claude-*|*opus*|*sonnet*|*haiku*|*fable*)     echo "anthropic" ;;
     gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)            echo "openai" ;;
     gemini|gemini-*)                              echo "google" ;;

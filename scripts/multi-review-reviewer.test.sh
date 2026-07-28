@@ -509,6 +509,53 @@ for id in o1 o3 o1-preview o3-mini; do
     || bad "vendor mapping: '$id' unmapped -> '$out'"
 done
 
+# --- vendor mapping is CASE-INSENSITIVE (issue #24) ---
+# Observed live: `codex` disclosed `gpt-5` in one round and `GPT-5` in the next from IDENTICAL
+# dispatches. The lowercase-only patterns made the second unmappable, and verify-vendor escalates
+# unmappable to a hard failure — so a correct reviewer was quarantined and its whole round of
+# findings discarded, over the capitalisation of its own name. Model self-report is already the
+# least stable field in the protocol (#20); keying on its exact casing compounds that.
+while IFS='|' read -r id want; do
+  out="$(bash "$SUT" vendor-of-model "$id" 2>/dev/null)"
+  [[ "$out" == "$want" ]] && ok "vendor mapping: '$id' -> $want (case-insensitive)" \
+    || bad "vendor mapping: '$id' -> '$out' (want $want)"
+done <<'CASES'
+GPT-5|openai
+GPT-5.6-Terra|openai
+Gpt-5-Codex|openai
+O3-Mini|openai
+Gemini-2.5-Pro|google
+GEMINI|google
+Claude-Fable-5|anthropic
+Claude-Opus-4-8|anthropic
+CLAUDE-SONNET-4-5|anthropic
+Fable|anthropic
+CASES
+
+# Non-regression: case-folding must NOT widen what maps. A genuinely unknown vendor stays
+# unmappable in every casing, so verify-vendor still fails closed on it.
+for id in llama-3 LLAMA-3 Mistral-Large deepseek-v3 ""; do
+  bash "$SUT" vendor-of-model "$id" >/dev/null 2>&1 \
+    && bad "vendor mapping: '$id' should be unmappable but resolved" \
+    || ok "vendor mapping: '${id:-<empty>}' stays unmappable in any case"
+done
+
+# Non-regression: verify-vendor still REJECTS a real cross-vendor mismatch — case-folding must
+# not let an anthropic id pass as the openai provider just because the casing now normalises.
+MM="${WORK}/mismatch.md"; MMB="${WORK}/mismatch.baseline"
+printf '# T\n\n## Review\n' > "$MMB"
+{ printf '# T\n\n## Review\n'; printf '> [finding:r1|high] x\n> — via Claude-Opus-4-8\n> — risk: r\n'; } > "$MM"
+bash "$SUT" verify-vendor --baseline "$MMB" "$MM" --reviewer codex >/dev/null 2>&1 \
+  && bad "verify-vendor admitted an anthropic disclosure for the codex provider" \
+  || ok "verify-vendor still rejects a cross-vendor mismatch in mixed case"
+
+# ...and still ADMITS the correct vendor in mixed case (the bug this fixes).
+MO="${WORK}/okcase.md"
+{ printf '# T\n\n## Review\n'; printf '> [finding:r1|high] x\n> — via GPT-5\n> — risk: r\n'; } > "$MO"
+bash "$SUT" verify-vendor --baseline "$MMB" "$MO" --reviewer codex >/dev/null 2>&1 \
+  && ok "verify-vendor admits 'GPT-5' for the codex provider (issue #24 repro)" \
+  || bad "verify-vendor still quarantines a correctly-vendored uppercase disclosure"
+
 # --- advisory check: gemini (Task 1) ---
 # Deterministic env: no ambient GEMINI_* leaking in (this repo's maintainer exports the trust var).
 unset GEMINI_API_KEY GEMINI_CLI_TRUST_WORKSPACE
