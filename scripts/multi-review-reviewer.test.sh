@@ -532,6 +532,27 @@ CLAUDE-SONNET-4-5|anthropic
 Fable|anthropic
 CASES
 
+# The fold must not depend on the caller's locale (PR#25 gemini-rd1-r1 / fable-rd1-r1, raised
+# independently by two vendors). `[:upper:]`/`[:lower:]` are locale-dependent classes by POSIX;
+# model ids are ASCII by construction, so the mapping must be identical under any locale a user
+# happens to export. NB: the canonical Turkish dotless-i case does NOT reproduce on BSD tr — this
+# asserts the invariant directly rather than relying on one locale to expose it.
+# Capture `locale -a` ONCE, then test the captured value. Piping it into `grep -q` per locale
+# looks equivalent but is not: grep exits on first match, SIGPIPEs `locale`, and under this
+# suite's `pipefail` the pipeline reports 141 — so every locale appearing late in the output was
+# silently skipped, including tr_TR, leaving this block vacuous exactly where it mattered. Same
+# hazard cmd_ensure_skill documents ("capture then test; avoids grep -q SIGPIPE under pipefail").
+LOCALES_AVAIL="$(locale -a 2>/dev/null)"
+for L in C POSIX en_US.UTF-8 tr_TR.UTF-8 tr_TR.ISO8859-9 de_DE.UTF-8; do
+  printf '%s\n' "$LOCALES_AVAIL" | grep -qix "${L}" || continue   # skip locales absent on this host
+  out="$(LC_ALL="$L" bash "$SUT" vendor-of-model GEMINI 2>/dev/null)"
+  [[ "$out" == "google" ]] && ok "vendor mapping: 'GEMINI' -> google under LC_ALL=$L" \
+    || bad "vendor mapping: locale $L broke the fold ('GEMINI' -> '$out')"
+  out="$(LC_ALL="$L" bash "$SUT" vendor-of-model CLAUDE-OPUS-4-8 2>/dev/null)"
+  [[ "$out" == "anthropic" ]] && ok "vendor mapping: 'CLAUDE-OPUS-4-8' -> anthropic under LC_ALL=$L" \
+    || bad "vendor mapping: locale $L broke the fold ('CLAUDE-OPUS-4-8' -> '$out')"
+done
+
 # Non-regression: case-folding must NOT widen what maps. A genuinely unknown vendor stays
 # unmappable in every casing, so verify-vendor still fails closed on it.
 for id in llama-3 LLAMA-3 Mistral-Large deepseek-v3 ""; do

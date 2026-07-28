@@ -55,9 +55,13 @@ provider_row() { # <id> -> "id|vendor|dispatch-kind|model|has-skill"
 # This does NOT weaken the guard: an id that maps to the WRONG vendor still fails, and an
 # unmappable id still fails. Only the casing dimension is removed, and no impostor is constrained
 # by casing — a model claiming to be something it is not would not be stopped by it.
-# `printf`, not `echo`: an id beginning with a dash must not be eaten as a flag.
+# `printf`, not `echo`: an id beginning with a dash must not be eaten as a flag. `LC_ALL=C` on the
+# fold: `[:upper:]`/`[:lower:]` are locale-dependent classes by POSIX, and model ids are ASCII by
+# construction, so the mapping must not vary with whatever locale the caller happens to export.
+# (The canonical Turkish dotless-i case does not reproduce on BSD tr, but pinning costs nothing
+# and removes the whole locale dimension from an identity guard.)
 vendor_of_model() { # <model-id> -> vendor
-  local id; id="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  local id; id="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
   case "$id" in
     claude-*|*opus*|*sonnet*|*haiku*|*fable*)     echo "anthropic" ;;
     gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)            echo "openai" ;;
