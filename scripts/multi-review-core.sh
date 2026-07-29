@@ -185,15 +185,16 @@ cmd_resolve_doc() {
 # or a nested `docs/specs/archive/` read as "NOT searched" and fire a false alarm on every run
 # (fable-rd1-r1, fable-rd1-r6) — and the command prose tells the primary to relay that as a
 # misconfiguration.
-# _in_root <dir> : 0 when <dir> RESOLVES inside the repository root. `-L` on the last component
-# was not enough — a symlink one level up (or `docs` itself) is walked straight through by the
-# globs (codex-rd2-r2, fable-rd2-r1). Canonical containment covers every position.
-_in_root() {
-  local cand="$1" cr
+# _in_tree <dir> : 0 when <dir> RESOLVES inside the working tree. This is a REPORTING guard —
+# it keeps an advisory hint from naming out-of-tree paths — NOT an arming decision, so it
+# deliberately uses `pwd -P` and never `git rev-parse`: an inherited GIT_WORK_TREE can redefine
+# what git calls the root (codex-rd3-r1), and no hint is worth that dependency.
+# `-L` on the last component was not enough — a symlink one level up (or `docs` itself) is
+# walked straight through by the globs (codex-rd2-r2, fable-rd2-r1).
+_in_tree() {
+  local cand="$1" cr root
   cr="$(cd "$cand" 2>/dev/null && pwd -P)" || return 1
-  local root; root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
-  [[ -n "$root" ]] && root="$(cd "$root" 2>/dev/null && pwd -P)"
-  [[ -n "$root" ]] || root="$(pwd -P)"
+  root="$(pwd -P)" || return 1
   case "${cr}/" in "${root}/"*) return 0 ;; esac
   return 1
 }
@@ -215,7 +216,7 @@ _newest_unsearched() {
   { for d in docs/*/ docs/*/*/; do
       [[ -d "$d" ]] || continue
       d="${d%/}"
-      _in_root "$d" || continue
+      _in_tree "$d" || continue
       _is_searched "$d" "$1" && continue
       _dated_docs "$d"
     done; } | LC_ALL=C sort -r | head -1
@@ -229,7 +230,7 @@ _sibling_hint() {
   for d in docs/*/ docs/*/*/; do
     [[ -d "$d" ]] || continue
     d="${d%/}"
-    _in_root "$d" || continue
+    _in_tree "$d" || continue
     _is_searched "$d" "$1" && continue
     [[ -n "$(_dated_docs "$d")" ]] || continue
     hits="${hits}${hits:+, }${d}"

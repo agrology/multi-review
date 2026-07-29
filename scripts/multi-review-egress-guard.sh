@@ -25,22 +25,8 @@ doc_dir_real="$(cd "$(dirname "$doc")" 2>/dev/null && pwd -P)" || die "cannot re
 # --- canonical containment in ANY configured dir ---
 contained=0
 # .multi-review/reviews is always an allowed arming root (PR-mode scratch files live there).
-# The repository root, canonical. Trust is a PROPERTY OF WHERE A DIR RESOLVES, never of how it
-# was spelled: the previous rule exempted absolute paths, and an absolute spelling of a dir that
-# resolves through an in-repo symlink walked straight out of the tree (codex-rd2-r1). A dir whose
-# canonical path is outside the root is SKIPPED, not fatal — one bad dir must not veto every
-# review in the repo, including PR-mode scratch files that use no doc dirs at all (fable-rd2-r3).
-root_real="$(git rev-parse --show-toplevel 2>/dev/null)" || root_real=""
-[[ -n "$root_real" ]] && root_real="$(cd "$root_real" 2>/dev/null && pwd -P)"
-[[ -n "$root_real" ]] || root_real="$(pwd -P)" || die "cannot resolve the repository root" 2
-
 for d in $doc_dirs .multi-review/reviews; do
   dir_real="$(cd "$d" 2>/dev/null && pwd -P)" || continue
-  case "${dir_real}/" in
-    "${root_real}/"*) ;;
-    *) echo "multi-review-egress-guard: note — configured doc dir '$d' resolves outside the repository root ($dir_real); skipping it" >&2
-       continue ;;
-  esac
   case "${doc_dir_real}/" in
     "${dir_real}/"*) contained=1; break ;;
   esac

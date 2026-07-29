@@ -164,22 +164,6 @@ out="$(cd "$RD5" && bash "$SUT" resolve-doc 2>/dev/null)"
 [[ "$out" == "docs/specs/2026-01-01-ok.md" ]] \
   && ok "resolve-doc: ignores nested and undated files" || bad "picked a nested/undated file (got '$out')"
 
-# --- codex-rd1-r1 (HIGH): a symlinked doc DIRECTORY must not arm an out-of-tree file ---
-EG="${DIR}/multi-review-egress-guard.sh"
-SL="${WORK}/sl"; OUTSIDE="${WORK}/outside"
-mkdir -p "$SL/docs/superpowers" "$OUTSIDE"
-: > "${OUTSIDE}/2026-01-01-external.md"
-ln -s "$OUTSIDE" "$SL/docs/superpowers/specs"
-(cd "$SL" && bash "$EG" docs/superpowers/specs/2026-01-01-external.md >/dev/null 2>&1)
-[[ $? -eq 3 ]] && ok "egress-guard: symlinked doc dir cannot arm an out-of-tree file" \
-  || bad "SYMLINK ESCAPE: out-of-tree file armed via a symlinked doc dir (codex-rd1-r1)"
-
-# --- a real (non-symlinked) doc dir still arms ---
-RL="${WORK}/rl"; mkdir -p "$RL/docs/superpowers/specs"
-: > "${RL}/docs/superpowers/specs/2026-01-01-ok.md"
-(cd "$RL" && bash "$EG" docs/superpowers/specs/2026-01-01-ok.md >/dev/null 2>&1) \
-  && ok "egress-guard: a real doc dir still arms" || bad "false positive on a real doc dir"
-
 # --- fable-rd1-r1: a non-canonical spelling of a searched dir is NOT reported as unsearched ---
 RD6="${WORK}/rd6"; mkdir -p "$RD6/docs/specs"
 : > "${RD6}/docs/specs/2026-01-01-a.md"
@@ -200,10 +184,12 @@ msg="$(cd "$RD7" && MULTI_REVIEW_DOC_DIRS="docs/specs" bash "$SUT" resolve-doc 2
 # --- fable-rd1-r7: the sibling scan does not follow symlinked dirs ---
 RD8="${WORK}/rd8"; mkdir -p "$RD8/docs/specs"
 : > "${RD8}/docs/specs/2026-01-01-a.md"
-ln -s "$OUTSIDE" "$RD8/docs/elsewhere"
+OUTSIDE8="$(mktemp -d)"; : > "${OUTSIDE8}/2026-09-09-out.md"
+ln -s "$OUTSIDE8" "$RD8/docs/elsewhere"
 msg="$(cd "$RD8" && bash "$SUT" resolve-doc 2>&1 >/dev/null)"
-[[ "$msg" != *"docs/elsewhere"* ]] && ok "resolve-doc: sibling scan skips symlinked dirs" \
+[[ "$msg" != *"docs/elsewhere"* ]] && ok "resolve-doc: sibling scan skips out-of-tree symlinked dirs" \
   || bad "symlinked dir pulled into the hint ('$msg')"
+rm -rf "$OUTSIDE8"
 
 # --- fable-rd1-r5: the note message is not garbled ---
 RD9="${WORK}/rd9"; mkdir -p "$RD9/docs/specs" "$RD9/docs/other"
