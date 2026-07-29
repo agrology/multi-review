@@ -101,6 +101,112 @@ out="$(bash "$SUT" marker "$D" 2>/dev/null)"; [[ "$out" == "awaiting-primary 2 2
 D="${WORK}/still-rev.md"; { echo "# Doc"; echo '<!-- multi-review: awaiting-reviewer · round 1/10 -->'; echo; echo "## X"; } > "$D"
 out="$(bash "$SUT" marker "$D" 2>/dev/null)"; [[ "$out" == "awaiting-reviewer 1 10" ]] && ok "marker: existing state intact" || bad "still-rev (got '$out')"
 
+# ============================ resolve-doc (issue #35) ============================
+RD="${WORK}/rd"; mkdir -p "$RD"
+( cd "$RD" && mkdir -p docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans )
+
+# --- the superpowers layout is reachable with NO configuration ---
+: > "${RD}/docs/superpowers/specs/2026-01-02-alpha.md"
+out="$(cd "$RD" && bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "docs/superpowers/specs/2026-01-02-alpha.md" ]] \
+  && ok "resolve-doc: superpowers layout found by default" || bad "superpowers layout missed (got '$out')"
+
+# --- newest by DATE PREFIX then filename, across all default dirs ---
+: > "${RD}/docs/specs/2026-01-01-older.md"
+: > "${RD}/docs/superpowers/plans/2026-03-09-newest.md"
+out="$(cd "$RD" && bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "docs/superpowers/plans/2026-03-09-newest.md" ]] \
+  && ok "resolve-doc: newest across all default dirs" || bad "wrong doc chosen (got '$out')"
+
+# --- a same-date TIE stops rather than guessing ---
+: > "${RD}/docs/specs/2026-03-09-tie.md"
+(cd "$RD" && bash "$SUT" resolve-doc >/dev/null 2>&1)
+[[ $? -ne 0 ]] && ok "resolve-doc: same-date tie stops" || bad "tie resolved silently"
+rm -f "${RD}/docs/specs/2026-03-09-tie.md"
+
+# --- THE SILENT WRONG-DOC CASE (#35 failure mode 2): configured dirs hold a doc, but a
+#     sibling dir holds a NEWER one — the chosen doc is legitimate, so nothing else catches it
+RD2="${WORK}/rd2"; mkdir -p "$RD2/docs/specs" "$RD2/docs/superpowers/specs"
+: > "${RD2}/docs/specs/2026-01-01-stale.md"
+: > "${RD2}/docs/superpowers/specs/2026-06-01-real-work.md"
+msg="$(cd "$RD2" && MULTI_REVIEW_DOC_DIRS="docs/specs" bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+# Assert the WARNING BRANCH specifically: both branches mention the sibling path, so matching
+# the path alone stays green if the newer-than logic breaks (fable-rd1-r3).
+[[ "$msg" == *"WARNING"* && "$msg" == *"NEWER dated doc"* && "$msg" == *"2026-06-01-real-work.md"* ]] \
+  && ok "resolve-doc: WARNS that an unsearched sibling holds a NEWER doc" \
+  || bad "silent wrong-doc: warning branch did not fire ('$msg')"
+# ...and the note branch (sibling exists but is OLDER) must NOT claim a newer doc
+: > "${RD2}/docs/specs/2026-12-01-newest-here.md"
+msg="$(cd "$RD2" && MULTI_REVIEW_DOC_DIRS="docs/specs" bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" != *"WARNING"* && "$msg" == *"not searched"* ]] \
+  && ok "resolve-doc: older sibling notes without warning" || bad "wrong branch for an older sibling ('$msg')"
+rm -f "${RD2}/docs/specs/2026-12-01-newest-here.md"
+
+# --- zero candidates names what was searched, not just "none found" ---
+RD3="${WORK}/rd3"; mkdir -p "$RD3/docs/specs"
+msg="$(cd "$RD3" && bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" == *"docs/specs"* && "$msg" == *"docs/plans"* ]] \
+  && ok "resolve-doc: zero candidates names the dirs searched" || bad "unhelpful empty message ('$msg')"
+
+# --- an explicit MULTI_REVIEW_DOC_DIRS is honored verbatim ---
+RD4="${WORK}/rd4"; mkdir -p "$RD4/design"
+: > "${RD4}/design/2026-02-02-custom.md"
+out="$(cd "$RD4" && MULTI_REVIEW_DOC_DIRS="design" bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "design/2026-02-02-custom.md" ]] \
+  && ok "resolve-doc: explicit DOC_DIRS honored" || bad "explicit DOC_DIRS ignored (got '$out')"
+
+# --- only files DIRECTLY under a dir, and only dated ones ---
+RD5="${WORK}/rd5"; mkdir -p "$RD5/docs/specs/nested"
+: > "${RD5}/docs/specs/nested/2026-09-09-deep.md"
+: > "${RD5}/docs/specs/undated.md"
+: > "${RD5}/docs/specs/2026-01-01-ok.md"
+out="$(cd "$RD5" && bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "docs/specs/2026-01-01-ok.md" ]] \
+  && ok "resolve-doc: ignores nested and undated files" || bad "picked a nested/undated file (got '$out')"
+
+# --- fable-rd1-r1: a non-canonical spelling of a searched dir is NOT reported as unsearched ---
+RD6="${WORK}/rd6"; mkdir -p "$RD6/docs/specs"
+: > "${RD6}/docs/specs/2026-01-01-a.md"
+for spelling in "docs/specs/" "./docs/specs"; do
+  msg="$(cd "$RD6" && MULTI_REVIEW_DOC_DIRS="$spelling" bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+  [[ -z "$msg" ]] && ok "resolve-doc: '$spelling' not falsely reported unsearched" \
+    || bad "false alarm for spelling '$spelling' ('$msg')"
+done
+
+# --- fable-rd1-r6: a nested subdir UNDER a searched dir is not a "sibling" ---
+RD7="${WORK}/rd7"; mkdir -p "$RD7/docs/specs/archive"
+: > "${RD7}/docs/specs/2026-01-01-current.md"
+: > "${RD7}/docs/specs/archive/2026-09-09-old.md"
+msg="$(cd "$RD7" && MULTI_REVIEW_DOC_DIRS="docs/specs" bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ -z "$msg" ]] && ok "resolve-doc: nested subdir of a searched dir is not flagged" \
+  || bad "nested subdir triggered a false alarm ('$msg')"
+
+# --- fable-rd1-r7: the sibling scan does not follow symlinked dirs ---
+RD8="${WORK}/rd8"; mkdir -p "$RD8/docs/specs"
+: > "${RD8}/docs/specs/2026-01-01-a.md"
+OUTSIDE8="$(mktemp -d)"; : > "${OUTSIDE8}/2026-09-09-out.md"
+ln -s "$OUTSIDE8" "$RD8/docs/elsewhere"
+msg="$(cd "$RD8" && bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" != *"docs/elsewhere"* ]] && ok "resolve-doc: sibling scan skips out-of-tree symlinked dirs" \
+  || bad "symlinked dir pulled into the hint ('$msg')"
+rm -rf "$OUTSIDE8"
+
+# --- fable-rd1-r5: the note message is not garbled ---
+RD9="${WORK}/rd9"; mkdir -p "$RD9/docs/specs" "$RD9/docs/other"
+: > "${RD9}/docs/specs/2026-12-01-newer.md"
+: > "${RD9}/docs/other/2026-01-01-older.md"
+msg="$(cd "$RD9" && MULTI_REVIEW_DOC_DIRS="docs/specs" bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" != *"DOC_DIRS NOT searched"* && "$msg" == *"docs/other"* ]] \
+  && ok "resolve-doc: note message reads cleanly" || bad "garbled note ('$msg')"
+
+# --- fable-rd1-r4: the three duplicated defaults must not drift ---
+CORE_D="$(grep -E "^DOC_DIRS_DEFAULT=" "${DIR}/multi-review-core.sh" | sed -E "s/^[^']*'([^']*)'.*/\1/")"
+EG_D="$(grep -oE 'MULTI_REVIEW_DOC_DIRS:-[^}]*' "${DIR}/multi-review-egress-guard.sh" | head -1 | sed 's/^MULTI_REVIEW_DOC_DIRS:-//')"
+RV_D="$(grep -oE 'MULTI_REVIEW_DOC_DIRS:-[^}]*' "${DIR}/multi-review-reviewer.sh" | head -1 | sed 's/^MULTI_REVIEW_DOC_DIRS:-//')"
+[[ -n "$CORE_D" && "$CORE_D" == "$EG_D" && "$CORE_D" == "$RV_D" ]] \
+  && ok "doc-dir default identical across core/egress-guard/reviewer" \
+  || bad "DOC_DIRS default drifted (core='$CORE_D' guard='$EG_D' reviewer='$RV_D')"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

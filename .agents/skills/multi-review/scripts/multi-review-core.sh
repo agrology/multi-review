@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # multi-review-core.sh — deterministic marker read/init logic for multi-review review.
-# Subcommands: init <doc> [max] | marker <doc>
+# Subcommands: init <doc> [max] | marker <doc> | resolve-doc
 # cmd_init is the only writer in this script — its marker write is atomic (temp + mv) and
 # preserves the doc's mode. The star protocol (commands/multi-review.md) hand-flips the
 # marker directly thereafter, following the protocol.
@@ -112,11 +112,139 @@ cmd_init() { # <doc> [max] — insert the round-1 marker after the H1 if absent 
   die "failed to insert marker into: $doc" 1
 }
 
+
+# ---- doc resolution (issue #35) -----------------------------------------------------------
+# The default covers BOTH common layouts. `docs/specs docs/plans` alone did not match the
+# superpowers skills — which write to docs/superpowers/{specs,plans} and are this plugin's most
+# natural upstream — so every such repo hit the egress guard once, and a repo with BOTH layouts
+# could silently resolve a stale doc from the configured pair while the real work sat unsearched.
+DOC_DIRS_DEFAULT='docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans'
+
+# _dated_docs <dir> : "<basename>\t<path>" for dated .md files DIRECTLY under <dir>.
+_dated_docs() {
+  local d="$1" f b
+  [[ -d "$d" ]] || return 0
+  for f in "$d"/*.md; do
+    [[ -f "$f" ]] || continue
+    b="$(basename "$f")"
+    case "$b" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*) printf '%s\t%s\n' "$b" "$f" ;;
+    esac
+  done
+}
+
+# resolve-doc : print the newest dated doc under MULTI_REVIEW_DOC_DIRS, or fail INFORMATIVELY.
+# Failing informatively is the point (#35 failure mode 2): the chosen doc is always legitimately
+# inside the configured dirs, so the egress guard can never catch a wrong-doc resolution. Naming
+# what was searched — and any UNSEARCHED sibling that holds dated docs — is what turns a silent
+# wrong answer into an obvious misconfiguration.
+cmd_resolve_doc() {
+  local dirs="${MULTI_REVIEW_DOC_DIRS:-$DOC_DIRS_DEFAULT}" d
+  local all; all="$(mktemp)" || die "mktemp failed" 2
+  for d in $dirs; do _dated_docs "$d"; done | LC_ALL=C sort -r > "$all"
+
+  local n; n="$(grep -c . "$all" || true)"
+  if (( n == 0 )); then
+    rm -f "$all"
+    die "no dated (YYYY-MM-DD-*.md) docs under MULTI_REVIEW_DOC_DIRS ($dirs)$(_sibling_hint "$dirs") — pass an explicit path" 1
+  fi
+
+  local first second fb sb
+  first="$(head -1 "$all")"; second="$(sed -n '2p' "$all")"
+  fb="${first%%$'\t'*}"; sb="${second%%$'\t'*}"
+  rm -f "$all"
+  if [[ -n "$second" && "${fb:0:10}" == "${sb:0:10}" ]]; then
+    die "ambiguous: two docs share the newest date prefix (${fb:0:10}) — ${fb} and ${sb}; pass an explicit path" 1
+  fi
+
+  # Warn on the SUCCESS path too. This is #35's failure mode 2 and the only place it can be
+  # caught: the chosen doc is legitimately inside the configured dirs, so the egress guard sees
+  # nothing wrong, and a bare run would silently review a stale doc while the real work sits in
+  # an unsearched sibling. Louder when that sibling's newest is NEWER than what we picked.
+  local hint newest_sib
+  hint="$(_sibling_hint "$dirs")"
+  if [[ -n "$hint" ]]; then
+    newest_sib="$(_newest_unsearched "$dirs")"
+    # Decide "newer" with the SAME collation the sorts used. `[[ > ]]` honours the caller's
+    # locale, so the WARNING/note choice could disagree with the ordering the pick came from
+    # (fable-rd1-r2).
+    local sb2; sb2="${newest_sib%%$'\t'*}"
+    if [[ -n "$newest_sib" ]] \
+       && [[ "$(printf '%s\n%s\n' "$fb" "$sb2" | LC_ALL=C sort -r | head -1)" == "$sb2" ]] \
+       && [[ "$sb2" != "$fb" ]]; then
+      echo "multi-review-core: WARNING — resolved ${first#*$'\t'}, but a NEWER dated doc exists in a directory that was not searched: ${newest_sib#*$'\t'}. Set MULTI_REVIEW_DOC_DIRS or pass an explicit path." >&2
+    else
+      echo "multi-review-core: note — dated docs also exist in directories that were not searched: ${hint##*: }" >&2
+    fi
+  fi
+  printf '%s\n' "${first#*$'\t'}"
+}
+
+# _is_searched <candidate-dir> <searched-dirs> : 0 when the candidate is INSIDE (or equal to) a
+# searched dir, comparing canonical paths. A literal string match made `docs/specs/`, `./docs/specs`
+# or a nested `docs/specs/archive/` read as "NOT searched" and fire a false alarm on every run
+# (fable-rd1-r1, fable-rd1-r6) — and the command prose tells the primary to relay that as a
+# misconfiguration.
+# _in_tree <dir> : 0 when <dir> RESOLVES inside the working tree. This is a REPORTING guard —
+# it keeps an advisory hint from naming out-of-tree paths — NOT an arming decision, so it
+# deliberately uses `pwd -P` and never `git rev-parse`: an inherited GIT_WORK_TREE can redefine
+# what git calls the root (codex-rd3-r1), and no hint is worth that dependency.
+# `-L` on the last component was not enough — a symlink one level up (or `docs` itself) is
+# walked straight through by the globs (codex-rd2-r2, fable-rd2-r1).
+_in_tree() {
+  local cand="$1" cr root
+  cr="$(cd "$cand" 2>/dev/null && pwd -P)" || return 1
+  root="$(pwd -P)" || return 1
+  case "${cr}/" in "${root}/"*) return 0 ;; esac
+  return 1
+}
+
+_is_searched() {
+  local cand="$1" dirs="$2" d cr sr
+  cr="$(cd "$cand" 2>/dev/null && pwd -P)" || return 1
+  for d in $dirs; do
+    sr="$(cd "$d" 2>/dev/null && pwd -P)" || continue
+    case "${cr}/" in "${sr}/"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# _newest_unsearched <searched-dirs> : "<basename>\t<path>" of the newest dated doc in a
+# plausible sibling that was NOT searched, else empty.
+_newest_unsearched() {
+  local d
+  { for d in docs/*/ docs/*/*/; do
+      [[ -d "$d" ]] || continue
+      d="${d%/}"
+      _in_tree "$d" || continue
+      _is_searched "$d" "$1" && continue
+      _dated_docs "$d"
+    done; } | LC_ALL=C sort -r | head -1
+}
+
+# _sibling_hint <searched-dirs> : ", but <dir> holds dated docs and is NOT searched" when a
+# plausible sibling under docs/ has dated docs. Bounded to docs/*/ and docs/*/*/ — enough to
+# spot the superpowers layout and its neighbours without a repo-wide walk.
+_sibling_hint() {
+  local d hits=""
+  for d in docs/*/ docs/*/*/; do
+    [[ -d "$d" ]] || continue
+    d="${d%/}"
+    _in_tree "$d" || continue
+    _is_searched "$d" "$1" && continue
+    [[ -n "$(_dated_docs "$d")" ]] || continue
+    hits="${hits}${hits:+, }${d}"
+  done
+  [[ -n "$hits" ]] && printf '; NOT searched but holds dated docs: %s' "$hits"
+  return 0
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     marker) cmd_marker "$@" ;;
     init)   cmd_init "$@" ;;
+    resolve-doc) cmd_resolve_doc "$@" ;;
     *)      die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }

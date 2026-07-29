@@ -41,7 +41,7 @@ Installs the `/multi-review` command + its scripts. The marketplace path also li
 Claude Code's plugin UI with version tracking / update prompts. Reviewer setup depends on which
 reviewers you add (below) — `fable` needs none.
 
-**If your design docs don't live in `docs/specs/` or `docs/plans/`,** set `MULTI_REVIEW_DOC_DIRS`
+**If your design docs live somewhere other than the defaults below,** set `MULTI_REVIEW_DOC_DIRS`
 before the first run — the egress guard refuses to arm on a path outside it, so a repo with any
 other layout is blocked until it is set:
 
@@ -51,6 +51,10 @@ other layout is blocked until it is set:
 ```
 
 Space-separated; individual dirs cannot contain spaces.
+
+**Migrating from the `dual-review` predecessor?** It used `DUAL_AGENT_DOC_DIRS`. That variable is
+gone and nothing inherits it — if your `.claude/settings.json` set it, replace it with
+`MULTI_REVIEW_DOC_DIRS`, or drop it entirely if your docs are under either default layout.
 
 **Contributing to this repo?** Run `scripts/multi-review-install-hooks.sh` once per clone. It
 points `core.hooksPath` at the versioned `.githooks/`, whose `pre-push` refuses a push that has
@@ -75,7 +79,7 @@ decide whether to offer an update. `git push --no-verify` bypasses it for a WIP 
   to reset to fable-only.
 - PR refs also accept `owner/repo#n` and, in the current repo, `#n`.
 - The set is always **`(--reviewers) ∪ {fable}`** — `fable` can't be removed.
-- Local docs are found under `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans`); pass an
+- Local docs are found under `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` — both the plain and `superpowers` layouts); pass an
   explicit path otherwise.
 - On a PR, `gh` ingests the diff into a gitignored scratch file; on approval the primary posts
   **one** neutral `gh pr review` (anchored findings inline, the rest in the summary). Needs `gh` +
@@ -122,7 +126,7 @@ Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a 
 | `MULTI_REVIEW_REVIEWERS` | *(empty)* | comma set of extra secondaries, e.g. `codex,gemini` (per-run: `--reviewers`) |
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.6-terra`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |
-| `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans` | where bare-name local docs are resolved |
+| `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` | where bare-name local docs are resolved. Covers the plain and `superpowers` layouts out of the box. Bare-name resolution **warns** when a newer dated doc sits in a directory it did not search — the egress guard cannot catch that, since the doc it picked is legitimately inside the configured dirs. |
 | `MULTI_REVIEW_GEMINI_AUTOTRUST` | *(off)* | `=1` scopes `GEMINI_CLI_TRUST_WORKSPACE=true` to the gemini dispatch (no profile edit needed). **Security:** trusting a workspace lets gemini honor its `.env`/settings and auto-edit — enable only for repos you trust, never a freshly-cloned one. |
 
 The last explicitly-named reviewer combo is remembered per repo in **`.multi-review/reviewers.pref`**

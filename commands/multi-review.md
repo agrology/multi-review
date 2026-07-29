@@ -95,10 +95,18 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh parse "<positional>"`.
 ### Resolve the doc (local, deterministic)
 
 - If `<positional>` is non-empty, that path is the doc.
-- Else: list `.md` files **directly under** each dir in `MULTI_REVIEW_DOC_DIRS`
-  (default `docs/specs docs/plans`) whose names match `YYYY-MM-DD-…`. Pick the greatest by
-  **date prefix, then filename** (NOT mtime). If there are zero candidates, or the top two
-  share a date prefix (a tie), STOP and ask the engineer to pass an explicit path.
+- Else, run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-core.sh resolve-doc`. It lists `.md`
+  files **directly under** each dir in `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans
+  docs/superpowers/specs docs/superpowers/plans`) whose names match `YYYY-MM-DD-…` and prints
+  the greatest by **date prefix, then filename** (NOT mtime).
+  - **Exit 0** → that path is the doc. **Relay any `WARNING —`/`note —` it printed on stderr.**
+    A `WARNING` means a NEWER dated doc sits in a directory that was not searched: the pick is
+    legitimate but probably not what the engineer meant, and the egress guard cannot catch it
+    because the chosen doc IS inside the configured dirs. Say so before arming, and offer the
+    named alternative.
+  - **Non-zero** → zero candidates, or the top two share a date prefix (a tie). Show the
+    message — it names the dirs searched and any sibling holding dated docs — and ask for an
+    explicit path. Do NOT guess.
 
 ## 2. Resolve the reviewer set (`fable` always included)
 
