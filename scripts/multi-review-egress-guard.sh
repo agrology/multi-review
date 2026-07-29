@@ -25,8 +25,20 @@ doc_dir_real="$(cd "$(dirname "$doc")" 2>/dev/null && pwd -P)" || die "cannot re
 # --- canonical containment in ANY configured dir ---
 contained=0
 # .multi-review/reviews is always an allowed arming root (PR-mode scratch files live there).
+root_real="$(pwd -P)" || die "cannot resolve the invocation root" 2
 for d in $doc_dirs .multi-review/reviews; do
   dir_real="$(cd "$d" 2>/dev/null && pwd -P)" || continue
+  # A RELATIVE configured dir must be a real subdirectory, not reached through a symlink.
+  # Containment canonicalises BOTH sides, so a symlinked `docs/superpowers/specs` matches its own
+  # out-of-tree target and an external file arms cleanly — rejecting the doc symlink never
+  # covered this, because the escape is via the DIRECTORY (codex-rd1-r1, CLAUDE.md §3).
+  # Pre-existing (a symlinked docs/specs escapes identically on main), but widening the default
+  # made it reachable with no configuration at all, so it is closed here rather than flagged.
+  # An ABSOLUTE dir is an explicit operator choice and is left alone.
+  if [[ "$d" != /* ]]; then
+    lexical="${root_real}/${d#./}"; lexical="${lexical%/}"
+    [[ "$dir_real" == "$lexical" ]] || die "configured doc dir '$d' resolves through a symlink to $dir_real — refusing to arm" 3
+  fi
   case "${doc_dir_real}/" in
     "${dir_real}/"*) contained=1; break ;;
   esac

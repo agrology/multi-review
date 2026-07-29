@@ -165,23 +165,47 @@ cmd_resolve_doc() {
   hint="$(_sibling_hint "$dirs")"
   if [[ -n "$hint" ]]; then
     newest_sib="$(_newest_unsearched "$dirs")"
-    if [[ -n "$newest_sib" ]] && [[ "${newest_sib%%$'\t'*}" > "$fb" ]]; then
+    # Decide "newer" with the SAME collation the sorts used. `[[ > ]]` honours the caller's
+    # locale, so the WARNING/note choice could disagree with the ordering the pick came from
+    # (fable-rd1-r2).
+    local sb2; sb2="${newest_sib%%$'\t'*}"
+    if [[ -n "$newest_sib" ]] \
+       && [[ "$(printf '%s\n%s\n' "$fb" "$sb2" | LC_ALL=C sort -r | head -1)" == "$sb2" ]] \
+       && [[ "$sb2" != "$fb" ]]; then
       echo "multi-review-core: WARNING — resolved ${first#*$'\t'}, but a NEWER dated doc exists in a directory that was not searched: ${newest_sib#*$'\t'}. Set MULTI_REVIEW_DOC_DIRS or pass an explicit path." >&2
     else
-      echo "multi-review-core: note — dated docs also exist outside MULTI_REVIEW_DOC_DIRS${hint#;}" >&2
+      echo "multi-review-core: note — dated docs also exist in directories that were not searched: ${hint##*: }" >&2
     fi
   fi
   printf '%s\n' "${first#*$'\t'}"
 }
 
+# _is_searched <candidate-dir> <searched-dirs> : 0 when the candidate is INSIDE (or equal to) a
+# searched dir, comparing canonical paths. A literal string match made `docs/specs/`, `./docs/specs`
+# or a nested `docs/specs/archive/` read as "NOT searched" and fire a false alarm on every run
+# (fable-rd1-r1, fable-rd1-r6) — and the command prose tells the primary to relay that as a
+# misconfiguration.
+_is_searched() {
+  local cand="$1" dirs="$2" d cr sr
+  cr="$(cd "$cand" 2>/dev/null && pwd -P)" || return 1
+  for d in $dirs; do
+    sr="$(cd "$d" 2>/dev/null && pwd -P)" || continue
+    case "${cr}/" in "${sr}/"*) return 0 ;; esac
+  done
+  return 1
+}
+
 # _newest_unsearched <searched-dirs> : "<basename>\t<path>" of the newest dated doc in a
 # plausible sibling that was NOT searched, else empty.
 _newest_unsearched() {
-  local searched=" $1 " d
+  local d
   { for d in docs/*/ docs/*/*/; do
       [[ -d "$d" ]] || continue
+      # Skip symlinked dirs: the scan would otherwise pull out-of-tree paths into the hint
+      # (fable-rd1-r7), and the egress guard runs after this, not before.
+      [[ -L "${d%/}" ]] && continue
       d="${d%/}"
-      case "$searched" in *" $d "*) continue ;; esac
+      _is_searched "$d" "$1" && continue
       _dated_docs "$d"
     done; } | LC_ALL=C sort -r | head -1
 }
@@ -190,11 +214,12 @@ _newest_unsearched() {
 # plausible sibling under docs/ has dated docs. Bounded to docs/*/ and docs/*/*/ — enough to
 # spot the superpowers layout and its neighbours without a repo-wide walk.
 _sibling_hint() {
-  local searched=" $1 " d hits=""
+  local d hits=""
   for d in docs/*/ docs/*/*/; do
     [[ -d "$d" ]] || continue
+    [[ -L "${d%/}" ]] && continue
     d="${d%/}"
-    case "$searched" in *" $d "*) continue ;; esac
+    _is_searched "$d" "$1" && continue
     [[ -n "$(_dated_docs "$d")" ]] || continue
     hits="${hits}${hits:+, }${d}"
   done
