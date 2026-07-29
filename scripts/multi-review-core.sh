@@ -185,6 +185,19 @@ cmd_resolve_doc() {
 # or a nested `docs/specs/archive/` read as "NOT searched" and fire a false alarm on every run
 # (fable-rd1-r1, fable-rd1-r6) — and the command prose tells the primary to relay that as a
 # misconfiguration.
+# _in_root <dir> : 0 when <dir> RESOLVES inside the repository root. `-L` on the last component
+# was not enough — a symlink one level up (or `docs` itself) is walked straight through by the
+# globs (codex-rd2-r2, fable-rd2-r1). Canonical containment covers every position.
+_in_root() {
+  local cand="$1" cr
+  cr="$(cd "$cand" 2>/dev/null && pwd -P)" || return 1
+  local root; root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+  [[ -n "$root" ]] && root="$(cd "$root" 2>/dev/null && pwd -P)"
+  [[ -n "$root" ]] || root="$(pwd -P)"
+  case "${cr}/" in "${root}/"*) return 0 ;; esac
+  return 1
+}
+
 _is_searched() {
   local cand="$1" dirs="$2" d cr sr
   cr="$(cd "$cand" 2>/dev/null && pwd -P)" || return 1
@@ -201,10 +214,8 @@ _newest_unsearched() {
   local d
   { for d in docs/*/ docs/*/*/; do
       [[ -d "$d" ]] || continue
-      # Skip symlinked dirs: the scan would otherwise pull out-of-tree paths into the hint
-      # (fable-rd1-r7), and the egress guard runs after this, not before.
-      [[ -L "${d%/}" ]] && continue
       d="${d%/}"
+      _in_root "$d" || continue
       _is_searched "$d" "$1" && continue
       _dated_docs "$d"
     done; } | LC_ALL=C sort -r | head -1
@@ -217,8 +228,8 @@ _sibling_hint() {
   local d hits=""
   for d in docs/*/ docs/*/*/; do
     [[ -d "$d" ]] || continue
-    [[ -L "${d%/}" ]] && continue
     d="${d%/}"
+    _in_root "$d" || continue
     _is_searched "$d" "$1" && continue
     [[ -n "$(_dated_docs "$d")" ]] || continue
     hits="${hits}${hits:+, }${d}"

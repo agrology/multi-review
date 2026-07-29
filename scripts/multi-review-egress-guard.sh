@@ -25,20 +25,22 @@ doc_dir_real="$(cd "$(dirname "$doc")" 2>/dev/null && pwd -P)" || die "cannot re
 # --- canonical containment in ANY configured dir ---
 contained=0
 # .multi-review/reviews is always an allowed arming root (PR-mode scratch files live there).
-root_real="$(pwd -P)" || die "cannot resolve the invocation root" 2
+# The repository root, canonical. Trust is a PROPERTY OF WHERE A DIR RESOLVES, never of how it
+# was spelled: the previous rule exempted absolute paths, and an absolute spelling of a dir that
+# resolves through an in-repo symlink walked straight out of the tree (codex-rd2-r1). A dir whose
+# canonical path is outside the root is SKIPPED, not fatal — one bad dir must not veto every
+# review in the repo, including PR-mode scratch files that use no doc dirs at all (fable-rd2-r3).
+root_real="$(git rev-parse --show-toplevel 2>/dev/null)" || root_real=""
+[[ -n "$root_real" ]] && root_real="$(cd "$root_real" 2>/dev/null && pwd -P)"
+[[ -n "$root_real" ]] || root_real="$(pwd -P)" || die "cannot resolve the repository root" 2
+
 for d in $doc_dirs .multi-review/reviews; do
   dir_real="$(cd "$d" 2>/dev/null && pwd -P)" || continue
-  # A RELATIVE configured dir must be a real subdirectory, not reached through a symlink.
-  # Containment canonicalises BOTH sides, so a symlinked `docs/superpowers/specs` matches its own
-  # out-of-tree target and an external file arms cleanly — rejecting the doc symlink never
-  # covered this, because the escape is via the DIRECTORY (codex-rd1-r1, CLAUDE.md §3).
-  # Pre-existing (a symlinked docs/specs escapes identically on main), but widening the default
-  # made it reachable with no configuration at all, so it is closed here rather than flagged.
-  # An ABSOLUTE dir is an explicit operator choice and is left alone.
-  if [[ "$d" != /* ]]; then
-    lexical="${root_real}/${d#./}"; lexical="${lexical%/}"
-    [[ "$dir_real" == "$lexical" ]] || die "configured doc dir '$d' resolves through a symlink to $dir_real — refusing to arm" 3
-  fi
+  case "${dir_real}/" in
+    "${root_real}/"*) ;;
+    *) echo "multi-review-egress-guard: note — configured doc dir '$d' resolves outside the repository root ($dir_real); skipping it" >&2
+       continue ;;
+  esac
   case "${doc_dir_real}/" in
     "${dir_real}/"*) contained=1; break ;;
   esac
