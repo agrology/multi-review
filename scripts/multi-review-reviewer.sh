@@ -173,7 +173,7 @@ gemini_unreadable_paths() { # <repo-root> -> ignored candidate paths, one per li
   # yet — and these dirs routinely do not, since the check runs before the review is armed. The
   # slash form matches both pattern shapes, so it is the only one correct in all cases.
   # shellcheck disable=SC2086
-  for d in ${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans} .multi-review; do
+  for d in ${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans} .multi-review; do
     # Probe the DIRECTORY *and* a representative markdown file inside it. A rule can ignore the
     # review docs without ignoring their directory (`docs/specs/*.md` is the common shape), and a
     # directory-only probe reports "readable" while gemini still refuses the actual doc.

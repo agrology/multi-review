@@ -101,6 +101,61 @@ out="$(bash "$SUT" marker "$D" 2>/dev/null)"; [[ "$out" == "awaiting-primary 2 2
 D="${WORK}/still-rev.md"; { echo "# Doc"; echo '<!-- multi-review: awaiting-reviewer · round 1/10 -->'; echo; echo "## X"; } > "$D"
 out="$(bash "$SUT" marker "$D" 2>/dev/null)"; [[ "$out" == "awaiting-reviewer 1 10" ]] && ok "marker: existing state intact" || bad "still-rev (got '$out')"
 
+# ============================ resolve-doc (issue #35) ============================
+RD="${WORK}/rd"; mkdir -p "$RD"
+( cd "$RD" && mkdir -p docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans )
+
+# --- the superpowers layout is reachable with NO configuration ---
+: > "${RD}/docs/superpowers/specs/2026-01-02-alpha.md"
+out="$(cd "$RD" && bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "docs/superpowers/specs/2026-01-02-alpha.md" ]] \
+  && ok "resolve-doc: superpowers layout found by default" || bad "superpowers layout missed (got '$out')"
+
+# --- newest by DATE PREFIX then filename, across all default dirs ---
+: > "${RD}/docs/specs/2026-01-01-older.md"
+: > "${RD}/docs/superpowers/plans/2026-03-09-newest.md"
+out="$(cd "$RD" && bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "docs/superpowers/plans/2026-03-09-newest.md" ]] \
+  && ok "resolve-doc: newest across all default dirs" || bad "wrong doc chosen (got '$out')"
+
+# --- a same-date TIE stops rather than guessing ---
+: > "${RD}/docs/specs/2026-03-09-tie.md"
+(cd "$RD" && bash "$SUT" resolve-doc >/dev/null 2>&1)
+[[ $? -ne 0 ]] && ok "resolve-doc: same-date tie stops" || bad "tie resolved silently"
+rm -f "${RD}/docs/specs/2026-03-09-tie.md"
+
+# --- THE SILENT WRONG-DOC CASE (#35 failure mode 2): configured dirs hold a doc, but a
+#     sibling dir holds a NEWER one — the chosen doc is legitimate, so nothing else catches it
+RD2="${WORK}/rd2"; mkdir -p "$RD2/docs/specs" "$RD2/docs/superpowers/specs"
+: > "${RD2}/docs/specs/2026-01-01-stale.md"
+: > "${RD2}/docs/superpowers/specs/2026-06-01-real-work.md"
+msg="$(cd "$RD2" && MULTI_REVIEW_DOC_DIRS="docs/specs" bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" == *"docs/superpowers/specs"* ]] \
+  && ok "resolve-doc: names an unsearched sibling holding newer dated docs" \
+  || bad "silent wrong-doc: sibling never mentioned ('$msg')"
+
+# --- zero candidates names what was searched, not just "none found" ---
+RD3="${WORK}/rd3"; mkdir -p "$RD3/docs/specs"
+msg="$(cd "$RD3" && bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" == *"docs/specs"* && "$msg" == *"docs/plans"* ]] \
+  && ok "resolve-doc: zero candidates names the dirs searched" || bad "unhelpful empty message ('$msg')"
+
+# --- an explicit MULTI_REVIEW_DOC_DIRS is honored verbatim ---
+RD4="${WORK}/rd4"; mkdir -p "$RD4/design"
+: > "${RD4}/design/2026-02-02-custom.md"
+out="$(cd "$RD4" && MULTI_REVIEW_DOC_DIRS="design" bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "design/2026-02-02-custom.md" ]] \
+  && ok "resolve-doc: explicit DOC_DIRS honored" || bad "explicit DOC_DIRS ignored (got '$out')"
+
+# --- only files DIRECTLY under a dir, and only dated ones ---
+RD5="${WORK}/rd5"; mkdir -p "$RD5/docs/specs/nested"
+: > "${RD5}/docs/specs/nested/2026-09-09-deep.md"
+: > "${RD5}/docs/specs/undated.md"
+: > "${RD5}/docs/specs/2026-01-01-ok.md"
+out="$(cd "$RD5" && bash "$SUT" resolve-doc 2>/dev/null)"
+[[ "$out" == "docs/specs/2026-01-01-ok.md" ]] \
+  && ok "resolve-doc: ignores nested and undated files" || bad "picked a nested/undated file (got '$out')"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

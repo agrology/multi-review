@@ -10,7 +10,9 @@ doc="${1:-}"
 [[ -n "$doc" ]] || die "usage: multi-review-egress-guard.sh <doc-path>" 2
 
 # Space-separated by design (word-split below) — individual dirs cannot contain spaces.
-doc_dirs="${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans}"
+# Default MUST stay in sync with DOC_DIRS_DEFAULT in multi-review-core.sh and the loop in
+# multi-review-reviewer.sh. Duplicated for module isolation, as elsewhere in this repo.
+doc_dirs="${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans}"
 
 # --- the doc must be a real .md file, not a symlink ---
 [[ -e "$doc" ]] || die "doc not found: $doc" 3
