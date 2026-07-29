@@ -221,9 +221,15 @@ GR="${WORK}/repo"; mkdir -p "$GR"
 ( cd "$GR" && git init -q && git config user.email t@t && git config user.name t \
   && printf 'line one\nline two\n' > f.txt && git add f.txt && git commit -qm base ) >/dev/null 2>&1
 BASE="$(cd "$GR" && git rev-parse HEAD)"
-( cd "$GR" && printf 'line one\nline CHANGED\n' > f.txt && git commit -qam r1 ) >/dev/null 2>&1
+# The r1 commit adds bulk so the whole-PR payload (BASE..H2) clears the round-2 delta with margin,
+# or the never-worse guard trips this happy path on an unrelated fixture edit (fable-rd2-r5).
+# Placement matters: the filler must land in the BASE..H1 leg AND >10 lines from the r2 hunk at the
+# end of the file, otherwise -W -U10 pulls it into the scoped payload too and no margin appears.
+( cd "$GR" && { printf 'line one\nline CHANGED\n'; seq 1 40 | sed 's/^/pad_/'; } > f.txt \
+  && git commit -qam r1 ) >/dev/null 2>&1
 H1="$(cd "$GR" && git rev-parse HEAD)"
-( cd "$GR" && printf 'line one\nline CHANGED\nline added\n' > f.txt && git commit -qam r2 ) >/dev/null 2>&1
+( cd "$GR" && { printf 'line one\nline CHANGED\n'; seq 1 40 | sed 's/^/pad_/'; \
+    printf 'line added\n'; } > f.txt && git commit -qam r2 ) >/dev/null 2>&1
 H2="$(cd "$GR" && git rev-parse HEAD)"
 
 # --- happy path: the delta between two heads, plus the touched file's text at the head ---
@@ -310,6 +316,59 @@ grep -q 'inner_pad_1$' <<<"$out" && ok "pr-copy: -W reaches the top of the enclo
   || bad "no function context — -W not applied (a bare -U10 cannot reach inner_pad_1)"
 grep -q 'head_pad_1$' <<<"$out" && bad "-W over-reached into the preceding function" \
   || ok "pr-copy: function context stops at the enclosing function"
+
+# ===================== A2: the never-worse guard (both subcommands) =====================
+# A revert-shaped round 2: the author backs out most of what round 1 did, so the whole-PR diff
+# shrinks toward empty while the round-2 delta is the entire revert. Realistic ("back this out")
+# and it genuinely loses, which a rigged fixture would not.
+( cd "$GR" && seq 1 100 | sed 's/^/orig_line_/' > w.txt && git add w.txt \
+  && git commit -qm wbase ) >/dev/null 2>&1
+WBASE="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && awk 'NR>=30 && NR<=69 {print "rd1_changed_" NR; next} {print}' w.txt > t \
+  && mv t w.txt && git commit -qam wrd1 ) >/dev/null 2>&1
+WIDE1="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && awk 'NR>=30 && NR<=67 {print "orig_line_" NR; next} {print}' w.txt > t \
+  && mv t w.txt && git commit -qam wrd2 ) >/dev/null 2>&1
+WIDE2="$(cd "$GR" && git rev-parse HEAD)"
+
+# Prove the fixture LOSES before asserting on the guard, or the guard test passes vacuously.
+sp=$(cd "$GR" && git diff -W -U10 "$WIDE1" "$WIDE2" | wc -c | tr -d ' ')
+fp=$(cd "$GR" && git diff "$WBASE" "$WIDE2" | wc -c | tr -d ' ')
+(( sp >= fp )) && ok "guard fixture: the scoped payload really is not smaller ($sp vs $fp)" \
+  || bad "guard fixture does not lose ($sp vs $fp) — the guard test would pass vacuously"
+
+err="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$WIDE1" --merge-base-prev "$WBASE" \
+        --head "$WIDE2" --merge-base "$WBASE" "$GR" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 3 ]] && ok "pr-copy: exit 3 when the scoped copy is not smaller" \
+  || bad "no never-worse guard on pr-copy (rc=$rc)"
+grep -qE '[0-9]+ B.*[0-9]+ B' <<<"$err" && ok "pr-copy: the notice names both byte counts" \
+  || bad "guard notice does not name both sizes: $err"
+
+# Nothing half-composed reaches stdout on the exit-3 path (the guard runs BEFORE composition).
+sout="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$WIDE1" --merge-base-prev "$WBASE" \
+        --head "$WIDE2" --merge-base "$WBASE" "$GR" 2>/dev/null)"
+[[ -z "$sout" ]] && ok "pr-copy: exit-3 path emits nothing on stdout" \
+  || bad "half-composed copy leaked to stdout"
+
+# The happy-path fixture must clear the guard with MARGIN, or an unrelated future edit to it
+# trips the size guard and the failure message talks about copy size (fable-rd2-r5).
+hsp=$(cd "$GR" && git diff -W -U10 "$H1" "$H2" | wc -c | tr -d ' ')
+hfp=$(cd "$GR" && git diff "$BASE" "$H2" | wc -c | tr -d ' ')
+(( hfp > hsp * 2 )) && ok "happy-path fixture clears the guard with margin ($hsp vs $hfp)" \
+  || bad "happy-path fixture margin too thin ($hsp vs $hfp) — an unrelated edit will trip the guard"
+
+# local-copy is deliberately NOT guarded yet, and this asserts the CURRENT contract so the gap is
+# visible rather than assumed. Wiring _payload_guard into local-copy is correct (a real 102% copy
+# was measured on a live review) but it fires on every fixture in this file: a 2-section document
+# with 1 section touched is the "primary rewrote everything" case, where scoping genuinely cannot
+# win (measured 101 B scoped vs 43 B full on the fixture above). Guarding it therefore requires
+# re-baselining ~30 composition assertions onto realistically-sized fixtures, which is its own
+# change with its own review — not a green-making edit tacked onto this one.
+P9="$(mkbase prevw.md '## A' '' 'x')"
+C9="$(mkbase currw.md '## A' '' 'x' '' '## B' '' "$(seq 1 200 | tr '\n' ' ')")"
+bash "$SUT" local-copy --round 2 --max 5 --prev "$P9" --curr "$C9" >/dev/null 2>&1
+[[ $? -eq 0 ]] && ok "local-copy: still unguarded (documented gap — see the follow-up issue)" \
+  || bad "local-copy behaviour changed unexpectedly (rc=$?) — the guard gap note is now stale"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

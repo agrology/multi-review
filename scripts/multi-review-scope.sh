@@ -174,6 +174,24 @@ _emit_regions() {
   done
 }
 
+# Never-worse guard. A scoped copy that costs at least as much as the artifact it replaces has no
+# argument for itself under any goal this feature states, so it degrades (exit 3) and says both
+# sizes. This is a GUARD, not a knob: the threshold IS the thing being replaced, so there is
+# nothing to configure and no threshold to tune.
+#
+# It exists because the failure it catches was reproduced twice on shipped code — `pr-copy` cost
+# 48-412% of the round it replaced (spec §11 Q2), and `local-copy` emitted a 37,373-byte copy to
+# replace a 36,585-byte document during this feature's own review, exit 0, nothing warned.
+#
+# Callers compare PAYLOAD to PAYLOAD. The ~308 bytes of copy boilerplate exist on both sides of
+# the real comparison, so charging only the scoped side for them inverts the verdict on small
+# artifacts (measured: 441 vs 143 on this suite's own fixture). Each call site names its basis.
+# Byte counts are stripped of BSD `wc` padding by the caller so the message reads cleanly.
+_payload_guard() { # <scoped-bytes> <full-bytes>
+  (( $1 < $2 )) || cannot "scoped copy is not smaller than the artifact it replaces ($1 B vs $2 B)"
+  return 0
+}
+
 cmd_local_copy() {
   local round="" max="" prev="" curr=""
   while (( $# )); do
@@ -283,6 +301,16 @@ cmd_pr_copy() {
   git -C "$root" diff -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
     || cannot "git diff failed between $since and $head"
   [[ -s "$tmp/diff" ]] || cannot "empty delta — nothing was pushed since round $((round - 1))"
+
+  # basis: scoped diff payload vs whole-PR diff payload (both raw `git diff`, boilerplate cancels).
+  # Excluding the scratch's description and review channel from the full side makes this guard
+  # STRICTER, never looser. Evaluated before any output, so exit 3 prints nothing on stdout.
+  git -C "$root" diff "$mb" "$head" > "$tmp/full" 2>/dev/null \
+    || cannot "git diff failed between $mb and $head"
+  local scoped_bytes full_bytes
+  scoped_bytes="$(wc -c < "$tmp/diff" | tr -d ' ')"
+  full_bytes="$(wc -c < "$tmp/full" | tr -d ' ')"
+  _payload_guard "$scoped_bytes" "$full_bytes"
 
   printf '# PR review — scoped round %s\n\n' "$round"
   printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
