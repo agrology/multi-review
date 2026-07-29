@@ -532,9 +532,14 @@ cmd_channel_check() {
   local base="" copy=""
   while (( $# )); do
     case "$1" in
-      --baseline|--seed)
-        (( $# >= 2 )) || die "$1 requires a value" 2
+      --seed)
+        (( $# >= 2 )) || die "--seed requires a value" 2
         base="$2"; shift 2 ;;
+      # --baseline is REFUSED, not aliased: passing <doc>.baseline for a scoped round-N copy
+      # reproduces the exact false negative this check exists to prevent, and an alias makes
+      # that silent (codex-rd2-r1, fable-rd2-r1).
+      --baseline)
+        die "channel-check takes --seed (the copy AS DISPATCHED), not --baseline: a scoped round-N copy differenced against the full baseline hides misplaced findings" 2 ;;
       *) [[ -n "$copy" ]] || copy="$1"; shift ;;
     esac
   done
@@ -543,26 +548,39 @@ cmd_channel_check() {
   [[ -n "$copy" && -f "$copy" ]] || die "copy not found: ${copy:-<unset>}" 2
 
   local sa sv ca cv added_total added_visible stray
-  sa="$(mktemp)"; sv="$(mktemp)"; ca="$(mktemp)"; cv="$(mktemp)"
+  sa="$(mktemp)" && sv="$(mktemp)" && ca="$(mktemp)" && cv="$(mktemp)" \
+    || die "cannot create temp files for channel-check" 2
   # ALL finding lines anywhere in the file...
-  grep '^> \[finding:' "$base" 2>/dev/null | sort > "$sa" || true
-  grep '^> \[finding:' "$copy" 2>/dev/null | sort > "$ca" || true
+  # LC_ALL=C so sort/comm agree byte-wise regardless of the caller's locale.
+  grep '^> \[finding:' "$base" 2>/dev/null | LC_ALL=C sort > "$sa" || true
+  grep '^> \[finding:' "$copy" 2>/dev/null | LC_ALL=C sort > "$ca" || true
   # ...versus exactly what MERGE will ingest: the last ## Review section, fences stripped.
-  review_section "$base" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | sort > "$sv" || true
-  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | sort > "$cv" || true
+  review_section "$base" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | LC_ALL=C sort > "$sv" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | LC_ALL=C sort > "$cv" || true
 
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
-  added_total="$(comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
-  added_visible="$(comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
+  added_total="$(LC_ALL=C comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
+  added_visible="$(LC_ALL=C comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
   rm -f "$sa" "$sv" "$ca" "$cv"
 
   (( added_total <= added_visible )) && return 0
   stray=$(( added_total - added_visible ))
+
+  # Quarantine ONLY when NOTHING reached the channel. That is #32's shape and is unambiguous:
+  # the turn merges as clean while contributing nothing. When some findings DID land, the stray
+  # lines are more likely quotation — a reviewer citing the grammar inside a fence as evidence —
+  # and quarantining the whole turn for that would destroy good findings, which is the same harm
+  # #32 causes, inverted (fable-rd2-r4). Warn instead and let the round proceed.
+  if (( added_visible > 0 )); then
+    echo "multi-review-star: note — ${stray} of ${added_total} added finding line(s) are outside what merge ingests (likely quoted examples); ${added_visible} will merge normally" >&2
+    return 0
+  fi
+
   local why="an earlier or fenced '## Review' captured them"
   grep -q '^## Review[[:space:]]*$' "$copy" \
     || why="the copy has NO '## Review' heading, so nothing could reach the channel"
-  die "reviewer added ${added_total} finding(s) but only ${added_visible} are in what merge ingests — ${stray} landed outside it (${why}). Merging would record this turn as clean." 1
+  die "NONE of the reviewer's ${added_total} finding(s) reached what merge ingests (${why}). Merging would record this turn as clean." 1
 }
 
 # --- doc↔manifest consistency (issue #16) ----------------------------------

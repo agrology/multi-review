@@ -231,11 +231,6 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      signal — prefer converging over re-fanning. The decision stays yours; #30's triggers govern
      *whether* to re-fan, and this step governs only what a re-fan costs.
 
-   **Snapshot each copy as dispatched:** once its header is final, `cp "<doc>.<id>"
-   "<doc>.<id>.seed"`. Step 6's `channel-check` diffs against this, and it is the only
-   representation of what the reviewer was actually handed — for a scoped round, `<doc>.baseline`
-   is not it. Retain it with the other working files; the terminal gate releases it.
-
    For the round-1 path (and the exit-3 fallback), rewrite that copy's header to:
 
         <!-- multi-review: awaiting-reviewer · round <N>/<MAX> -->
@@ -243,6 +238,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    (`<N>` is the round this fan-out is running; no `reviewers:` suffix on a working copy.) The
    copy carries the empty `## Review` heading from step 1; the secondary appends findings beneath.
+
+   **Now — with the header final on every path, scoped or not — snapshot each copy as
+   dispatched:** `cp "<doc>.<id>" "<doc>.<id>.seed"`. Step 6's `channel-check` diffs against this.
+   It is the only faithful record of what the reviewer was handed; for a scoped round
+   `<doc>.baseline` is NOT it, and `channel-check` refuses `--baseline` for that reason. Do this
+   AFTER the header rewrite — a pre-rewrite snapshot differs from the dispatched copy. Retain it
+   with the other working files; the terminal gate releases it.
 3. **Provision each secondary's skill, right before dispatch.** The working root is the git
    toplevel of the repo under review — your own invocation directory (`git rev-parse
    --show-toplevel`) — **never** `<doc>`'s own location: for a PR-flavor doc, `<doc>` is a
@@ -291,15 +293,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    "<doc>.<id>"`. **`--seed` is the copy AS DISPATCHED, not `<doc>.baseline`** — from round 2 a
    copy may be a scoped reduction, and differencing that against the full baseline lets absent
    lines absorb misplaced findings, which would miss the very incident #32 came from.
-   **Exit 1 means stray findings → quarantine that provider. Exit 2 is a usage/infra error on
-   YOUR side** (bad path, missing value) — fix the invocation; never quarantine a reviewer for it. `merge` reads only the text after the LAST `## Review`, so a reviewer that
+   **Exit 1** — NONE of that reviewer's findings reached what `merge` ingests → **quarantine that
+   provider** with the message as the reason.
+   **Exit 0 with a `note —` line on stderr** — some findings landed and some did not (usually a
+   quoted example inside a fence). The turn is admitted; relay the note at the gate.
+   **Exit 2** — a usage/infra error on YOUR side (bad path, missing value). Fix the invocation.
+   **Never quarantine a reviewer for an exit 2.** `merge` reads only the text after the LAST `## Review`, so a reviewer that
    appended under an earlier one — a `## Review` inside a fenced example, which any doc about
    this protocol legitimately contains — has its **entire turn silently discarded**: nothing else
    catches it, and `gate-summary` then shows that provider as admitted with zero findings,
-   indistinguishable from one that genuinely found nothing. Non-zero → quarantine that provider
-   with the message as the reason, exactly like a `verify-vendor` failure. If a re-dispatch is
-   cheap, prefer re-running that secondary with an explicit instruction to append under the LAST
-   `## Review`, outside any fence — the findings are usually real and merely misplaced.
+   indistinguishable from one that genuinely found nothing. If a re-dispatch is cheap, prefer re-running that
+   secondary with an explicit instruction to append under the LAST `## Review`, outside any
+   fence — the findings are usually real and merely misplaced.
    - **All secondaries quarantined** (including `fable`) → an **anomaly stop**: do not advance the
      marker; surface every quarantine reason and STOP. A round with zero trustworthy findings
      cannot merge. (In practice `fable` runs in-harness and should always be admissible, so this

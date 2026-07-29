@@ -1416,8 +1416,8 @@ bash "$SUT" channel-check --seed "$CCB" "$CCN" >/dev/null 2>&1 \
 
 # (d) the message names the counts, so the quarantine reason is actionable
 msg="$(bash "$SUT" channel-check --seed "$CCB" "$CCX" 2>&1 >/dev/null)"
-[[ "$msg" == *"added 1 finding(s)"* && "$msg" == *"only 0 are in what merge ingests"* && "$msg" == *"1 landed outside"* ]] \
-  && ok "channel-check: reason names the exact counts" || bad "counts wrong/loose ('$msg')"
+[[ "$msg" == *"NONE of the reviewer's 1 finding(s) reached"* ]] \
+  && ok "channel-check: reason names the exact count" || bad "counts wrong/loose ('$msg')"
 
 # (e) a missing baseline is a usage error, not a silent pass
 bash "$SUT" channel-check --seed "${WORK}/nope.md" "$CCG" >/dev/null 2>&1
@@ -1461,6 +1461,31 @@ bash "$SUT" channel-check --seed "$DSEED" "$DBAD" >/dev/null 2>&1
 SOK="$(mkcc sok.md '# Doc' '' '## B' '' 'b' '' '## Review' '> [finding:r1|med] real' '> — via gpt-5')"
 bash "$SUT" channel-check --seed "$SEED" "$SOK" >/dev/null 2>&1 \
   && ok "channel-check: conforming scoped turn passes" || bad "false positive on a scoped turn"
+
+# --- codex-rd2-r1 / fable-rd2-r1: --baseline is REFUSED, not silently aliased ---
+bash "$SUT" channel-check --baseline "$CCB" "$CCX" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "channel-check: --baseline refused with a usage error" \
+  || bad "--baseline still accepted (reintroduces the scoped-round false negative)"
+
+# --- fable-rd2-r3: the exit-1 / exit-2 split the prose routes on is pinned ---
+bash "$SUT" channel-check --seed "$CCB" "$CCX" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: detection exits 1" || bad "detection did not exit 1"
+bash "$SUT" channel-check --seed "${WORK}/nope.md" "$CCX" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "channel-check: infra/usage exits 2" || bad "missing seed did not exit 2"
+bash "$SUT" channel-check --seed >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "channel-check: missing flag value exits 2" || bad "bare --seed did not exit 2"
+
+# --- fable-rd2-r4: a turn that REACHED the channel is not quarantined for a quoted example ---
+QSEED="$(mkcc qseed.md '# Doc' '' '## Review')"
+QMIX="$(mkcc qmix.md '# Doc' '' '## Review' \
+  '> [finding:r1|med] a real finding that DID reach the channel' '> — via gpt-5' \
+  '> — evidence: the grammar is' '```' '> [finding:x|low] quoted example' '```')"
+bash "$SUT" channel-check --seed "$QSEED" "$QMIX" >/dev/null 2>&1
+[[ $? -eq 0 ]] && ok "channel-check: a quoted example does not quarantine a landed turn" \
+  || bad "false positive on a turn that reached the channel (fable-rd2-r4)"
+msg="$(bash "$SUT" channel-check --seed "$QSEED" "$QMIX" 2>&1 >/dev/null)"
+[[ "$msg" == *"will merge normally"* ]] && ok "channel-check: the partial case warns" \
+  || bad "partial case produced no warning ('$msg')"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
