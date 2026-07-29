@@ -167,7 +167,7 @@ run. Reset it with a "forget the reviewers" request.
 - `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / channel-check / compose
 - `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / ensure-skill / doctor / verify-vendor / vendor-of-model
 - `scripts/multi-review-pr.sh` — PR ingest (via `gh`), `refresh` for a later round, per-round head/merge-base records, content-based anchor remapping, + the one-neutral-review publish
-- `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2: `local-copy` (docs — fence-aware region mapping) and `pr-copy` (PRs — what the author pushed since the last round, guarded against rebases and forward merges)
+- `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2: `local-copy` (docs — fence-aware region mapping) and `pr-copy` (PRs — what the author pushed since the last round as a `git diff -W -U10` delta with function context, guarded against rebases, forward merges, and a scoped copy that comes out no smaller than the full diff it replaces). Every path that cannot scope exits 3 with its reason and the round falls back to the full artifact, announced.
 - `scripts/multi-review-core.sh` — marker state; `-wait.sh` — bounded per-copy wait;
   `-egress-guard.sh` — path validation; `-build-reviewer-bundle.sh` — regenerate the skill bundle;
   `-history-check.sh` — pre-publish sensitive-term gate (see `PUBLISHING.md`)

@@ -248,13 +248,21 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      Exit 3 here is common and expected — a rebase, a force-push, a forward merge of the base
      branch, or an unchanged head all trip it. Fall back exactly as below and relay the reason.
 
+     The copy carries the delta with **function context** (`git diff -W -U10`) and **no whole-file
+     text**: hunks extend to their enclosing function, which is where the invariant a fix depends
+     on actually lives. Emitting each touched file in full was the original rule and cost 48–412%
+     of the round it replaced, because that scales with the size of the files touched rather than
+     with the size of the change.
+
      Either way, `local-copy`/`pr-copy` writes the whole copy, header and marker included — do
      NOT also rewrite the header on this path.
 
-     **Exit 3 is not a failure**: the round cannot be scoped (no retained prior baseline, or an
-     empty delta). Fall back to `cp "<doc>.baseline" "<doc>.<id>"` plus the header rewrite, and
-     **relay the reason it printed** in the round's message — a degraded round is never silent.
-     Any other non-zero exit is a real error: stop and surface it.
+     **Exit 3 is not a failure**: the round cannot be scoped — no retained prior baseline, an
+     empty delta, a PR whose history moved (rebase, force-push, forward merge, unresolvable head),
+     or **the scoped copy came out no smaller than the full artifact it would replace**, in which
+     case the notice names both byte counts. Fall back to `cp "<doc>.baseline" "<doc>.<id>"` plus
+     the header rewrite, and **relay the reason it printed** in the round's message — a degraded
+     round is never silent. Any other non-zero exit is a real error: stop and surface it.
 
      An **empty delta** also means nothing changed since the last round, which is a converge
      signal — prefer converging over re-fanning. The decision stays yours; #30's triggers govern
