@@ -275,11 +275,14 @@ cmd_pr_copy() {
   local tmp; tmp="$(mktemp -d)" || die "cannot create temp dir" 1
   SCOPE_TMP="$tmp"
 
-  git -C "$root" diff -U0 "$since" "$head" > "$tmp/diff" 2>/dev/null \
+  # -W extends each hunk to its enclosing function; -U10 is the floor where git finds no funcname
+  # boundary, so this is never worse than fixed context. Whole-file text was the pre-amendment
+  # rule (spec §11 Q2) and cost 48-412% of the round it replaced: its cost scaled with the SIZE OF
+  # THE FILES TOUCHED rather than with the size of the change, which is the dependency §2 of the
+  # spec exists to remove.
+  git -C "$root" diff -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
     || cannot "git diff failed between $since and $head"
   [[ -s "$tmp/diff" ]] || cannot "empty delta — nothing was pushed since round $((round - 1))"
-
-  git -C "$root" diff --name-only "$since" "$head" > "$tmp/files" 2>/dev/null || : > "$tmp/files"
 
   printf '# PR review — scoped round %s\n\n' "$round"
   printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
@@ -290,20 +293,6 @@ cmd_pr_copy() {
   printf '## Changes since round %s\n\n' "$((round - 1))"
   local fence; fence="$(_fence_for "$tmp/diff")"
   printf '%sdiff\n' "$fence"; cat "$tmp/diff"; printf '%s\n\n' "$fence"
-
-  # Full current text of each touched file, read AT THE HEAD — never the working tree, which is
-  # normally checked out on the base branch during a review and would pair the head's diff with
-  # a different revision's bytes. Each file is demarcated by path and fenced: raw source is not
-  # self-labelling the way a markdown section is, and an unfenced `## ` line inside an included
-  # markdown file would otherwise read as structure.
-  local f
-  while IFS= read -r f; do
-    [[ -n "$f" ]] || continue
-    git -C "$root" show "${head}:${f}" > "$tmp/file" 2>/dev/null || continue
-    printf '### %s\n\n' "$f"
-    local ffence; ffence="$(_fence_for "$tmp/file")"
-    printf '%s\n' "$ffence"; cat "$tmp/file"; printf '%s\n\n' "$ffence"
-  done < "$tmp/files"
 
   printf '## Review\n\n'
 }

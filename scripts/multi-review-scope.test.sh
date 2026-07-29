@@ -232,19 +232,10 @@ out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$B
 [[ $rc -eq 0 ]] && ok "pr-copy: exits 0 on a scopeable delta" || bad "pr-copy rc=$rc"
 grep -q '^## Changes since round 1$' <<<"$out" && ok "pr-copy: diff heading" || bad "pr-copy no diff heading"
 grep -q 'line added' <<<"$out" && ok "pr-copy: emits the delta" || bad "pr-copy delta missing"
-grep -q '^### f\.txt$' <<<"$out" && ok "pr-copy: file text demarcated by path" || bad "no ### <path> heading"
 grep -q '^<!-- multi-review: awaiting-reviewer · round 2/5 -->$' <<<"$out" \
   && ok "pr-copy: writes a copy marker" || bad "pr-copy marker missing"
 [[ "$(grep -v '^$' <<<"$out" | tail -1)" == "## Review" ]] \
   && ok "pr-copy: ends with an empty ## Review" || bad "pr-copy ## Review not last"
-
-# --- the file text comes from the HEAD, not the working tree ---
-( cd "$GR" && printf 'WORKTREE ONLY\n' > f.txt ) >/dev/null 2>&1
-out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
-        --head "$H2" --merge-base "$BASE" "$GR" 2>/dev/null)"
-grep -q 'WORKTREE ONLY' <<<"$out" && bad "pr-copy read the working tree, not the head" \
-  || ok "pr-copy: file text read at the head (git show)"
-( cd "$GR" && git checkout -q -- f.txt ) >/dev/null 2>&1
 
 # --- exit 3: unresolvable --since ---
 bash "$SUT" pr-copy --round 2 --max 5 --since deadbeefdeadbeef --merge-base-prev "$BASE" \
@@ -281,6 +272,44 @@ bash "$SUT" pr-copy --round 3 --max 5 --since "$H2" --merge-base-prev "$BASE" \
 bash "$SUT" pr-copy --round 2 --max 5 --since "$H2" --merge-base-prev "$BASE" \
   --head "$H2" --merge-base "$BASE" "$GR" >/dev/null 2>&1
 [[ $? -eq 3 ]] && ok "pr-copy: exit 3 on an empty delta" || bad "empty delta not exit 3"
+
+# --- Q2: the copy carries the DELTA WITH FUNCTION CONTEXT, and no whole-file text ---
+# Fixture geometry is load-bearing and two obvious versions are vacuous:
+#   * git writes the enclosing funcname into the @@ header with OR without -W, so asserting on
+#     "target_fn" passes under a bare -U10 and pins nothing. Assert on a CONTEXT line at the top
+#     of the function body (inner_pad_1) instead — only -W reaches it.
+#   * -W -U10 still applies 10 lines of context PAST the function start, so the over-reach probe
+#     needs the preceding function to be more than 10 lines away (hence head_pad_1..20).
+( cd "$GR" && { echo 'header_untouched() {'; \
+    for i in $(seq 1 20); do echo "  head_pad_$i"; done; \
+    echo '}'; echo; \
+    echo 'target_fn() {'; \
+    for i in $(seq 1 20); do echo "  inner_pad_$i"; done; \
+    echo '  echo before'; \
+    echo '}'; echo; \
+    for i in $(seq 1 60); do echo "trailing_filler_$i"; done; } > big.sh \
+  && git add big.sh && git commit -qm addbig ) >/dev/null 2>&1
+BIG1="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && sed 's/echo before/echo AFTER/' big.sh > big.tmp && mv big.tmp big.sh \
+  && git commit -qam changebig ) >/dev/null 2>&1
+BIG2="$(cd "$GR" && git rev-parse HEAD)"
+
+# Guard the fixture itself: if -U10 already reaches inner_pad_1, the -W assertion below is vacuous.
+u10=$(cd "$GR" && git diff -U10 "$BIG1" "$BIG2" | grep -c 'inner_pad_1$')
+[[ "$u10" -eq 0 ]] && ok "fixture: a bare -U10 cannot reach inner_pad_1 (so the -W test bites)" \
+  || bad "fixture does not distinguish -W from -U10 (inner_pad_1 already in -U10)"
+
+out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$BIG1" --merge-base-prev "$BASE" \
+        --head "$BIG2" --merge-base "$BASE" "$GR" 2>/dev/null)"
+grep -q 'echo AFTER' <<<"$out" && ok "pr-copy: emits the changed line" || bad "changed line missing"
+grep -q 'trailing_filler_60' <<<"$out" && bad "pr-copy emitted untouched file text (Q2 regression)" \
+  || ok "pr-copy: no whole-file text — the untouched tail is absent"
+grep -q '^### big\.sh$' <<<"$out" && bad "pr-copy still emits per-file text headings" \
+  || ok "pr-copy: no ### <path> file-text heading"
+grep -q 'inner_pad_1$' <<<"$out" && ok "pr-copy: -W reaches the top of the enclosing function" \
+  || bad "no function context — -W not applied (a bare -U10 cannot reach inner_pad_1)"
+grep -q 'head_pad_1$' <<<"$out" && bad "-W over-reached into the preceding function" \
+  || ok "pr-copy: function context stops at the enclosing function"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
