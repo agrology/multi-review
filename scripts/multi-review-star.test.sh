@@ -1383,6 +1383,110 @@ RSNM="${WORK}/rs-nomarker.md"
 bash "$SUT" round-stats "$RSNM" >/dev/null 2>&1 \
   && bad "round-stats accepted a doc with no marker" || ok "round-stats: missing marker fails loud"
 
+# --- channel-check: reviewer findings that land outside the merged region (issue #32) ---
+# mkcopy <name> <body-lines...> : a working copy; the LAST "## Review" is the finding channel
+mkcc() { local p="${WORK}/$1"; shift; printf '%s\n' "$@" > "$p"; echo "$p"; }
+
+# a doc whose BODY documents the grammar inside a fence — findings there are documentation,
+# present in BOTH baseline and copy, and must not be mistaken for misplaced reviewer output
+CCB="$(mkcc ccb.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review')"
+
+# (a) a conforming turn: findings under the LAST ## Review
+CCG="$(mkcc ccg.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review' \
+  '> [finding:r1|med] a real finding' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --seed "$CCB" "$CCG" >/dev/null 2>&1 \
+  && ok "channel-check: conforming turn passes" || bad "channel-check rejected a conforming turn"
+
+# (b) the #32 shape: findings appended under the FENCED ## Review, before the real one
+CCX="$(mkcc ccx.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' \
+  '> [finding:r9|high] a REAL finding written in the wrong place' '> — via gpt-5' '> — risk: r' \
+  '```' '' '## Review')"
+bash "$SUT" channel-check --seed "$CCB" "$CCX" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: findings outside the channel fail loud" \
+  || bad "a whole reviewer turn outside the channel was accepted (issue #32)"
+
+# (c) a silent turn (no findings at all) is NOT an error — a reviewer may genuinely find nothing
+CCN="$(mkcc ccn.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review')"
+bash "$SUT" channel-check --seed "$CCB" "$CCN" >/dev/null 2>&1 \
+  && ok "channel-check: a genuinely empty turn passes" || bad "empty turn rejected"
+
+# (d) the message names the counts, so the quarantine reason is actionable
+msg="$(bash "$SUT" channel-check --seed "$CCB" "$CCX" 2>&1 >/dev/null)"
+[[ "$msg" == *"NONE of the reviewer's 1 finding(s) reached"* ]] \
+  && ok "channel-check: reason names the exact count" || bad "counts wrong/loose ('$msg')"
+
+# (e) a missing baseline is a usage error, not a silent pass
+bash "$SUT" channel-check --seed "${WORK}/nope.md" "$CCG" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: missing baseline fails" || bad "missing baseline passed"
+
+# --- the reason names the actual shape, since it becomes a quarantine reason ---
+CCH="$(mkcc cch.md '# Doc' '> [finding:r1|low] appended with no channel at all')"
+CCHB="$(mkcc cchb.md '# Doc')"
+msg="$(bash "$SUT" channel-check --seed "$CCHB" "$CCH" 2>&1 >/dev/null)"
+[[ "$msg" == *"NO '## Review' heading"* ]] \
+  && ok "channel-check: no-heading shape is named accurately" \
+  || bad "no-heading case reported as a fenced-capture ('$msg')"
+msg="$(bash "$SUT" channel-check --seed "$CCB" "$CCX" 2>&1 >/dev/null)"
+[[ "$msg" == *"earlier or fenced"* ]] \
+  && ok "channel-check: fenced-capture shape still named correctly" \
+  || bad "fenced-capture case mis-reported ('$msg')"
+
+# --- codex-rd1-r1: a turn FENCED after the real heading is stripped by merge, so it is stray ---
+CCF="$(mkcc ccf.md '# Doc' '' '## Review')"
+CCF2="$(mkcc ccf2.md '# Doc' '' '## Review' '```' '> [finding:r1|med] fenced after the heading' '> — via gpt-5' '```')"
+bash "$SUT" channel-check --seed "$CCF" "$CCF2" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: fenced AFTER the heading is stray (merge strips it)" \
+  || bad "a fenced-after-heading turn passed but merge would drop it (codex-rd1-r1)"
+
+# --- fable-rd1-r1: a SCOPED round-N copy must be checked against its own seed, not the full doc ---
+# The seed is the scoped copy as dispatched; a misplaced finding in it must still be caught.
+SEED="$(mkcc seed.md '# Doc' '' '## B' '' 'b' '' '## Review')"
+SBAD="$(mkcc sbad.md '# Doc' '' '## B' '' '```' '## Review' '> [finding:r9|high] MISPLACED' '```' '' '## Review')"
+bash "$SUT" channel-check --seed "$SEED" "$SBAD" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: misplaced finding in a scoped round is caught" \
+  || bad "scoped round absorbed a misplaced finding (fable-rd1-r1)"
+
+# --- fable-rd1-r5: deleting a pre-existing finding cannot offset a misplaced one ---
+DSEED="$(mkcc dseed.md '# Doc' '' '```' '> [finding:x|low] doc example' '```' '' '## Review')"
+DBAD="$(mkcc dbad.md '# Doc' '' '```' '## Review' '> [finding:r1|high] MISPLACED' '```' '' '## Review')"
+bash "$SUT" channel-check --seed "$DSEED" "$DBAD" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: a deleted line cannot offset a misplaced finding" \
+  || bad "deletion offset a stray finding to zero (fable-rd1-r5)"
+
+# --- a conforming SCOPED turn must not false-positive ---
+SOK="$(mkcc sok.md '# Doc' '' '## B' '' 'b' '' '## Review' '> [finding:r1|med] real' '> — via gpt-5')"
+bash "$SUT" channel-check --seed "$SEED" "$SOK" >/dev/null 2>&1 \
+  && ok "channel-check: conforming scoped turn passes" || bad "false positive on a scoped turn"
+
+# --- codex-rd2-r1 / fable-rd2-r1: --baseline is REFUSED, not silently aliased ---
+bash "$SUT" channel-check --baseline "$CCB" "$CCX" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "channel-check: --baseline refused with a usage error" \
+  || bad "--baseline still accepted (reintroduces the scoped-round false negative)"
+
+# --- fable-rd2-r3: the exit-1 / exit-2 split the prose routes on is pinned ---
+bash "$SUT" channel-check --seed "$CCB" "$CCX" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: detection exits 1" || bad "detection did not exit 1"
+bash "$SUT" channel-check --seed "${WORK}/nope.md" "$CCX" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "channel-check: infra/usage exits 2" || bad "missing seed did not exit 2"
+bash "$SUT" channel-check --seed >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "channel-check: missing flag value exits 2" || bad "bare --seed did not exit 2"
+
+# --- fable-rd2-r4: a turn that REACHED the channel is not quarantined for a quoted example ---
+QSEED="$(mkcc qseed.md '# Doc' '' '## Review')"
+QMIX="$(mkcc qmix.md '# Doc' '' '## Review' \
+  '> [finding:r1|med] a real finding that DID reach the channel' '> — via gpt-5' \
+  '> — evidence: the grammar is' '```' '> [finding:x|low] quoted example' '```')"
+bash "$SUT" channel-check --seed "$QSEED" "$QMIX" >/dev/null 2>&1
+[[ $? -eq 0 ]] && ok "channel-check: a quoted example does not quarantine a landed turn" \
+  || bad "false positive on a turn that reached the channel (fable-rd2-r4)"
+msg="$(bash "$SUT" channel-check --seed "$QSEED" "$QMIX" 2>&1 >/dev/null)"
+[[ "$msg" == *"will merge normally"* ]] && ok "channel-check: the partial case warns" \
+  || bad "partial case produced no warning ('$msg')"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

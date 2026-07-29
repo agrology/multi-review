@@ -238,6 +238,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    (`<N>` is the round this fan-out is running; no `reviewers:` suffix on a working copy.) The
    copy carries the empty `## Review` heading from step 1; the secondary appends findings beneath.
+
+   **Now — with the header final on every path, scoped or not — snapshot each copy as
+   dispatched:** `cp "<doc>.<id>" "<doc>.<id>.seed"`. Step 6's `channel-check` diffs against this.
+   It is the only faithful record of what the reviewer was handed; for a scoped round
+   `<doc>.baseline` is NOT it, and `channel-check` refuses `--baseline` for that reason. Do this
+   AFTER the header rewrite — a pre-rewrite snapshot differs from the dispatched copy. Retain it
+   with the other working files; the terminal gate releases it.
 3. **Provision each secondary's skill, right before dispatch.** The working root is the git
    toplevel of the repo under review — your own invocation directory (`git rev-parse
    --show-toplevel`) — **never** `<doc>`'s own location: for a PR-flavor doc, `<doc>` is a
@@ -280,6 +287,24 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    "<doc>.baseline" "<doc>.<id>" --reviewer <id>`. Pass → admit the copy into the merge. Fail →
    quarantine: exclude it and record `--quarantined <id>:<reason>` (the reason is
    `verify-vendor`'s message, or "no response within the wait bound" from step 5).
+
+   **Then check the findings actually reached the channel** (issue #32):
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh channel-check --seed "<doc>.<id>.seed"
+   "<doc>.<id>"`. **`--seed` is the copy AS DISPATCHED, not `<doc>.baseline`** — from round 2 a
+   copy may be a scoped reduction, and differencing that against the full baseline lets absent
+   lines absorb misplaced findings, which would miss the very incident #32 came from.
+   **Exit 1** — NONE of that reviewer's findings reached what `merge` ingests → **quarantine that
+   provider** with the message as the reason.
+   **Exit 0 with a `note —` line on stderr** — some findings landed and some did not (usually a
+   quoted example inside a fence). The turn is admitted; relay the note at the gate.
+   **Exit 2** — a usage/infra error on YOUR side (bad path, missing value). Fix the invocation.
+   **Never quarantine a reviewer for an exit 2.** `merge` reads only the text after the LAST `## Review`, so a reviewer that
+   appended under an earlier one — a `## Review` inside a fenced example, which any doc about
+   this protocol legitimately contains — has its **entire turn silently discarded**: nothing else
+   catches it, and `gate-summary` then shows that provider as admitted with zero findings,
+   indistinguishable from one that genuinely found nothing. If a re-dispatch is cheap, prefer re-running that
+   secondary with an explicit instruction to append under the LAST `## Review`, outside any
+   fence — the findings are usually real and merely misplaced.
    - **All secondaries quarantined** (including `fable`) → an **anomaly stop**: do not advance the
      marker; surface every quarantine reason and STOP. A round with zero trustworthy findings
      cannot merge. (In practice `fable` runs in-harness and should always be admissible, so this
@@ -288,8 +313,8 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    <id>:<reason> ...] "<doc>" <admitted copies...>`.
 8. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
-   `<doc>.manifest`, `<doc>.baseline`, and every `<doc>.baseline.rd<N>` — the terminal gate
-   releases them.
+   `<doc>.<id>.seed` for every provider, `<doc>.manifest`, `<doc>.baseline`, and every
+   `<doc>.baseline.rd<N>` — the terminal gate releases them.
 
 #### Primary turn (on `awaiting-primary`)
 
@@ -393,8 +418,8 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
 
   This is the **human gate**: never implement, commit, or open/merge a PR from this command. Only
   once the engineer confirms the review is done, remove the retained working files
-  (`<doc>.<id>` for every provider, `<doc>.manifest`, `<doc>.baseline`, and every
-  `<doc>.baseline.rd<N>`) — never before the gate,
+  (`<doc>.<id>` and `<doc>.<id>.seed` for every provider, `<doc>.manifest`, `<doc>.baseline`,
+  and every `<doc>.baseline.rd<N>`) — never before the gate,
   since the gate is presented FROM them (`check-converged`/`gate-summary` read the manifest).
 
 ## Guardrails

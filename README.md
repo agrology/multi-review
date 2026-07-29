@@ -160,7 +160,7 @@ run. Reset it with a "forget the reviewers" request.
 - `docs/multi-review.md` — the star protocol contract (also vendored into the reviewer skill)
 - `.agents/skills/multi-review/` — the self-contained reviewer skill, auto-provisioned into consumer repos for `codex` (git-ignored)
 - `.claude-plugin/plugin.json` — plugin manifest
-- `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / compose
+- `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / channel-check / compose
 - `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / ensure-skill / doctor / verify-vendor / vendor-of-model
 - `scripts/multi-review-pr.sh` — PR ingest (via `gh`) + the one-neutral-review publish
 - `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2 (local docs): body reduction, fence-aware region mapping, `local-copy`
