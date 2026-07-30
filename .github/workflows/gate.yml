@@ -46,8 +46,16 @@ jobs:
         # rested on image contents this workflow neither pins nor verifies (fable-rd1-r4).
         # A shim directory makes every nested `bash` resolve to the pinned interpreter.
         run: |
+          # Resolve to an ABSOLUTE path first. The matrix value is a bare `bash` on Linux, and
+          # `ln -sf bash shim/bash` makes the link point at ITSELF — "Too many levels of symbolic
+          # links", which took the Linux leg down in 4s the first time this step ran.
+          target="$(command -v '${{ matrix.sh }}')"
+          [ -x "$target" ] || { echo "::error::cannot resolve interpreter '${{ matrix.sh }}'"; exit 1; }
           mkdir -p "$RUNNER_TEMP/shim"
-          ln -sf '${{ matrix.sh }}' "$RUNNER_TEMP/shim/bash"
+          ln -sf "$target" "$RUNNER_TEMP/shim/bash"
+          # Prove the link resolves to a real interpreter before anything depends on it.
+          "$RUNNER_TEMP/shim/bash" -c 'echo "shim resolves to bash $BASH_VERSION"' \
+            || { echo "::error::shim is not executable"; exit 1; }
           echo "$RUNNER_TEMP/shim" >> "$GITHUB_PATH"
 
       - name: Tool inventory
