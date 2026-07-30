@@ -264,6 +264,18 @@ mutations() {
 
 if (( list )); then mutations; exit 0; fi
 
+# Validate --only BEFORE the baseline. Discovering "no such id" after a two-minute full-gate sweep is
+# slow and, worse, fragile: any unrelated redness in the environment turns a simple usage error into
+# a "gate is already red" refusal, so the caller gets a message about the wrong problem entirely.
+if [[ -n "$only" ]]; then
+  ids="$( ( list=1; mutations ) | awk '{print $1}' )"
+  if ! grep -qxF "$only" <<< "$ids"; then
+    echo "mutation-check: no such mutation id: ${only}" >&2
+    echo "mutation-check: run --list to see the table; no mutation ran." >&2
+    exit 2
+  fi
+fi
+
 # A GREEN BASELINE IS A PRECONDITION, not a nicety. Every verdict this script reaches is a
 # comparison against "the gate passes unmutated": a survivor means the mutation changed nothing, and
 # a catch means the mutation broke a named test. On an already-red gate both readings are worthless —

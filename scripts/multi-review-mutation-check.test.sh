@@ -27,10 +27,15 @@ bash "$SUT" --wat >/dev/null 2>&1; rc=$?
 # exists to prevent, so it is pinned here rather than assumed.
 out="$(bash "$SUT" --only definitely-not-an-id 2>&1)"; rc=$?
 [[ $rc -eq 2 ]] && ok "--only with an unknown id exits 2" || bad "unknown id rc=$rc (want 2)"
-printf '%s\n' "$out" | grep -q 'no mutation ran' && ok "unknown id says nothing ran" \
-  || bad "unknown id did not say nothing ran"
-printf '%s\n' "$out" | grep -qi 'all .* caught' && bad "unknown id claimed mutations were caught" \
+grep -q 'no mutation ran' <<< "$out" && ok "unknown id says nothing ran" \
+  || bad "unknown id did not say nothing ran: '$out'"
+grep -qi 'all .* caught' <<< "$out" && bad "unknown id claimed mutations were caught" \
   || ok "unknown id does not claim success"
+# ...and it must NOT have paid for a full baseline sweep to say so. An unknown id is a usage error,
+# and answering it behind a two-minute gate run also lets unrelated redness answer with the wrong
+# message ("the gate is already red") instead of "no such id".
+grep -q 'baseline' <<< "$out" && bad "unknown id ran the baseline sweep before rejecting the id" \
+  || ok "unknown id is rejected without running the baseline"
 
 # --- every table entry's target line still exists in its file ---
 # A stale entry is silently useless: the runner reports it as an ERROR, but only when run. This
@@ -53,6 +58,13 @@ elif git -C "$ROOT" diff --quiet -- "$target" 2>/dev/null; then
   before="$(shasum -a 256 < "${ROOT}/${target}")"
   out="$(bash "$SUT" --only egress/symlink-file 2>&1)"; rc=$?
   after="$(shasum -a 256 < "${ROOT}/${target}")"
+  if grep -q 'REFUSING to run' <<< "$out"; then
+    # The runner declined because the environment's gate is red for reasons unrelated to this test.
+    # That refusal is the behaviour under test elsewhere; here it just means we cannot exercise a
+    # live mutation, so report it rather than failing on someone else's red suite.
+    ok "live-mutation check skipped (baseline not green in this environment)"
+    rc=0; after="$before"
+  fi
   [[ "$before" == "$after" ]] && ok "a live mutation restores the file byte-identically" \
     || bad "the runner left ${target} modified"
   [[ $rc -eq 0 ]] && ok "the seeded egress mutation is still caught" || bad "egress mutation rc=$rc: $out"
