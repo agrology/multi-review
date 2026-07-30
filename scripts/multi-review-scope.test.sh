@@ -317,6 +317,18 @@ grep -q 'inner_pad_1$' <<<"$out" && ok "pr-copy: -W reaches the top of the enclo
 grep -q 'head_pad_1$' <<<"$out" && bad "-W over-reached into the preceding function" \
   || ok "pr-copy: function context stops at the enclosing function"
 
+# --- diff.external must NOT reach the copy: git diff is porcelain and honours it, so a
+# difftastic/delta user would otherwise be shipped driver output as "what the author pushed",
+# exit 0, with the size guard comparing that output (fable-rd1-r4, reproduced).
+( cd "$GR" && git config diff.external 'echo EXTERNAL-DIFF-RAN' ) >/dev/null 2>&1
+out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+        --head "$H2" --merge-base "$BASE" "$GR" 2>/dev/null)"
+grep -q 'EXTERNAL-DIFF-RAN' <<<"$out" && bad "pr-copy shipped external diff driver output" \
+  || ok "pr-copy: --no-ext-diff — an external diff driver cannot reach the copy"
+grep -q 'line added' <<<"$out" && ok "pr-copy: still a real unified diff under diff.external" \
+  || bad "pr-copy produced no usable diff with diff.external set"
+( cd "$GR" && git config --unset diff.external ) >/dev/null 2>&1
+
 # ===================== A2: the never-worse guard (both subcommands) =====================
 # A revert-shaped round 2: the author backs out most of what round 1 did, so the whole-PR diff
 # shrinks toward empty while the round-2 delta is the entire revert. Realistic ("back this out")
@@ -367,8 +379,9 @@ hfp=$(cd "$GR" && git diff "$BASE" "$H2" | wc -c | tr -d ' ')
 P9="$(mkbase prevw.md '## A' '' 'x')"
 C9="$(mkbase currw.md '## A' '' 'x' '' '## B' '' "$(seq 1 200 | tr '\n' ' ')")"
 bash "$SUT" local-copy --round 2 --max 5 --prev "$P9" --curr "$C9" >/dev/null 2>&1
-[[ $? -eq 0 ]] && ok "local-copy: still unguarded (documented gap — see the follow-up issue)" \
-  || bad "local-copy behaviour changed unexpectedly (rc=$?) — the guard gap note is now stale"
+lc_rc=$?   # capture BEFORE the test, or the failure branch reports the [[ ]]'s own status (always 1)
+[[ $lc_rc -eq 0 ]] && ok "local-copy: still unguarded (documented gap — see issue #41)" \
+  || bad "local-copy behaviour changed unexpectedly (rc=$lc_rc) — the guard gap note is now stale"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

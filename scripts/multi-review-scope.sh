@@ -6,8 +6,9 @@
 #       -> scoped copy of a local doc: the delta plus the full text of every region it touches
 #   pr-copy    --round <N> --max <M> --since <sha> --merge-base-prev <sha> \
 #              --head <sha> --merge-base <sha> <repo-root>
-#       -> scoped copy of a PR round: what the author pushed since the previous round, plus the
-#          full text at the head of every file that delta touches
+#       -> scoped copy of a PR round: what the author pushed since the previous round, as a
+#          `git diff -W -U10` delta — hunks extended to their enclosing function, NO whole-file
+#          text (emitting each touched file in full cost 48-412% of the round it replaced)
 #
 # Both print a complete copy on stdout, and both use:
 #       exit 3 = cannot scope; caller falls back to the full artifact and relays the reason
@@ -298,14 +299,17 @@ cmd_pr_copy() {
   # rule (spec §11 Q2) and cost 48-412% of the round it replaced: its cost scaled with the SIZE OF
   # THE FILES TOUCHED rather than with the size of the change, which is the dependency §2 of the
   # spec exists to remove.
-  git -C "$root" diff -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
+  # --no-ext-diff: `git diff` is porcelain and honours `diff.external`, so a difftastic/delta
+  # user would otherwise have the driver's output shipped as "what the author pushed" — exit 0,
+  # not a unified diff, and the size guard comparing driver output. Reproduced.
+  git -C "$root" diff --no-ext-diff -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
     || cannot "git diff failed between $since and $head"
   [[ -s "$tmp/diff" ]] || cannot "empty delta — nothing was pushed since round $((round - 1))"
 
   # basis: scoped diff payload vs whole-PR diff payload (both raw `git diff`, boilerplate cancels).
   # Excluding the scratch's description and review channel from the full side makes this guard
   # STRICTER, never looser. Evaluated before any output, so exit 3 prints nothing on stdout.
-  git -C "$root" diff "$mb" "$head" > "$tmp/full" 2>/dev/null \
+  git -C "$root" diff --no-ext-diff "$mb" "$head" > "$tmp/full" 2>/dev/null \
     || cannot "git diff failed between $mb and $head"
   local scoped_bytes full_bytes
   scoped_bytes="$(wc -c < "$tmp/diff" | tr -d ' ')"
