@@ -1,0 +1,129 @@
+name: gate
+
+# The repo's verification gate (CLAUDE.md §11), mechanized. Until now it ran only on the
+# maintainer's machine, guarded by a `pre-push` hook that `--no-verify` bypasses and that a merge
+# performed on GitHub never runs at all.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: nothing here writes to the repo, comments, or reads secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    # Both platforms, deliberately. The scripts target bash 3.2 (macOS `/bin/bash`), so a
+    # 3.2-incompatible construct is invisible on Ubuntu's bash 5 — while Ubuntu is what catches the
+    # GNU-vs-BSD divergences behind this repo's `tr`, `grep` and locale bugs. Neither leg is
+    # redundant; they fail for different reasons.
+    name: suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            sh: bash
+          - os: macos-latest
+            sh: /bin/bash      # pin the 3.2 the code claims to support, not a brewed bash 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # version-check compares against origin/main and never fetches it itself.
+          fetch-depth: 0
+
+      - name: Pin the interpreter for nested layers
+        # The matrix `sh` only pins the TOP layer: suites invoke the scripts under test as
+        # `bash "$SUT"`, and the mutation runner invokes suites as `bash "$t"`, both of which resolve
+        # `bash` on PATH. So a 3.2-incompatible construct in a SCRIPT (rather than a test file) could
+        # pass the macOS leg whenever the image ships a newer bash earlier on PATH — the guarantee
+        # rested on image contents this workflow neither pins nor verifies (fable-rd1-r4).
+        # A shim directory makes every nested `bash` resolve to the pinned interpreter.
+        run: |
+          # Resolve to an ABSOLUTE path first. The matrix value is a bare `bash` on Linux, and
+          # `ln -sf bash shim/bash` makes the link point at ITSELF — "Too many levels of symbolic
+          # links", which took the Linux leg down in 4s the first time this step ran.
+          target="$(command -v '${{ matrix.sh }}')"
+          [ -x "$target" ] || { echo "::error::cannot resolve interpreter '${{ matrix.sh }}'"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/shim"
+          ln -sf "$target" "$RUNNER_TEMP/shim/bash"
+          # Prove the link resolves to a real interpreter before anything depends on it.
+          "$RUNNER_TEMP/shim/bash" -c 'echo "shim resolves to bash $BASH_VERSION"' \
+            || { echo "::error::shim is not executable"; exit 1; }
+          echo "$RUNNER_TEMP/shim" >> "$GITHUB_PATH"
+
+      - name: Tool inventory
+        # Printed, not assumed. A missing interpreter otherwise surfaces as an unrelated assertion
+        # failure deep in a suite.
+        run: |
+          for t in jq python3 shasum sha256sum git awk sed grep; do
+            printf '%-10s %s\n' "$t" "$(command -v "$t" || echo 'MISSING')"
+          done
+          printf 'interpreter %s\n' '${{ matrix.sh }}'
+          ${{ matrix.sh }} --version | head -1
+          # What a NESTED `bash "$SUT"` will actually get — the number that matters:
+          printf 'nested bash  %s\n' "$(command -v bash)"
+          bash -c 'echo "nested version $BASH_VERSION"'
+
+      - name: Install jq if absent
+        run: command -v jq >/dev/null || (brew install jq || sudo apt-get install -y jq)
+
+      - name: Test suites
+        run: |
+          fails=0
+          for t in scripts/*.test.sh; do
+            echo "── $(basename "$t")"
+            ${{ matrix.sh }} "$t" || { echo "SUITE FAILED: $t"; fails=$((fails+1)); }
+          done
+          [ "$fails" -eq 0 ] || { echo "::error::${fails} suite(s) failed"; exit 1; }
+
+      - name: Version bump
+        # No-ops on main by design (there is no base to compare against), so this is really a
+        # pull_request check — and it is the one the pre-push hook structurally cannot cover, since
+        # a merge button runs no local hook.
+        run: |
+          # NOT `|| true`. version-check exits 0 when it cannot find a base ref — "cannot compute a
+          # delta, skipping" is a deliberate pass so a tarball install does not fail the gate. That
+          # makes THIS fetch the only thing standing between a PR and a vacuous version check, so
+          # swallowing its failure would silently disarm the one gate step the pre-push hook cannot
+          # cover (codex-rd1-codex-3, fable-rd1-r5).
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git rev-parse --verify refs/remotes/origin/main >/dev/null \
+            || { echo "::error::origin/main unavailable — the version check would pass vacuously"; exit 1; }
+          scripts/multi-review-version-check.sh
+
+  lint:
+    # shellcheck is static and platform-independent, so once is enough.
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          # The documented gate covers scripts/multi-review-*.sh. `.githooks/pre-push` is outside
+          # that glob and is the script that gates every push, so it is included here.
+          shellcheck --severity=warning scripts/multi-review-*.sh
+          shellcheck --severity=warning --shell=bash .githooks/pre-push
+
+  mutation:
+    # Proves the suites actually catch the removal of each guard. Twice in this repo a security
+    # guard shipped with zero coverage and a fully green gate; this is the check that finds that.
+    # One platform only: it measures whether a TEST exists, not how a platform behaves, and it is
+    # the slowest job by far.
+    name: mutation coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install jq if absent
+        run: command -v jq >/dev/null || sudo apt-get install -y jq
+      - name: Mutation table
+        run: scripts/multi-review-mutation-check.sh --list
+      - name: Mutation sweep
+        run: scripts/multi-review-mutation-check.sh

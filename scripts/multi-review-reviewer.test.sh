@@ -782,18 +782,22 @@ grep -qi 'drift' <<<"$out" && ok "doctor: codex drift advisory still surfaced" |
 RREPO="${WORK}/rrepo"; mkdir -p "$RREPO/docs/specs"; ( cd "$RREPO" && git init -q )
 printf 'OK\n' > "$RREPO/docs/specs/d.md"
 printf '#!/usr/bin/env bash\necho OK\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"   # probe passes
+# Every `check --reviewer gemini` below MUST run with $DBIN on PATH. Without it these
+# assertions silently depend on a real gemini CLI being installed on the machine: they pass on
+# a developer box and fail in CI with "gemini CLI not on PATH", which is not what they test.
+# (Exactly how they first failed once CI existed.)
 
 # (a) nothing ignored -> no readability hint at all. Precision matters: the OLD hint fired
 # unconditionally, which is why a real run read it, checked whether the review copies were
 # ignored (they were not), and correctly-but-wrongly concluded it did not apply.
-err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RREPO" && HOME="$RREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 ! grep -qi 'gitignore\|respectGitIgnore' <<<"$err" \
   && ok "check gemini: no readability hint when nothing is ignored" \
   || bad "check gemini: cried wolf with nothing ignored: '$err'"
 
 # (b) doc dir actually ignored -> hint NAMES the ignored path, not just the setting
 printf 'docs/specs/\n' > "$RREPO/.gitignore"
-err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RREPO" && HOME="$RREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 grep -qF 'docs/specs' <<<"$err" \
   && ok "check gemini: readability hint names the ignored path" \
   || bad "check gemini: hint does not name the unreadable path: '$err'"
@@ -815,7 +819,7 @@ grep -qi 'auth OK' <<<"$out" \
 # (d) the settings fix clears it — the hint and the doctor downgrade both go away
 mkdir -p "$RREPO/.gemini"
 printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/.gemini/settings.json"
-err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RREPO" && HOME="$RREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 ! grep -qi 'respectGitIgnore' <<<"$err" \
   && ok "check gemini: readability hint clears once respectGitIgnore is disabled" \
   || bad "check gemini: hint persists after the fix: '$err'"
@@ -829,7 +833,7 @@ grep -qE '✓ gemini: ready' <<<"$out" \
 rm -f "$RREPO/.gemini/settings.json"
 mkdir -p "$RREPO/home/.gemini"
 printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/home/.gemini/settings.json"
-err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RREPO" && HOME="$RREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 ! grep -qi 'respectGitIgnore' <<<"$err" \
   && ok "check gemini: user-scoped ~/.gemini/settings.json clears the readability hint" \
   || bad "check gemini: ignored the user-scoped opt-out: '$err'"
@@ -843,7 +847,7 @@ rm -rf "$RREPO/home/.gemini"
 # while gemini still refuses the actual review doc.
 RGLOB="${WORK}/rglob"; mkdir -p "$RGLOB"; ( cd "$RGLOB" && git init -q )
 printf 'docs/specs/*.md\n' > "$RGLOB/.gitignore"
-err="$(cd "$RGLOB" && HOME="$RGLOB/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RGLOB" && HOME="$RGLOB/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 grep -qF 'docs/specs' <<<"$err" \
   && ok "check gemini: catches a glob rule that ignores the docs but not the dir" \
   || bad "check gemini: missed a *.md ignore rule: '$err'"
@@ -855,14 +859,14 @@ grep -qF 'docs/specs' <<<"$err" \
 mkdir -p "$RREPO/home/.gemini" "$RREPO/.gemini"
 printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/home/.gemini/settings.json"
 printf '{"context":{"fileFiltering":{"respectGitIgnore":true}}}\n'  > "$RREPO/.gemini/settings.json"
-err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RREPO" && HOME="$RREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 grep -qF 'docs/specs' <<<"$err" \
   && ok "check gemini: a workspace 'true' overrides a user-scope 'false'" \
   || bad "check gemini: user scope wrongly won over workspace: '$err'"
 # and the reverse precedence still clears it
 printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$RREPO/.gemini/settings.json"
 printf '{"context":{"fileFiltering":{"respectGitIgnore":true}}}\n'  > "$RREPO/home/.gemini/settings.json"
-err="$(cd "$RREPO" && HOME="$RREPO/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RREPO" && HOME="$RREPO/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 ! grep -qi 'respectGitIgnore' <<<"$err" \
   && ok "check gemini: a workspace 'false' wins over a user-scope 'true'" \
   || bad "check gemini: workspace false did not win: '$err'"
@@ -872,7 +876,7 @@ rm -rf "$RREPO/home/.gemini" "$RREPO/.gemini"
 # flag and silently report nothing unreadable (PR#23 gemini-rd1-r3).
 RDASH="${WORK}/rdash"; mkdir -p "$RDASH"; ( cd "$RDASH" && git init -q )
 printf -- '-n/\n' > "$RDASH/.gitignore"
-err="$(cd "$RDASH" && HOME="$RDASH/home" MULTI_REVIEW_DOC_DIRS="-n" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RDASH" && HOME="$RDASH/home" MULTI_REVIEW_DOC_DIRS="-n" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 grep -qF -- '-n' <<<"$err" \
   && ok "check gemini: a path named -n survives the hint's formatting" \
   || bad "check gemini: echo swallowed the -n path: '$err'"
@@ -881,7 +885,7 @@ grep -qF -- '-n' <<<"$err" \
 # so that path is a readability blocker for gemini even when the doc dirs are clean.
 RPR="${WORK}/rpr"; mkdir -p "$RPR"; ( cd "$RPR" && git init -q )
 printf '.multi-review/\n' > "$RPR/.gitignore"
-err="$(cd "$RPR" && HOME="$RPR/home" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+err="$(cd "$RPR" && HOME="$RPR/home" PATH="${DBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 grep -qF '.multi-review' <<<"$err" \
   && ok "check gemini: names the gitignored PR scratch dir" \
   || bad "check gemini: missed the PR scratch blocker: '$err'"
