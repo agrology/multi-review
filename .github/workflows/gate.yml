@@ -38,6 +38,18 @@ jobs:
           # version-check compares against origin/main and never fetches it itself.
           fetch-depth: 0
 
+      - name: Pin the interpreter for nested layers
+        # The matrix `sh` only pins the TOP layer: suites invoke the scripts under test as
+        # `bash "$SUT"`, and the mutation runner invokes suites as `bash "$t"`, both of which resolve
+        # `bash` on PATH. So a 3.2-incompatible construct in a SCRIPT (rather than a test file) could
+        # pass the macOS leg whenever the image ships a newer bash earlier on PATH — the guarantee
+        # rested on image contents this workflow neither pins nor verifies (fable-rd1-r4).
+        # A shim directory makes every nested `bash` resolve to the pinned interpreter.
+        run: |
+          mkdir -p "$RUNNER_TEMP/shim"
+          ln -sf '${{ matrix.sh }}' "$RUNNER_TEMP/shim/bash"
+          echo "$RUNNER_TEMP/shim" >> "$GITHUB_PATH"
+
       - name: Tool inventory
         # Printed, not assumed. A missing interpreter otherwise surfaces as an unrelated assertion
         # failure deep in a suite.
@@ -47,6 +59,9 @@ jobs:
           done
           printf 'interpreter %s\n' '${{ matrix.sh }}'
           ${{ matrix.sh }} --version | head -1
+          # What a NESTED `bash "$SUT"` will actually get — the number that matters:
+          printf 'nested bash  %s\n' "$(command -v bash)"
+          bash -c 'echo "nested version $BASH_VERSION"'
 
       - name: Install jq if absent
         run: command -v jq >/dev/null || (brew install jq || sudo apt-get install -y jq)
@@ -65,7 +80,14 @@ jobs:
         # pull_request check — and it is the one the pre-push hook structurally cannot cover, since
         # a merge button runs no local hook.
         run: |
-          git fetch --no-tags origin main:refs/remotes/origin/main || true
+          # NOT `|| true`. version-check exits 0 when it cannot find a base ref — "cannot compute a
+          # delta, skipping" is a deliberate pass so a tarball install does not fail the gate. That
+          # makes THIS fetch the only thing standing between a PR and a vacuous version check, so
+          # swallowing its failure would silently disarm the one gate step the pre-push hook cannot
+          # cover (codex-rd1-codex-3, fable-rd1-r5).
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git rev-parse --verify refs/remotes/origin/main >/dev/null \
+            || { echo "::error::origin/main unavailable — the version check would pass vacuously"; exit 1; }
           scripts/multi-review-version-check.sh
 
   lint:

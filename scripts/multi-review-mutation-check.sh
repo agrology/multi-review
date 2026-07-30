@@ -58,7 +58,17 @@ gate_suites() {
 # Restore every mutated file no matter how we leave — including INT/TERM. A hard kill (SIGKILL)
 # cannot be trapped, so mutations are additionally refused unless the target file is tracked and
 # clean, which makes `git checkout -- <file>` a complete recovery.
-BK="$(mktemp -d)" || { echo "mutation-check: mktemp failed" >&2; exit 2; }
+# ONE RUN AT A TIME. The clean check, backup, mutation and restore are not atomic, so two
+# overlapping runs can interleave such that one copies the other's ALREADY-MUTATED file as its
+# "original" and then restores that — leaving a security guard deleted in a tree both runs believed
+# they had cleaned (codex-rd1-codex-2). A directory is the lock because mkdir is atomic everywhere.
+LOCK="${ROOT}/.multi-review-mutation.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "mutation-check: another mutation run holds ${LOCK} — refusing to run concurrently" >&2
+  echo "mutation-check: if no run is active, remove that directory." >&2
+  exit 2
+fi
+BK="$(mktemp -d)" || { rmdir "$LOCK" 2>/dev/null; echo "mutation-check: mktemp failed" >&2; exit 2; }
 restore_all() {
   local b f
   for b in "${BK}"/*.bak; do
@@ -67,8 +77,12 @@ restore_all() {
     cp "$b" "${ROOT}/${f}"
   done
   rm -rf "$BK"
+  rmdir "$LOCK" 2>/dev/null || true
 }
-trap restore_all EXIT INT TERM
+# INT/TERM must STOP, not just restore: continuing after Ctrl-C emits verdicts computed against a
+# half-restored tree, which look like real results (fable-rd1-r6).
+trap restore_all EXIT
+trap 'restore_all; exit 130' INT TERM
 
 # gate_catches <expect> [preferred-suite] -> 0 iff some suite went RED and emitted a FAIL line
 # containing <expect>. Stops at the first suite that does, because that single suite proves both
@@ -82,15 +96,27 @@ gate_catches() {
     [[ -n "$prefer" && "$t" == "${ROOT}/scripts/${prefer}" ]] && continue
     suites+=("$t")
   done < <(gate_suites)
+  local fails
   for t in "${suites[@]}"; do
     out="$(bash "$t" 2>&1)"; rc=$?
     # A suite that exits 0 cannot credit a guard, even if the word appears in an `ok:` label.
     (( rc == 0 )) && continue
-    if printf '%s\n' "$out" | grep -E '^[[:space:]]*FAIL:' | grep -qF "$expect"; then
+    # REDNESS IS RECORDED FROM THE STATUS, never from the presence of a FAIL: line. A suite that
+    # aborts without printing one — a `set -u` unbound variable, a syntax error, any early crash —
+    # used to leave the red flag empty, so a SURVIVES-BY-DESIGN entry was certified "survives by
+    # design" while the gate was actually red. False assurance inside the tool built to detect false
+    # assurance, which is the worst place for it (fable-rd1-r1, reproduced).
+    GATE_ANY_RED=1
+    fails="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*FAIL:' || true)"
+    # Match on a captured string, not through a pipe into `grep -q`: grep -q exits at the first hit
+    # and the upstream writer then takes SIGPIPE, which `pipefail` turns into 141 — a genuine catch
+    # reported as a survivor. This repo has been bitten by that exact class already (fable-rd1-r7).
+    if [[ -n "$fails" ]] && grep -qF "$expect" <<< "$fails"; then
       GATE_WITNESS="$(basename "$t")"; return 0
     fi
-    # Red for some other reason: remember it, so a MISCREDITED report can show what did fail.
-    [[ -z "${GATE_RED_OUT:-}" ]] && GATE_RED_OUT="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*FAIL:' | head -5)"
+    if [[ -z "${GATE_RED_OUT:-}" ]]; then
+      GATE_RED_OUT="$(head -5 <<< "${fails:-<suite failed with no FAIL: line — crash or abort>}")"
+    fi
   done
   return 1
 }
@@ -108,6 +134,12 @@ mutate() {
   # complete recovery. (This is not hypothetical: an early version of this script failed to create
   # its backup and left a guard deleted in the working tree; that precondition is what made it a
   # one-command fix instead of a hunt.)
+  # TRACKED as well as clean. `git diff --quiet` exits 0 for an UNTRACKED file, so the stated
+  # `git checkout --` recovery would not exist for one (fable-rd1-r3, reproduced).
+  if ! git -C "$ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+    echo "  ERROR [$id]: $rel is not tracked by git — refusing to mutate (no recovery path)"
+    fails=$((fails + 1)); return 0
+  fi
   if ! git -C "$ROOT" diff --quiet -- "$rel" 2>/dev/null; then
     echo "  ERROR [$id]: $rel has uncommitted changes — refusing to mutate it"; fails=$((fails + 1)); return 0
   fi
@@ -120,6 +152,13 @@ mutate() {
   if [[ "$n" == 0 ]]; then
     echo "  ERROR [$id]: the target line is not present in $rel (stale mutation table?)"
     echo "         wanted: $old"; fails=$((fails + 1)); return 0
+  fi
+  # EXACTLY one. The awk below rewrites every equal line, so with two copies a named test can be
+  # made to fail by the copy the entry did not mean — crediting coverage the intended guard may not
+  # have (codex-rd1-codex-1, fable-rd1-r2). Disambiguate the entry with more context instead.
+  if [[ "$n" != 1 ]]; then
+    echo "  ERROR [$id]: the target line occurs ${n} times in $rel — ambiguous, add context to the entry"
+    fails=$((fails + 1)); return 0
   fi
 
   # Ids carry a '/' for grouping, which is not a filename. Never mutate unless the backup landed.
@@ -144,17 +183,22 @@ mutate() {
     cp "${BK}/${safe}.bak" "$f"; fails=$((fails + 1)); return 0
   fi
 
-  GATE_WITNESS=""; GATE_RED_OUT=""
+  GATE_WITNESS=""; GATE_RED_OUT=""; GATE_ANY_RED=0
   local caught=1
   gate_catches "$expect" "$suite" && caught=0
-  cp "${BK}/${safe}.bak" "$f"; rm -f "${BK}/${safe}.bak" "${BK}/${safe}.path"
+  cp "${BK}/${safe}.bak" "$f"
+  if ! cmp -s "${BK}/${safe}.bak" "$f"; then
+    echo "  ERROR [$id]: restore of $rel did not land — recover with: git checkout -- $rel"
+    fails=$((fails + 1))
+  fi
+  rm -f "${BK}/${safe}.bak" "${BK}/${safe}.path"
 
   # Deliberate defense in depth: a line that CANNOT be independently covered because an outer layer
   # already rejects the input reaching it. Recording it as expected-to-survive is the honest entry —
   # dropping it would lose the reason and invite someone to re-add it as a bogus gap, and asserting
   # coverage it cannot have would fail the build forever.
   if [[ "$expect" == SURVIVES-BY-DESIGN ]]; then
-    if (( caught == 0 )) || [[ -n "$GATE_RED_OUT" ]]; then
+    if (( caught == 0 )) || (( GATE_ANY_RED )); then
       echo "  STALE [$id]: expected to survive (redundant behind an outer layer), but the gate went red"
       echo "         either a test now covers it, or the outer layer is gone and this line is now"
       echo "         load-bearing — update the table either way"
@@ -164,7 +208,7 @@ mutate() {
   fi
 
   if (( caught == 0 )); then echo "  caught [$id] — ${GATE_WITNESS}"; return 0; fi
-  if [[ -z "$GATE_RED_OUT" ]]; then
+  if (( ! GATE_ANY_RED )); then
     echo "  SURVIVED [$id]: gate stayed GREEN with the guard removed — it has NO coverage"
     echo "           $rel: $old"
   else

@@ -62,6 +62,43 @@ else
   ok "live-mutation check skipped (${target} has uncommitted changes)"
 fi
 
+# --- codex-rd1-codex-2: a second concurrent run must be refused, not interleaved ---
+# The clean check, backup, mutation and restore are not atomic, so an overlap can leave one run
+# restoring the OTHER run's mutated file — a guard deleted in a tree both believed they had cleaned.
+LOCK="${ROOT}/.multi-review-mutation.lock"
+if mkdir "$LOCK" 2>/dev/null; then
+  bash "$SUT" --only egress/symlink-file >/dev/null 2>&1; rc=$?
+  rmdir "$LOCK"
+  [[ $rc -eq 2 ]] && ok "concurrency: a held lock refuses a second run (rc=2)" \
+    || bad "concurrency: second run returned rc=$rc (want 2)"
+else
+  ok "concurrency check skipped (a lock is already held)"
+fi
+
+# --- fable-rd1-r3: an UNTRACKED target must be refused, since git cannot recover it ---
+# `git diff --quiet` exits 0 for an untracked file, so the stated `git checkout --` recovery would
+# not exist. Asserted through the runner's own table-target check rather than by mutating anything.
+UT="${ROOT}/.mutation-untracked-probe.sh"
+printf '#!/usr/bin/env bash\n: guard\n' > "$UT"
+if git -C "$ROOT" ls-files --error-unmatch -- ".mutation-untracked-probe.sh" >/dev/null 2>&1; then
+  ok "untracked probe skipped (a file of that name is tracked)"
+else
+  git -C "$ROOT" diff --quiet -- ".mutation-untracked-probe.sh" 2>/dev/null \
+    && ok "untracked: 'git diff --quiet' does pass on an untracked file (why tracked-ness is checked)" \
+    || bad "untracked: precondition — expected git diff --quiet to pass on an untracked file"
+fi
+rm -f "$UT"
+
+# --- fable-rd1-r1: a suite that goes RED WITHOUT printing a FAIL: line must not read as green ---
+# Redness is recorded from the STATUS. Grepping for FAIL: meant a crash (set -u abort, syntax error)
+# left the red flag empty, so a SURVIVES-BY-DESIGN entry was certified while the gate was red.
+grep -q 'GATE_ANY_RED=1' "$SUT" \
+  && ok "red-without-FAIL: redness is recorded from the suite status" \
+  || bad "red-without-FAIL: no status-based red flag — a crashing suite reads as green"
+grep -q "GATE_RED_OUT" "$SUT" && grep -q '(( GATE_ANY_RED ))' "$SUT" \
+  && ok "red-without-FAIL: the survives-by-design branch consults the status flag" \
+  || bad "red-without-FAIL: the survives-by-design branch still keys off captured FAIL text"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

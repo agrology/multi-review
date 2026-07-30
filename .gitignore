@@ -1,5 +1,6 @@
 *.multi-review.log
 *.multi-review-watch.lock/
+*.multi-review-mutation.lock/
 *.baseline
 .DS_Store
 .multi-review/
