@@ -347,6 +347,96 @@ bash "$SUT" validate-anchor "$DV" nope.sh 2    && bad "validate-anchor unknown p
 bash "$SUT" validate-anchor "$DV" foo.sh 2 99  && bad "validate-anchor range partly off-diff should fail" || ok "validate-anchor: range partly off-diff fails"
 bash "$SUT" validate-anchor "$DV" foo.sh 5 2   && bad "validate-anchor end<start should fail" || ok "validate-anchor: end<start fails"
 
+# --- a combined diff resets the parser; its records are not the PREVIOUS file's lines ---
+# Coverage for the reset shipped in aa474f6 (codex-rd2-r1), which had NONE: deleting the
+# `diff --cc`/`diff --combined`/`@@@` rules left the whole suite green. A combined section uses a
+# different column layout, so without a reset its `+`/space lines are counted as added/context
+# lines of the file above it — every one a forgeable anchor target. Both alternatives of the
+# `--cc`/`--combined` pattern are exercised, each preceded by a normal file whose count is live.
+CDV="${WORK}/combined.md"
+cat > "$CDV" <<'EOF'
+# PR review: C
+
+## Diff
+
+```
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,3 @@
+ one
++two
+ three
+diff --cc merged.txt
+index 1111111,2222222..3333333
+--- a/merged.txt
++++ b/merged.txt
+@@@ -1,2 -1,2 +1,3 @@@
+  ctx
+++resolved
+  tail
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -20,1 +20,2 @@
+ ctx twenty
++added twentyone
+diff --combined other.txt
+--- a/other.txt
++++ b/other.txt
+@@@ -1,2 -1,2 +1,3 @@@
+  octx
+++oresolved
+  otail
+```
+
+## Review
+EOF
+# Both parsers must apply the reset identically, or an anchor validates against one view and
+# remaps against the other — so every assertion below runs against each.
+for sub in diff-valid-lines diff-lines-with-text; do
+  cvl="$(bash "$SUT" "$sub" "$CDV" 2>/dev/null)"
+  printf '%s\n' "$cvl" | awk -F'\t' '$1=="a.txt" && $2==3 {f=1} END{exit !f}' \
+    && ok "combined ($sub): the real file's own lines still parse" \
+    || bad "combined ($sub): reset broke a.txt:3"
+  printf '%s\n' "$cvl" | awk -F'\t' '$1=="a.txt" && $2+0>3 {f=1} END{exit !f}' \
+    && bad "combined ($sub): --cc records claimed as a.txt lines" \
+    || ok "combined ($sub): --cc records not attributed to the previous file"
+  printf '%s\n' "$cvl" | awk -F'\t' '$1=="b.txt" && $2+0>21 {f=1} END{exit !f}' \
+    && bad "combined ($sub): --combined records claimed as b.txt lines" \
+    || ok "combined ($sub): --combined records not attributed to the previous file"
+  printf '%s\n' "$cvl" | awk -F'\t' '$1=="merged.txt" || $1=="other.txt" {f=1} END{exit !f}' \
+    && bad "combined ($sub): a --cc/--combined path was admitted (columns differ)" \
+    || ok "combined ($sub): no right-side lines claimed for a combined file"
+done
+bash "$SUT" validate-anchor "$CDV" a.txt 4 >/dev/null 2>&1 \
+  && bad "validate-anchor accepted a line forged by a combined-diff section" \
+  || ok "validate-anchor: a combined-diff section cannot extend the previous file"
+
+# --- a path containing a space: git appends a TAB to the ---/+++ lines, which must be stripped ---
+# Coverage for the strips shipped in aa474f6, which also had none: deleting both left the suite
+# green. Verified against real git — `git diff` on "my file.txt" emits `+++ b/my file.txt<TAB>`.
+# Unstripped, the parsed path keeps the TAB, so it matches no anchor path and every finding on a
+# file whose name has a space silently degrades to the summary.
+TBV="${WORK}/tabpath.md"
+{
+  printf '# PR review: T\n\n## Diff\n\n```\n'
+  printf 'diff --git a/my file.txt b/my file.txt\n'
+  printf -- '--- a/my file.txt\t\n'
+  printf -- '+++ b/my file.txt\t\n'
+  printf '@@ -1,2 +1,3 @@\n one\n+two\n three\n'
+  printf '```\n\n## Review\n'
+} > "$TBV"
+for sub in diff-valid-lines diff-lines-with-text; do
+  tvl="$(bash "$SUT" "$sub" "$TBV" 2>/dev/null)"
+  printf '%s\n' "$tvl" | awk -F'\t' '$1=="my file.txt" && $2==2 {f=1} END{exit !f}' \
+    && ok "tab-strip ($sub): a path with a space parses to the bare path" \
+    || bad "tab-strip ($sub): path kept its trailing TAB"
+done
+bash "$SUT" validate-anchor "$TBV" 'my file.txt' 2 \
+  && ok "validate-anchor: anchors on a path containing a space" \
+  || bad "validate-anchor rejected 'my file.txt':2"
+
 # --- publish: inline comments via gh api (Task 4) ---
 ASTUB="${WORK}/abin"; mkdir -p "$ASTUB"
 ACALLS="${WORK}/gh-api-calls.log"; : > "$ACALLS"
