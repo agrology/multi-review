@@ -15,6 +15,12 @@
 #      something somewhere failed. Without the name, a mutation that breaks an unrelated test reads
 #      as coverage the guard does not have.
 #
+# KNOWN LIMIT (fable-rd2-r6, accepted): no per-suite timeout. A mutation that makes a suite HANG
+# stalls the sweep with the lock held, and the eventual hard kill is the one path the trap cannot
+# cover. `timeout(1)` is not present on macOS, which is a first-class platform here, and a bash
+# watchdog is more machinery than the risk warrants — a hung suite is visible and Ctrl-C now exits
+# cleanly. Recorded rather than silently tolerated.
+#
 # Usage: multi-review-mutation-check.sh [--list] [--only <id>]
 #   --list        print the table and exit 0
 #   --only <id>   run a single mutation
@@ -26,6 +32,16 @@ ROOT="$(cd "${SELF}/.." && pwd)"
 only=""; list=0
 while (( $# )); do
   case "$1" in
+    # Testability seam for the target preconditions (tracked + clean). Without it the tracked-ness
+    # guard is unreachable from a test, which is how it shipped asserted only by a source grep
+    # (fable-rd2-r3). Deliberately undocumented in --help; it exists for the suite.
+    --check-target)
+      _t="${2:?--check-target needs a path}"
+      git -C "$ROOT" ls-files --error-unmatch -- "$_t" >/dev/null 2>&1 \
+        || { echo "mutation-check: ${_t} is not tracked by git" >&2; exit 3; }
+      git -C "$ROOT" diff --quiet -- "$_t" 2>/dev/null \
+        || { echo "mutation-check: ${_t} has uncommitted changes" >&2; exit 4; }
+      exit 0 ;;
     --list) list=1; shift ;;
     --only) only="${2:?--only needs an id}"; shift 2 ;;
     *) echo "mutation-check: unknown argument: $1" >&2; exit 2 ;;
@@ -65,7 +81,17 @@ gate_suites() {
 LOCK="${ROOT}/.multi-review-mutation.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "mutation-check: another mutation run holds ${LOCK} — refusing to run concurrently" >&2
-  echo "mutation-check: if no run is active, remove that directory." >&2
+  # A SIGKILLed run cannot run its trap, so it leaves BOTH a stale lock and a possibly-mutated file.
+  # Telling the user only to delete the lock would have them resume with a guard still absent
+  # (codex-rd2-r1), so name the dirty files — that is the part that matters.
+  dirty="$(git -C "$ROOT" diff --name-only 2>/dev/null || true)"
+  if [[ -n "$dirty" ]]; then
+    echo "mutation-check: WARNING — these tracked files are modified and may be a killed run's mutation:" >&2
+    printf '  %s\n' $dirty >&2
+    echo "mutation-check: restore them (git checkout -- <file>) BEFORE removing the lock." >&2
+  else
+    echo "mutation-check: the tree is clean; if no run is active, remove that directory." >&2
+  fi
   exit 2
 fi
 BK="$(mktemp -d)" || { rmdir "$LOCK" 2>/dev/null; echo "mutation-check: mktemp failed" >&2; exit 2; }
@@ -112,6 +138,15 @@ gate_catches() {
     # and the upstream writer then takes SIGPIPE, which `pipefail` turns into 141 — a genuine catch
     # reported as a survivor. This repo has been bitten by that exact class already (fable-rd1-r7).
     if [[ -n "$fails" ]] && grep -qF "$expect" <<< "$fails"; then
+      # The table's suite is AUTHORITATIVE, not an ordering hint. Crediting a match from ANY suite
+      # made the check a substring search over every FAIL line in the repo — and `bad` messages
+      # interpolate captured output, so an unrelated failure that merely echoes the expect string
+      # reads as coverage the guard does not have (fable-rd2-r4). A match from the wrong suite is
+      # reported, not credited: the table is what needs correcting.
+      if [[ -n "$prefer" && "$(basename "$t")" != "$prefer" ]]; then
+        GATE_WRONG_SUITE="$(basename "$t")"
+        continue
+      fi
       GATE_WITNESS="$(basename "$t")"; return 0
     fi
     if [[ -z "${GATE_RED_OUT:-}" ]]; then
@@ -183,13 +218,16 @@ mutate() {
     cp "${BK}/${safe}.bak" "$f"; fails=$((fails + 1)); return 0
   fi
 
-  GATE_WITNESS=""; GATE_RED_OUT=""; GATE_ANY_RED=0
+  GATE_WITNESS=""; GATE_RED_OUT=""; GATE_ANY_RED=0; GATE_WRONG_SUITE=""
   local caught=1
   gate_catches "$expect" "$suite" && caught=0
   cp "${BK}/${safe}.bak" "$f"
   if ! cmp -s "${BK}/${safe}.bak" "$f"; then
-    echo "  ERROR [$id]: restore of $rel did not land — recover with: git checkout -- $rel"
-    fails=$((fails + 1))
+    # KEEP the backup: the EXIT trap replays every remaining .bak, so deleting it here would throw
+    # away the only automatic retry for the one case that needs it (fable-rd2-r5).
+    echo "  ERROR [$id]: restore of $rel did not land — backup kept for the exit-time retry;"
+    echo "           if it still differs afterwards, recover with: git checkout -- $rel"
+    fails=$((fails + 1)); return 0
   fi
   rm -f "${BK}/${safe}.bak" "${BK}/${safe}.path"
 
@@ -208,6 +246,11 @@ mutate() {
   fi
 
   if (( caught == 0 )); then echo "  caught [$id] — ${GATE_WITNESS}"; return 0; fi
+  if [[ -n "${GATE_WRONG_SUITE:-}" ]]; then
+    echo "  MISCREDITED [$id]: the expectation matched in ${GATE_WRONG_SUITE}, not the table's ${suite}"
+    echo "           point the entry at the suite that actually covers it"
+    fails=$((fails + 1)); return 0
+  fi
   if (( ! GATE_ANY_RED )); then
     echo "  SURVIVED [$id]: gate stayed GREEN with the guard removed — it has NO coverage"
     echo "           $rel: $old"
