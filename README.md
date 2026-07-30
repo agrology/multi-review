@@ -61,6 +61,11 @@ points `core.hooksPath` at the versioned `.githooks/`, whose `pre-push` refuses 
 not raised `.claude-plugin/plugin.json`'s `version` — the comparison installed copies use to
 decide whether to offer an update. `git push --no-verify` bypasses it for a WIP branch.
 
+CI (`.github/workflows/gate.yml`) runs the full gate on every PR: the shell test suites on Linux
+**and** macOS (the latter on `/bin/bash` 3.2, the version these scripts target), `shellcheck`, the
+version-bump check, and a **mutation sweep** that deletes each security guard in turn and fails
+unless a named test catches it — because a green suite is not by itself evidence that a guard bites.
+
 ## Use it
 
 ```bash
