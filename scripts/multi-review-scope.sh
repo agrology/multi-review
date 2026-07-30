@@ -299,17 +299,21 @@ cmd_pr_copy() {
   # rule (spec §11 Q2) and cost 48-412% of the round it replaced: its cost scaled with the SIZE OF
   # THE FILES TOUCHED rather than with the size of the change, which is the dependency §2 of the
   # spec exists to remove.
-  # --no-ext-diff: `git diff` is porcelain and honours `diff.external`, so a difftastic/delta
+  # --no-ext-diff defeats `diff.external`; -a/--no-textconv defeat an AUTHOR-CONTROLLED
+  # .gitattributes `-diff`, which otherwise renders the whole file as "Binary files ... differ"
+  # and lets a PR hide the content of its own round-2 push from every secondary (fable-rd2-r4,
+  # reproduced). All three knobs are needed: they are separate mechanisms.
+  # `git diff` is porcelain and honours `diff.external`, so a difftastic/delta
   # user would otherwise have the driver's output shipped as "what the author pushed" — exit 0,
   # not a unified diff, and the size guard comparing driver output. Reproduced.
-  git -C "$root" diff --no-ext-diff -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
+  git -C "$root" diff --no-ext-diff --no-textconv -a -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
     || cannot "git diff failed between $since and $head"
   [[ -s "$tmp/diff" ]] || cannot "empty delta — nothing was pushed since round $((round - 1))"
 
   # basis: scoped diff payload vs whole-PR diff payload (both raw `git diff`, boilerplate cancels).
   # Excluding the scratch's description and review channel from the full side makes this guard
   # STRICTER, never looser. Evaluated before any output, so exit 3 prints nothing on stdout.
-  git -C "$root" diff --no-ext-diff "$mb" "$head" > "$tmp/full" 2>/dev/null \
+  git -C "$root" diff --no-ext-diff --no-textconv -a "$mb" "$head" > "$tmp/full" 2>/dev/null \
     || cannot "git diff failed between $mb and $head"
   local scoped_bytes full_bytes
   scoped_bytes="$(wc -c < "$tmp/diff" | tr -d ' ')"

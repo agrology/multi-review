@@ -254,7 +254,14 @@ _diff_section() { # <scratch> -> ONLY the real diff body (the LAST "## Diff" to 
   # A "## Diff" cannot be forged INSIDE the real diff: every line within a hunk carries a +/-/space
   # prefix, so "## Diff" at column 0 cannot occur there.
   awk '
-    /^## Diff[[:space:]]*$/ { start = NR }
+    # A "## Diff" at or below "## Review" is NOT the diff heading. The review channel is appended
+    # by secondaries and `namespace_blocks` copies every line of it, so a heading inside a
+    # reviewer comment would otherwise redefine the window from BELOW — a forged anchor validates
+    # and the genuine diff disappears (fable-rd2-r1, reproduced). Bounding the search above the
+    # first "## Review" closes both directions: author prose sits above the real heading, reviewer
+    # prose below it, and neither can move the window.
+    /^## Review[[:space:]]*$/ { if (!rev) rev = NR }
+    /^## Diff[[:space:]]*$/   { if (!rev) start = NR }
     { a[NR] = $0 }
     END {
       if (!start) exit
@@ -276,6 +283,10 @@ cmd_diff_valid_lines() { # <scratch> -> "path\tnewline" for added/context (RIGHT
     # inline to an attacker-chosen path:line. "diff --git" cannot be forged as hunk content for
     # the same reason "## Diff" cannot — hunk lines are always prefixed.
     /^diff --git / { inhdr = 1; inhunk = 0; path = ""; next }
+    # A combined diff (`diff --cc`, `@@@` hunks) has a different column layout; without an explicit
+    # reset its records were accepted as added/context lines of the PREVIOUS file (codex-rd2-r1).
+    /^diff --cc |^diff --combined / { inhdr = 0; inhunk = 0; path = ""; next }
+    /^@@@/ { inhdr = 0; inhunk = 0; path = ""; next }
     /^@@ / {
       inhdr = 0; inhunk = 1
       if (match($0, /\+[0-9]+/)) newline = substr($0, RSTART + 1, RLENGTH - 1) + 0
@@ -284,7 +295,7 @@ cmd_diff_valid_lines() { # <scratch> -> "path\tnewline" for added/context (RIGHT
     /^`+[[:space:]]*$/ { next }
     inhdr && /^--- / { next }
     inhdr && /^\+\+\+ / {
-      p = $0; sub(/^\+\+\+ /, "", p)
+      p = $0; sub(/^\+\+\+ /, "", p); sub(/\t.*$/, "", p)   # git appends a TAB when the path has a space
       if (p == "/dev/null") { path = "" } else { sub(/^b\//, "", p); path = p }
       next
     }
@@ -358,9 +369,17 @@ cmd_replace_diff() { # <scratch> <diff-file> — swap ## Diff, preserve everythi
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
   [[ -f "$difff"   ]] || die "diff file not found: $difff" 1
   local dstart rstart
-  # tail -1: the LAST "## Diff" is the real one — a PR description that plants its own would
-  # otherwise have the refreshed diff spliced into author prose (fable-rd1-r3).
-  dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | tail -1 | cut -d: -f1)"
+  # The LAST "## Diff" ABOVE the review channel. tail -1 over the whole file was a regression:
+  # one "## Diff" in a secondary's prose made dstart exceed rstart and bricked every later
+  # refresh (fable-rd2-r2, gemini-rd2-r1). Author prose sits above the heading, reviewer prose
+  # below it; bounding at "## Review" excludes both.
+  local _rl
+  _rl="$(grep -n '^## Review[[:space:]]*$' "$scratch" | head -1 | cut -d: -f1)"
+  if [[ -n "$_rl" ]]; then
+    dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | awk -F: -v r="$_rl" '$1 < r {n=$1} END {print n}')"
+  else
+    dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | tail -1 | cut -d: -f1)"
+  fi
   [[ -n "$dstart" ]] || die "no '## Diff' section in: $scratch" 1
   # Everything from the LAST "## Review" is preserved byte-identical — that is the whole point
   # of refresh, and why ingest refuses to touch an existing scratch.
@@ -492,6 +511,8 @@ cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side
   # view and remap against the other.
   _diff_section "$scratch" | awk '
     /^diff --git / { inhdr = 1; inhunk = 0; p = ""; next }
+    /^diff --cc |^diff --combined / { inhdr = 0; inhunk = 0; p = ""; next }
+    /^@@@/ { inhdr = 0; inhunk = 0; p = ""; next }
     /^@@ / {
       inhdr = 0; inhunk = 1
       n = substr($3, 2); split(n, a, ","); ln = a[1] + 0
@@ -500,7 +521,7 @@ cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side
     /^`+[[:space:]]*$/ { next }
     inhdr && /^--- / { next }
     inhdr && /^\+\+\+ / {
-      q = $0; sub(/^\+\+\+ /, "", q)
+      q = $0; sub(/^\+\+\+ /, "", q); sub(/\t.*$/, "", q)   # git appends a TAB when the path has a space
       if (q == "/dev/null") { p = "" } else { sub(/^b\//, "", q); p = q }
       next
     }
