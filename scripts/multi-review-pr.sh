@@ -241,31 +241,59 @@ cmd_scratch_path() { # <owner> <repo> <number>
   printf '.multi-review/reviews/%s/%s/pr-%s.md\n' "$o" "$r" "$n"
 }
 
+_diff_section() { # <scratch> -> ONLY the real diff body (the LAST "## Diff" to the next "## ")
+  # The scratch has NO trusted region — title, description and diff are all author-written, the
+  # same premise that moved control records to a sidecar. Two containments live here:
+  #
+  #  * The window starts at the LAST "## Diff", not the first (fable-rd1-r3). The PR description
+  #    is written UNFENCED above the diff, so a description that plants its own "## Diff" would
+  #    otherwise put raw unprefixed "+++"/"@@"/"+" lines inside the parser window, letting author
+  #    prose forge diff-line records. Symmetric with merge reading the LAST "## Review".
+  #  * Only this section is emitted, so nothing outside it can be read as a diff line at all.
+  #
+  # A "## Diff" cannot be forged INSIDE the real diff: every line within a hunk carries a +/-/space
+  # prefix, so "## Diff" at column 0 cannot occur there.
+  awk '
+    /^## Diff[[:space:]]*$/ { start = NR }
+    { a[NR] = $0 }
+    END {
+      if (!start) exit
+      for (i = start + 1; i <= NR; i++) {
+        if (a[i] ~ /^## /) break
+        print a[i]
+      }
+    }
+  ' "$1"
+}
+
 cmd_diff_valid_lines() { # <scratch> -> "path\tnewline" for added/context (RIGHT-side) lines
   local scratch="${1:?scratch}"
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
-  awk '
-    /^## Diff[[:space:]]*$/ { indiff = 1; next }
-    indiff && /^## / { indiff = 0 }
-    !indiff { next }
-    /^`+[[:space:]]*$/ { next }
-    /^diff --git / { path = ""; next }
-    /^--- / { next }
-    /^\+\+\+ / {
-      p = $0; sub(/^\+\+\+ /, "", p)
-      if (p == "/dev/null") { path = "" }
-      else { sub(/^b\//, "", p); path = p }
-      next
-    }
+  _diff_section "$scratch" | awk '
+    # A "+++ " line declares a path ONLY in the header region between "diff --git" and the first
+    # "@@" (fable-rd1-r2). Inside a hunk it is CONTENT: an added line whose text is "++ b/x"
+    # renders as "+++ b/x", and honouring it there let a malicious push steer an agreed finding
+    # inline to an attacker-chosen path:line. "diff --git" cannot be forged as hunk content for
+    # the same reason "## Diff" cannot — hunk lines are always prefixed.
+    /^diff --git / { inhdr = 1; inhunk = 0; path = ""; next }
     /^@@ / {
+      inhdr = 0; inhunk = 1
       if (match($0, /\+[0-9]+/)) newline = substr($0, RSTART + 1, RLENGTH - 1) + 0
       next
     }
-    path == "" { next }
+    /^`+[[:space:]]*$/ { next }
+    inhdr && /^--- / { next }
+    inhdr && /^\+\+\+ / {
+      p = $0; sub(/^\+\+\+ /, "", p)
+      if (p == "/dev/null") { path = "" } else { sub(/^b\//, "", p); path = p }
+      next
+    }
+    !inhunk { next }
+    path == "" || newline == 0 { next }
     /^\+/ { print path "\t" newline; newline++; next }
     /^ /  { print path "\t" newline; newline++; next }
     /^-/  { next }
-  ' "$scratch"
+  '
 }
 
 cmd_validate_anchor() { # <scratch> <path> <start> [end] -> exit 0 if every line is in the diff
@@ -330,7 +358,9 @@ cmd_replace_diff() { # <scratch> <diff-file> — swap ## Diff, preserve everythi
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
   [[ -f "$difff"   ]] || die "diff file not found: $difff" 1
   local dstart rstart
-  dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | head -1 | cut -d: -f1)"
+  # tail -1: the LAST "## Diff" is the real one — a PR description that plants its own would
+  # otherwise have the refreshed diff spliced into author prose (fable-rd1-r3).
+  dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | tail -1 | cut -d: -f1)"
   [[ -n "$dstart" ]] || die "no '## Diff' section in: $scratch" 1
   # Everything from the LAST "## Review" is preserved byte-identical — that is the whole point
   # of refresh, and why ingest refuses to touch an existing scratch.
@@ -457,17 +487,29 @@ _anchor_line_text() { # <scratch> <path> <line> -> the RIGHT-side line's text, o
 cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side diff lines
   local scratch="${1:?scratch}"
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
-  awk '
-    /^## Diff[[:space:]]*$/ { ind = 1; next }
-    /^## Review[[:space:]]*$/ { ind = 0 }
-    !ind { next }
-    /^\+\+\+ / { p = $2; sub(/^b\//, "", p); next }
-    /^@@ / { n = substr($3, 2); split(n, a, ","); ln = a[1] + 0; next }
+  # Same two containments as cmd_diff_valid_lines, from the same shared _diff_section — the two
+  # parsers must agree about what counts as a diff line, or an anchor can validate against one
+  # view and remap against the other.
+  _diff_section "$scratch" | awk '
+    /^diff --git / { inhdr = 1; inhunk = 0; p = ""; next }
+    /^@@ / {
+      inhdr = 0; inhunk = 1
+      n = substr($3, 2); split(n, a, ","); ln = a[1] + 0
+      next
+    }
+    /^`+[[:space:]]*$/ { next }
+    inhdr && /^--- / { next }
+    inhdr && /^\+\+\+ / {
+      q = $0; sub(/^\+\+\+ /, "", q)
+      if (q == "/dev/null") { p = "" } else { sub(/^b\//, "", q); p = q }
+      next
+    }
+    !inhunk { next }
     p == "" || ln == 0 { next }
     /^\+/ { print p "\t" ln "\t" substr($0, 2); ln++; next }
     /^ /  { print p "\t" ln "\t" substr($0, 2); ln++; next }
     /^-/  { next }
-  ' "$scratch"
+  '
 }
 
 _poison_anchor() { # <scratch> <path> <line> — mark a reused key ambiguous

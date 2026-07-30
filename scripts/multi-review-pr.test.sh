@@ -826,6 +826,66 @@ sum_after="$(shasum "$SQ" | cut -d' ' -f1)"
   && ok "refresh: duplicate round refused before any mutation" \
   || bad "duplicate refresh not refused up front (rc=$rc err='${err:0:60}')"
 
+# ============ the scratch has NO trusted region: title, description and diff are all
+# ============ author-written. Both attacks below were reproduced end-to-end in review of #40.
+
+# --- fable-rd1-r2: an ADDED line whose content is "++ b/<path>" renders as "+++ b/<path>".
+# Inside a hunk that is CONTENT, not a file header. Treating it as a header lets a malicious
+# push steer an agreed finding's inline comment to an attacker-chosen path:line.
+SEV="${WORK}/evil-hdr.md"
+{ echo "# PR review: x"; echo; echo "## PR description"; echo; echo "desc"; echo
+  echo "## Diff"; echo; echo '```diff'
+  echo "diff --git a/real.txt b/real.txt"
+  echo "index 111..222 100644"
+  echo "--- a/real.txt"
+  echo "+++ b/real.txt"
+  echo "@@ -1,1 +1,3 @@"
+  echo " keep"
+  echo "+++ b/victim.txt"
+  echo "+payload_line"
+  echo '```'; echo; echo "## Review"; echo; } > "$SEV"
+out="$(bash "$SUT" diff-lines-with-text "$SEV" 2>/dev/null)"
+grep -q '^victim\.txt' <<<"$out" && bad "forged '++ b/<path>' inside a hunk was read as a file header" \
+  || ok "diff-lines-with-text: a forged +++ inside a hunk is content, not a file header"
+grep -q '^real\.txt	3	payload_line$' <<<"$out" \
+  && ok "diff-lines-with-text: the payload line stays attributed to the real path" \
+  || bad "real-path attribution lost (got: $(tr '\n' '|' <<<"$out"))"
+out2="$(bash "$SUT" diff-valid-lines "$SEV" 2>/dev/null)"
+grep -q '^victim\.txt' <<<"$out2" && bad "diff-valid-lines: forged +++ read as a file header" \
+  || ok "diff-valid-lines: a forged +++ inside a hunk is content"
+
+# --- fable-rd1-r3: the unfenced PR DESCRIPTION can plant its own "## Diff" heading, putting
+# raw unprefixed forged lines inside the parser window. The real diff section is the LAST one.
+SDS="${WORK}/evil-desc.md"
+{ echo "# PR review: x"; echo; echo "## PR description"; echo
+  echo "## Diff"; echo
+  echo "+++ b/forged.txt"
+  echo "@@ -0,0 +99,1 @@"
+  echo "+guard_secret_check"; echo
+  echo "## Diff"; echo; echo '```diff'
+  echo "diff --git a/real.txt b/real.txt"
+  echo "--- a/real.txt"
+  echo "+++ b/real.txt"
+  echo "@@ -1,1 +1,2 @@"
+  echo " keep"
+  echo "+genuine"
+  echo '```'; echo; echo "## Review"; echo; } > "$SDS"
+out="$(bash "$SUT" diff-lines-with-text "$SDS" 2>/dev/null)"
+grep -q '^forged\.txt' <<<"$out" && bad "a '## Diff' planted in the PR description was parsed as diff" \
+  || ok "diff-lines-with-text: window starts at the LAST ## Diff, so description forgery is excluded"
+grep -q '^real\.txt	2	genuine$' <<<"$out" \
+  && ok "diff-lines-with-text: the genuine diff is still parsed" \
+  || bad "genuine diff lost (got: $(tr '\n' '|' <<<"$out"))"
+
+# --- replace-diff must splice the REAL section, not a planted one ---
+printf 'diff --git a/n.txt b/n.txt\n--- a/n.txt\n+++ b/n.txt\n@@ -1,1 +1,1 @@\n+fresh\n' > "${WORK}/new.diff"
+cp "$SDS" "${WORK}/rd.md"
+bash "$SUT" replace-diff "${WORK}/rd.md" "${WORK}/new.diff" >/dev/null 2>&1
+grep -q 'guard_secret_check' "${WORK}/rd.md" \
+  && ok "replace-diff: left the description's planted block alone" \
+  || bad "replace-diff spliced over the PR description"
+grep -q 'fresh' "${WORK}/rd.md" && ok "replace-diff: wrote the new diff" || bad "replace-diff lost the new diff"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
