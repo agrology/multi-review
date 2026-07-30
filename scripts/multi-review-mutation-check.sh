@@ -158,7 +158,9 @@ gate_catches() {
 
 # mutate <id> <file-rel> delete|replace <expect-substring> <suite> <old-line> [new-line]
 mutate() {
-  local id="$1" rel="$2" mode="$3" expect="$4" suite="$5" old="$6" new="${7:-}"
+  local id="$1" mode_spec="$3" expect="$4" suite="$5" old="$6" new="${7:-}"
+  local rel="$2" mode="${mode_spec%%:*}" nth="${mode_spec#*:}"
+  [[ "$nth" == "$mode_spec" ]] && nth=""      # no ":N" suffix -> require exactly one occurrence
   [[ -n "$only" && "$only" != "$id" ]] && return 0
   if (( list )); then printf '%-30s %-38s %-8s %s\n' "$id" "$rel" "$mode" "$suite"; return 0; fi
   ran=$((ran + 1))
@@ -188,12 +190,19 @@ mutate() {
     echo "  ERROR [$id]: the target line is not present in $rel (stale mutation table?)"
     echo "         wanted: $old"; fails=$((fails + 1)); return 0
   fi
-  # EXACTLY one. The awk below rewrites every equal line, so with two copies a named test can be
-  # made to fail by the copy the entry did not mean — crediting coverage the intended guard may not
-  # have (codex-rd1-codex-1, fable-rd1-r2). Disambiguate the entry with more context instead.
-  if [[ "$n" != 1 ]]; then
-    echo "  ERROR [$id]: the target line occurs ${n} times in $rel — ambiguous, add context to the entry"
+  # EXACTLY one, UNLESS the entry names which occurrence. The awk below rewrites every equal line,
+  # so with two copies a named test can be failed by the copy the entry did not mean — crediting
+  # coverage the intended guard may not have (codex-rd1-codex-1, fable-rd1-r2). Naming the
+  # occurrence explicitly (`replace:2`) is not guessing; leaving it implicit is.
+  if [[ -z "$nth" && "$n" != 1 ]]; then
+    echo "  ERROR [$id]: the target line occurs ${n} times in $rel — name the occurrence, e.g. ${mode}:2"
     fails=$((fails + 1)); return 0
+  fi
+  if [[ -n "$nth" ]]; then
+    if ! [[ "$nth" =~ ^[0-9]+$ ]] || (( nth < 1 || nth > n )); then
+      echo "  ERROR [$id]: occurrence '${nth}' out of range (the line occurs ${n} times in $rel)"
+      fails=$((fails + 1)); return 0
+    fi
   fi
 
   # Ids carry a '/' for grouping, which is not a filename. Never mutate unless the backup landed.
@@ -205,10 +214,12 @@ mutate() {
   local tmp; tmp="$(mktemp)" || { echo "  ERROR [$id]: mktemp failed"; fails=$((fails+1)); return 0; }
   # ENVIRON, never `awk -v`: -v processes escape sequences, so a line containing `\t` (several
   # guards do) would be matched against a literal TAB and never hit.
+  local want="${nth:-1}"
   if [[ "$mode" == delete ]]; then
-    OLD="$old" awk '$0 == ENVIRON["OLD"] { next } { print }' "$f" > "$tmp"
+    OLD="$old" WANT="$want" awk '$0 == ENVIRON["OLD"] { c++; if (c == ENVIRON["WANT"] + 0) next } { print }' "$f" > "$tmp"
   else
-    OLD="$old" NEW="$new" awk '$0 == ENVIRON["OLD"] { print ENVIRON["NEW"]; next } { print }' "$f" > "$tmp"
+    OLD="$old" NEW="$new" WANT="$want" awk \
+      '$0 == ENVIRON["OLD"] { c++; if (c == ENVIRON["WANT"] + 0) { print ENVIRON["NEW"]; next } } { print }' "$f" > "$tmp"
   fi
   cp "$tmp" "$f"; rm -f "$tmp"
 
@@ -303,6 +314,86 @@ mutations() {
     "vendor mapping: 'GPT-5'" 'multi-review-reviewer.test.sh' \
     '  local id; id="$(printf '"'"'%s'"'"' "$1" | LC_ALL=C tr '"'"'[:upper:]'"'"' '"'"'[:lower:]'"'"')"' \
     '  local id; id="$1"'
+
+  # ---- the PR diff window (#40) -------------------------------------------------------------
+  # Every guard below was mutation-verified BY HAND while it was written. Tabling them is what makes
+  # that permanent: a hand-verified guard with no entry can be silently un-covered by the next edit,
+  # which is the exact history that produced this runner.
+
+  # aa474f6's combined-diff resets. A `diff --cc` section has a different column layout, so without
+  # a reset its records are counted as added/context lines of the file ABOVE it — every one a
+  # forgeable anchor target. One entry per parser: the two must agree or an anchor validates against
+  # one view and remaps against the other.
+  mutate 'pr/combined-reset-valid-lines' 'scripts/multi-review-pr.sh' delete \
+    'combined (diff-valid-lines): --cc records claimed as a.txt lines' 'multi-review-pr.test.sh' \
+    '    /^diff --cc |^diff --combined / { inhdr = 0; inhunk = 0; path = ""; next }'
+
+  mutate 'pr/combined-reset-with-text' 'scripts/multi-review-pr.sh' delete \
+    'combined (diff-lines-with-text): --cc records claimed as a.txt lines' 'multi-review-pr.test.sh' \
+    '    /^diff --cc |^diff --combined / { inhdr = 0; inhunk = 0; p = ""; next }'
+
+  # aa474f6's TAB strips. git appends a TAB to `---`/`+++` when the path contains a space, so an
+  # unstripped path matches no anchor and every finding on such a file degrades to the summary.
+  mutate 'pr/tab-strip-valid-lines' 'scripts/multi-review-pr.sh' replace \
+    'tab-strip (diff-valid-lines): path kept its trailing TAB' 'multi-review-pr.test.sh' \
+    '      p = $0; sub(/^\+\+\+ /, "", p); sub(/\t.*$/, "", p)   # git appends a TAB when the path has a space' \
+    '      p = $0; sub(/^\+\+\+ /, "", p)'
+
+  mutate 'pr/tab-strip-with-text' 'scripts/multi-review-pr.sh' replace \
+    'tab-strip (diff-lines-with-text): path kept its trailing TAB' 'multi-review-pr.test.sh' \
+    '      q = $0; sub(/^\+\+\+ /, "", q); sub(/\t.*$/, "", q)   # git appends a TAB when the path has a space' \
+    '      q = $0; sub(/^\+\+\+ /, "", q)'
+
+  # The window must match EXACTLY one candidate. Under "first match wins" a decoy heading above the
+  # real section takes the window, and `replace-diff` then splices there — deleting the description
+  # tail and the previous round's diff.
+  mutate 'pr/window-unique-match' 'scripts/multi-review-pr.sh' replace \
+    'unique-match: two matching sections were accepted' 'multi-review-pr.test.sh' \
+    '  if (( n > 1 )); then' \
+    '  if (( 0 )); then'
+
+  # digest() is normative. A non-cryptographic checksum is forgeable, and every soundness claim
+  # about the window rests on second-preimage resistance.
+  mutate 'pr/window-digest-sha256' 'scripts/multi-review-pr.sh' replace \
+    'writer: recorded digest is not the composed body' 'multi-review-pr.test.sh' \
+    "_diff_digest() { shasum -a 256 | cut -d' ' -f1; }   # stdin -> sha256; never via \$(...) on the body" \
+    "_diff_digest() { cksum | cut -d' ' -f1; }"
+
+  # An unverifiable window must be a distinct status, not an empty result: "no changed lines" and
+  # "the parser lost the diff" must not be the same answer.
+  # Byte-identical in both parsers, so the occurrence is named rather than guessed.
+  mutate 'pr/read-path-status-3-valid-lines' 'scripts/multi-review-pr.sh' replace:1 \
+    'no record: read path succeeded with no recorded digest' 'multi-review-pr.test.sh' \
+    '  sect="$(_diff_section "$scratch")" || return 3' \
+    '  sect="$(_diff_section "$scratch")" || sect=""'
+
+  mutate 'pr/read-path-status-3-with-text' 'scripts/multi-review-pr.sh' replace:2 \
+    'record-anchors: returned 0 on an unverifiable window' 'multi-review-pr.test.sh' \
+    '  sect="$(_diff_section "$scratch")" || return 3' \
+    '  sect="$(_diff_section "$scratch")" || sect=""'
+
+  # The splice runs component-by-component with explicit propagation. A brace group reports only its
+  # LAST command's status, so a failing `head` once committed a truncated document with exit 0.
+  mutate 'pr/splice-head-propagation' 'scripts/multi-review-pr.sh' replace \
+    'splice: a failing head still exited 0' 'multi-review-pr.test.sh' \
+    '  ( if (( bstart > 2 )); then head -n "$((bstart - 2))" "$scratch" || exit 1; fi' \
+    '  ( if (( bstart > 2 )); then head -n "$((bstart - 2))" "$scratch"; fi'
+
+  # Same swallow in the other writer: an unreadable description produced a document with the PR
+  # description missing, and seed then recorded a digest for the truncation.
+  mutate 'pr/seed-desc-propagation' 'scripts/multi-review-pr.sh' replace \
+    'seed: committed a document despite an unreadable description' 'multi-review-pr.test.sh' \
+    '    cat "$descf"                                   || exit 1' \
+    '    cat "$descf"'
+
+  # found-but-EMPTY must not look like NOT-FOUND. A blank diff line captured as empty text was read
+  # as "not in the diff", nothing was recorded, and the anchor later remapped to a STALE line that
+  # `validate-anchor` accepted — posting an agreed finding inline at the wrong place, silently.
+  mutate 'pr/blank-anchor-found-status' 'scripts/multi-review-pr.sh' replace \
+    'not-found anchor: recorded a bogus record' 'multi-review-pr.test.sh' \
+    "     END { exit !found }' <<< \"\$all\"" \
+    "     ' <<< \"\$all\""
+
 }
 
 if (( list )); then mutations; exit 0; fi
