@@ -33,6 +33,28 @@ while (( $# )); do
 done
 
 fails=0; ran=0
+
+# This script runs the test suites, and one of those suites tests THIS script — which would run the
+# suites again, forever. So the runner's own suite is excluded from every gate it runs, and a marker
+# is exported so the suite can also refuse to invoke the runner if it is ever reached some other way.
+# (Before the baseline check existed the recursion happened to terminate, purely because the
+# preferred-suite ordering found its answer before reaching this file. That was luck, not design.)
+SELF_SUITE='multi-review-mutation-check.test.sh'
+export MULTI_REVIEW_MUTATION_RUNNING=1
+if [[ -n "${MULTI_REVIEW_MUTATION_NESTED:-}" ]]; then
+  echo "mutation-check: refusing to run inside another mutation run (nesting is always a bug)" >&2
+  exit 2
+fi
+export MULTI_REVIEW_MUTATION_NESTED=1
+
+# gate_suites -> every suite the gate should run, excluding this script's own suite
+gate_suites() {
+  local t
+  for t in "${ROOT}"/scripts/*.test.sh; do
+    [[ "$(basename "$t")" == "$SELF_SUITE" ]] && continue
+    printf '%s\n' "$t"
+  done
+}
 # Restore every mutated file no matter how we leave — including INT/TERM. A hard kill (SIGKILL)
 # cannot be trapped, so mutations are additionally refused unless the target file is tracked and
 # clean, which makes `git checkout -- <file>` a complete recovery.
@@ -56,10 +78,10 @@ gate_catches() {
   local expect="$1" prefer="${2:-}" t out rc
   local suites=()
   [[ -n "$prefer" && -f "${ROOT}/scripts/${prefer}" ]] && suites+=("${ROOT}/scripts/${prefer}")
-  for t in "${ROOT}"/scripts/*.test.sh; do
+  while IFS= read -r t; do
     [[ -n "$prefer" && "$t" == "${ROOT}/scripts/${prefer}" ]] && continue
     suites+=("$t")
-  done
+  done < <(gate_suites)
   for t in "${suites[@]}"; do
     out="$(bash "$t" 2>&1)"; rc=$?
     # A suite that exits 0 cannot credit a guard, even if the word appears in an `ok:` label.
@@ -197,6 +219,25 @@ mutations() {
 }
 
 if (( list )); then mutations; exit 0; fi
+
+# A GREEN BASELINE IS A PRECONDITION, not a nicety. Every verdict this script reaches is a
+# comparison against "the gate passes unmutated": a survivor means the mutation changed nothing, and
+# a catch means the mutation broke a named test. On an already-red gate both readings are worthless —
+# and worse than worthless, because a red suite makes an expected-to-survive entry look STALE and an
+# unrelated failure look like coverage. This is not hypothetical: the first CI run of this script
+# reported two spurious STALEs, caused by a suite that failed because the `gemini` CLI was absent.
+echo "mutation-check: checking the baseline gate is green before mutating anything"
+baseline_red=""
+while IFS= read -r t; do
+  out="$(bash "$t" 2>&1)" || baseline_red="${baseline_red}
+  $(basename "$t"): $(printf '%s\n' "$out" | grep -E '^[[:space:]]*FAIL:' | head -3)"
+done < <(gate_suites)
+if [[ -n "$baseline_red" ]]; then
+  echo "mutation-check: REFUSING to run — the gate is already red, so no mutation verdict is meaningful:${baseline_red}"
+  echo "mutation-check: fix the failing suite(s) first, then re-run."
+  exit 2
+fi
+echo "mutation-check: baseline green"
 
 echo "mutation-check: proving each guard's removal is caught by a NAMED assertion"
 mutations

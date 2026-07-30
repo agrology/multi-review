@@ -45,7 +45,11 @@ done < <(bash "$SUT" --list 2>/dev/null)
 # (that refusal is what makes an untrappable kill recoverable) — so a dirty tree would fail this
 # for the wrong reason.
 target='scripts/multi-review-egress-guard.sh'
-if git -C "$ROOT" diff --quiet -- "$target" 2>/dev/null; then
+if [[ -n "${MULTI_REVIEW_MUTATION_RUNNING:-}" ]]; then
+  # Reached from inside a mutation sweep. Invoking the runner here would recurse; the runner already
+  # excludes this suite, so this is the second line of defence rather than the first.
+  ok "live-mutation check skipped (running inside a mutation sweep)"
+elif git -C "$ROOT" diff --quiet -- "$target" 2>/dev/null; then
   before="$(shasum -a 256 < "${ROOT}/${target}")"
   out="$(bash "$SUT" --only egress/symlink-file 2>&1)"; rc=$?
   after="$(shasum -a 256 < "${ROOT}/${target}")"
