@@ -45,13 +45,6 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
   [[ -f "$descf" ]] || die "description file not found: $descf" 1
   [[ -f "$difff" ]] || die "diff file not found: $difff" 1
   mkdir -p "$(dirname "$out")" || die "cannot create dir for: $out" 1
-  # The sidecar describes the document AT THIS PATH, and seed replaces that document — so every
-  # record in it is stale by definition. Two ways that bit: a surviving round-1 head record made
-  # `ingest --fresh` die on the immutability check AFTER the scratch had already been overwritten,
-  # leaving no working recovery from the window's hard refusals (fable-rd1-r1); and surviving anchor
-  # records made `remap-anchor` take its "a record exists" branch for a brand-new anchor, silently
-  # demoting a valid inline comment to the summary (fable-rd1-r2).
-  rm -f "$(_records_path "$out")"
   local fence; fence="$(cmd_fence "$difff")"
   # Compose the diff-section body ONCE, into a file, so the bytes recorded and the bytes written are
   # the same bytes. The body is everything between the "## Diff" heading and the next "## " heading,
@@ -59,20 +52,39 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
   local bodyf; bodyf="$(mktemp)" || die "mktemp failed" 1
   { printf '\n%s\n' "$fence"; cat "$difff"; printf '\n%s\n\n' "$fence"; } > "$bodyf" \
     || { rm -f "$bodyf"; die "cannot compose the diff body" 1; }
-  # Record before the document exists: a crash here leaves no scratch, so `ingest` proceeds
-  # normally next time rather than finding a scratch it refuses to clobber.
+  # ORDER MATTERS, and it is the opposite of the obvious one. The sidecar describes the document at
+  # this path, and seed replaces that document, so every record in it is stale by definition — a
+  # surviving round-1 head record made `ingest --fresh` die on the immutability check (fable-rd1-r1)
+  # and surviving anchor records demoted valid new anchors (fable-rd1-r2). But resetting it FIRST
+  # meant any later failure — ENOSPC, an unwritable scratch, a compose error — left the OLD, still
+  # intact document with NO records, so every read hard-refused a document that had been fine a
+  # moment earlier (codex-rd2-r1, fable-rd2-r5). So: write the new document to a temp, rename it into
+  # place, and only then replace the sidecar. A failure before the rename leaves the old document AND
+  # its old records, consistent and readable. A failure in the gap after it leaves a new document with
+  # stale records, which refuses loudly and is fixed by retrying `--fresh`, since this reset is
+  # unconditional.
+  local docf; docf="$(mktemp "${out}.new.XXXXXX")" || { rm -f "$bodyf"; die "mktemp failed" 1; }
+  # Same explicit propagation as the splice, and for the same reason: a brace group's status is only
+  # its LAST command's, so a failing `cat "$descf"` committed a document with the PR description
+  # silently missing — and then recorded a digest for it, so every reader accepted the truncation as
+  # authentic. Found by chasing a surviving mutation rather than reported; same class as
+  # fable-rd1-r6, in the other writer.
+  ( printf '# PR review: %s\n\n' "$title"          || exit 1
+    printf -- '- **PR:** %s\n'     "$url"          || exit 1
+    printf -- '- **Author:** %s\n' "$author"       || exit 1
+    printf -- '- **Branch:** %s\n\n' "$branch"     || exit 1
+    printf '## PR description\n\n'                 || exit 1
+    cat "$descf"                                   || exit 1
+    printf '\n\n## Diff\n'                         || exit 1
+    cat "$bodyf"                                   || exit 1
+    printf '## Review\n'                           || exit 1 ) > "$docf"
+  local seed_rc=$?
+  if (( seed_rc != 0 )); then
+    rm -f "$bodyf" "$docf"; die "cannot write scratch file: $out" 1
+  fi
+  mv "$docf" "$out" || { rm -f "$bodyf" "$docf"; die "cannot install scratch file: $out" 1; }
+  rm -f "$(_records_path "$out")"
   cmd_record_diff "$out" "$bodyf" || { rm -f "$bodyf"; die "cannot record the diff digest" 1; }
-  {
-    printf '# PR review: %s\n\n' "$title"
-    printf -- '- **PR:** %s\n'     "$url"
-    printf -- '- **Author:** %s\n' "$author"
-    printf -- '- **Branch:** %s\n\n' "$branch"
-    printf '## PR description\n\n'
-    cat "$descf"
-    printf '\n\n## Diff\n'
-    cat "$bodyf"
-    printf '## Review\n'
-  } > "$out" || { rm -f "$bodyf"; die "cannot write scratch file: $out" 1; }
   rm -f "$bodyf"
 }
 
@@ -596,8 +608,15 @@ _anchor_line_text() { # <scratch> <path> <line> -> the RIGHT-side line's text; s
   # SUCCESSFUL early match reported failure and `record-anchors` refused a perfectly good window. It
   # only shows above the pipe buffer (~64 KB), so every small fixture passed and the first real PR —
   # 1600 diff lines — failed. Verified: 200k lines piped -> 141, herestring -> 0.
+  # Status distinguishes FOUND-BUT-EMPTY from NOT-FOUND. A blank added/context line has empty text,
+  # and the caller used to treat that as "not in the diff" and record nothing — after which
+  # `remap-anchor` took its "no record, so no refresh happened" branch, returned the STALE line
+  # number with status 0, and `validate-anchor` accepted it against the NEW diff. The finding then
+  # posted inline at a line that had moved: a plausible-looking WRONG placement, silently, which is
+  # the exact outcome this remap layer exists to prevent (fable-rd2-r3, reproduced end-to-end).
   awk -F'\t' -v p="$path" -v l="$line" \
-    '$1 == p && $2 == l { sub(/^[^\t]*\t[^\t]*\t/, ""); print; exit }' <<< "$all"
+    '$1 == p && $2 == l { sub(/^[^\t]*\t[^\t]*\t/, ""); print; found = 1; exit }
+     END { exit !found }' <<< "$all"
 }
 
 cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side diff lines
@@ -654,9 +673,13 @@ cmd_record_anchors() { # <scratch> — capture each anchor's line text BEFORE th
     ends="${BASH_REMATCH[4]:-}"
     for ep in "${BASH_REMATCH[2]}" ${ends:+$ends}; do
       ln="$ep"
-      text="$(_anchor_line_text "$scratch" "$path" "$ln")" \
-        || die "cannot verify the diff window in ${scratch} — refusing to record anchors" 3
-      [[ -n "$text" ]] || continue
+      text="$(_anchor_line_text "$scratch" "$path" "$ln")"; local trc=$?
+      (( trc == 3 )) && die "cannot verify the diff window in ${scratch} — refusing to record anchors" 3
+      # Status 1 = the line is genuinely not in the diff, so there is nothing to anchor. An EMPTY
+      # text with status 0 is a blank diff line and MUST still be recorded: its digest then either
+      # re-resolves or goes ambiguous, and ambiguous degrades to the summary. Skipping it is what
+      # produced a silent wrong-line placement.
+      (( trc == 0 )) || continue
       anchor="$(printf '%s' "$text" | shasum | cut -d' ' -f1)"
       # The key is path:line, but two findings from DIFFERENT rounds can anchor the same
       # path:line at different content. Silently keeping the first would remap the second to the

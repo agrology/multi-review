@@ -1290,18 +1290,15 @@ awk '/^`{3,}[[:space:]]*$/ {n++} END {exit !(n >= 2)}' "$NLS" \
   && ok "no-trailing-newline diff: both fences are on their own lines" \
   || bad "no-trailing-newline diff: closing fence glued to the last diff line"
 
-# --- fable-rd1-r4: the splice temp must sit beside the scratch, so mv is a same-fs rename ---
-# Asserted behaviourally: with TMPDIR unwritable, a temp in TMPDIR fails the whole splice.
-# NOTE: this bites only where plain `mktemp` honours TMPDIR — GNU coreutils does, BSD/macOS
-# does NOT (verified: it used /var/folders/... regardless). So this assertion is effective on
-# the Linux CI leg and vacuous on macOS; it is kept because Linux is where the hazard is real.
-TD="${WORK}/ro-tmp"; mkdir -p "$TD"; chmod 500 "$TD"
-RO="${WORK}/rotmp.md"
-bash "$SUT" seed "$RO" T 'https://github.com/o/r/pull/9' a b "${WORK}/rs.desc" "${WORK}/rs1.diff" >/dev/null
-TMPDIR="$TD" bash "$SUT" replace-diff "$RO" "${WORK}/rs2.diff" 2>/dev/null \
-  && ok "splice: works with an unwritable TMPDIR (temp is beside the scratch)" \
-  || bad "splice: depends on TMPDIR, so the rename can be cross-device"
-chmod 700 "$TD"
+# --- fable-rd1-r4: the splice temp sits beside the scratch, so `mv` is a same-fs rename ---
+# NOT ASSERTED, deliberately, and this note is the record of why. The only observable difference is
+# where `mktemp` puts the file, and no portable assertion distinguishes the two: BSD/macOS `mktemp`
+# ignores TMPDIR entirely (verified — it uses /var/folders regardless), so an unwritable-TMPDIR probe
+# passes with OR without the fix. An earlier version of this file DID assert it and justified the
+# vacuity by pointing at a "Linux CI leg", which does not exist on this branch (fable-rd2-r4). A test
+# that cannot fail is worse than no test, because it reads as coverage. The property is enforced by
+# review and by the comment at the mktemp call, and belongs in the mutation table as a known
+# uncoverable-on-macOS entry once CI lands.
 
 # --- fable-rd1-r5: record-anchors must not swallow the window's status 3 ---
 AN="${WORK}/anch.md"
@@ -1356,6 +1353,84 @@ bash "$SUT" record-anchors "$BIG" >/dev/null 2>&1 \
   || bad "record-anchors: SIGPIPE from the early awk exit was read as an unverifiable window"
 grep -q 'multi-review-pr-anchor: big.txt:1 ' "${BIG}.records" \
   && ok "record-anchors: the anchor was actually recorded" || bad "record-anchors recorded nothing"
+
+# --- fable-rd2-r3 (HIGH): an anchor on a BLANK diff line must never remap to a stale number ---
+# A blank added/context line captures as EMPTY text. Treating that as "not in the diff" recorded
+# nothing, so after a refresh `remap-anchor` took its "no record ⇒ no refresh happened" branch and
+# returned the STALE line, `validate-anchor` accepted it against the NEW diff, and the finding posted
+# inline at a line that had moved — silently, with no degradation. Reproduced end-to-end.
+printf 'de\n' > "${WORK}/bl.desc"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,3 @@\n+alpha\n+\n+charlie\n' > "${WORK}/bl1.diff"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,4 @@\n+INSERTED\n+alpha\n+\n+charlie\n' > "${WORK}/bl2.diff"
+BL="${WORK}/blank.md"
+bash "$SUT" seed "$BL" T 'https://github.com/o/r/pull/9' a b "${WORK}/bl.desc" "${WORK}/bl1.diff" >/dev/null
+printf '\n> [finding:b-rd1-r1|low] c\n> — via m\n> — at f.txt:2\n' >> "$BL"     # f.txt:2 IS the blank line
+bash "$SUT" record-anchors "$BL" >/dev/null 2>&1
+grep -q 'multi-review-pr-anchor: f.txt:2 ' "${BL}.records" \
+  && ok "blank-line anchor: recorded rather than silently skipped" \
+  || bad "blank-line anchor: nothing recorded (remap will no-op to the stale number)"
+bash "$SUT" replace-diff "$BL" "${WORK}/bl2.diff" 2>/dev/null      # inserts one line above it
+out="$(bash "$SUT" remap-anchor "$BL" f.txt 2 2>/dev/null)"; rc=$?
+[[ "$out" != 2 ]] && ok "blank-line anchor: remap does not return the stale number (got '$out')" \
+  || bad "blank-line anchor: remap returned the STALE 2 — would post inline at the wrong line"
+[[ $rc -eq 0 && "$out" == 3 ]] && ok "blank-line anchor: remapped to the true new position" \
+  || ok "blank-line anchor: did not resolve (rc=$rc) — degrades to the summary, which is safe"
+
+# ...and when the new diff has SEVERAL blank lines, the digest is ambiguous and must degrade ---
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,5 @@\n+INSERTED\n+alpha\n+\n+charlie\n+\n' > "${WORK}/bl3.diff"
+BL2="${WORK}/blank2.md"
+bash "$SUT" seed "$BL2" T 'https://github.com/o/r/pull/9' a b "${WORK}/bl.desc" "${WORK}/bl1.diff" >/dev/null
+printf '\n> [finding:b2|low] c\n> — via m\n> — at f.txt:2\n' >> "$BL2"
+bash "$SUT" record-anchors "$BL2" >/dev/null 2>&1
+bash "$SUT" replace-diff "$BL2" "${WORK}/bl3.diff" 2>/dev/null
+bash "$SUT" remap-anchor "$BL2" f.txt 2 >/dev/null 2>&1 \
+  && bad "ambiguous blank line: remap resolved anyway (must degrade)" \
+  || ok "ambiguous blank line: remap degrades to the summary"
+
+# --- codex-rd2-r1 / fable-rd2-r5: a FAILED re-seed must leave the old document readable ---
+# Resetting the sidecar first meant a later failure stranded an intact document with no records, so
+# every read hard-refused a document that had been fine a moment earlier.
+RS3="${WORK}/reseed-fail.md"
+bash "$SUT" seed "$RS3" T 'https://github.com/o/r/pull/9' a b "${WORK}/bl.desc" "${WORK}/bl1.diff" >/dev/null
+bash "$SUT" diff-span "$RS3" >/dev/null 2>&1 || bad "reseed-fail: precondition — first seed is readable"
+bash "$SUT" seed "$RS3" T 'https://github.com/o/r/pull/9' a b "${WORK}/bl.desc" "${WORK}/missing-diff-file" >/dev/null 2>&1 \
+  && bad "reseed-fail: seed succeeded with a missing diff file" || ok "reseed-fail: seed rejects a missing diff file"
+bash "$SUT" diff-span "$RS3" >/dev/null 2>&1 \
+  && ok "reseed-fail: the old document is still readable after a failed re-seed" \
+  || bad "reseed-fail: a failed re-seed wedged a previously readable scratch"
+
+# --- an anchor on a line NOT in the diff must record NOTHING ---
+# Distinguishing found-but-empty from not-found needs BOTH halves: the awk status AND the caller's
+# check. With only the caller relaxed, a not-found line also captured as empty and got a bogus
+# record, whose digest (of the empty string) could then resolve onto an unrelated blank line.
+NF="${WORK}/notfound.md"
+bash "$SUT" seed "$NF" T 'https://github.com/o/r/pull/9' a b "${WORK}/bl.desc" "${WORK}/bl1.diff" >/dev/null
+printf '\n> [finding:n-rd1-r1|low] c\n> — via m\n> — at f.txt:999\n' >> "$NF"
+bash "$SUT" record-anchors "$NF" >/dev/null 2>&1
+grep -q 'multi-review-pr-anchor: f.txt:999 ' "${NF}.records" \
+  && bad "not-found anchor: recorded a bogus record for a line absent from the diff" \
+  || ok "not-found anchor: records nothing"
+
+# --- seed must not commit a TRUNCATED document when a component of the write fails ---
+# The brace group's status was only its last command's, so a failing `cat "$descf"` produced a
+# document with the PR description silently missing — and seed then recorded a digest for it, so
+# every reader accepted the truncation as authentic. Also the discriminating case for the
+# sidecar-ordering fix: the failure lands after the point where the reset used to happen.
+TR="${WORK}/trunc.md"
+printf 'IMPORTANT_DESCRIPTION\n' > "${WORK}/tr.desc"
+bash "$SUT" seed "$TR" T 'https://github.com/o/r/pull/9' a b "${WORK}/tr.desc" "${WORK}/bl1.diff" >/dev/null
+cp "$TR" "${WORK}/trunc.before"
+chmod 000 "${WORK}/tr.desc"
+bash "$SUT" seed "$TR" T 'https://github.com/o/r/pull/9' a b "${WORK}/tr.desc" "${WORK}/bl1.diff" >/dev/null 2>&1 \
+  && bad "seed: committed a document despite an unreadable description (truncated + digested)" \
+  || ok "seed: an unreadable description fails the whole write"
+chmod 644 "${WORK}/tr.desc"
+cmp -s "$TR" "${WORK}/trunc.before" \
+  && ok "seed: the failed write left the previous document byte-identical" \
+  || bad "seed: previous document was overwritten by a failed write"
+bash "$SUT" diff-span "$TR" >/dev/null 2>&1 \
+  && ok "seed: the previous document is still verifiable after a failed re-seed" \
+  || bad "seed: a failed re-seed wedged a previously readable scratch (sidecar reset too early)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
