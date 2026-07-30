@@ -45,6 +45,13 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
   [[ -f "$descf" ]] || die "description file not found: $descf" 1
   [[ -f "$difff" ]] || die "diff file not found: $difff" 1
   mkdir -p "$(dirname "$out")" || die "cannot create dir for: $out" 1
+  # The sidecar describes the document AT THIS PATH, and seed replaces that document — so every
+  # record in it is stale by definition. Two ways that bit: a surviving round-1 head record made
+  # `ingest --fresh` die on the immutability check AFTER the scratch had already been overwritten,
+  # leaving no working recovery from the window's hard refusals (fable-rd1-r1); and surviving anchor
+  # records made `remap-anchor` take its "a record exists" branch for a brand-new anchor, silently
+  # demoting a valid inline comment to the summary (fable-rd1-r2).
+  rm -f "$(_records_path "$out")"
   local fence; fence="$(cmd_fence "$difff")"
   # Compose the diff-section body ONCE, into a file, so the bytes recorded and the bytes written are
   # the same bytes. The body is everything between the "## Diff" heading and the next "## " heading,
@@ -440,22 +447,41 @@ cmd_replace_diff() { # <scratch> <diff-file> — swap ## Diff, preserve everythi
   local bstart="${span%% *}" bend="${span##* }"
   local fence; fence="$(cmd_fence "$difff")"
   local bodyf; bodyf="$(mktemp)" || die "mktemp failed" 1
-  { printf '\n%s\n' "$fence"; cat "$difff"; printf '%s\n\n' "$fence"; } > "$bodyf" \
+  # The leading \n matches `seed` and is load-bearing: a diff file whose last byte is not a newline
+  # would otherwise glue the closing fence onto the last diff line, and the digest would certify
+  # those corrupt bytes — so every read accepts the document while `verify-vendor` later refuses it
+  # for an unbalanced fence (fable-rd1-r3). Provenance is not well-formedness.
+  { printf '\n%s\n' "$fence"; cat "$difff"; printf '\n%s\n\n' "$fence"; } > "$bodyf" \
     || { rm -f "$bodyf"; die "cannot compose the diff body" 1; }
   # Append the record BEFORE the rename. Records accumulate and a reader matches against ANY of
   # them, so neither crash window is unrecoverable: before the rename the old body still matches
   # the old record, after it the new body matches the new one. Recording after the rename would
   # leave a document no record matches, wedging every later read and write with nothing to run.
   cmd_record_diff "$scratch" "$bodyf" || { rm -f "$bodyf"; die "cannot record the diff digest" 1; }
-  local tmp; tmp="$(mktemp)" || { rm -f "$bodyf"; die "mktemp failed" 1; }
+  # The temp goes BESIDE the scratch, not in $TMPDIR: the crash-safety argument rests on `mv` being
+  # an atomic same-filesystem rename, and a $TMPDIR on another filesystem silently turns it into
+  # copy-then-unlink, whose interruption leaves a truncated scratch matching no record (fable-rd1-r4).
+  local tmp; tmp="$(mktemp "${scratch}.tmp.XXXXXX")" || { rm -f "$bodyf"; die "mktemp failed" 1; }
   # Splice on the located span, so every byte outside the body — description, header, and the whole
   # review channel from its heading on — is carried through untouched.
-  {
-    head -n $((bstart - 2)) "$scratch"
-    printf '## Diff\n'
-    cat "$bodyf"
-    tail -n +$((bend + 1)) "$scratch"
-  } > "$tmp" || { rm -f "$tmp" "$bodyf"; die "cannot write replacement diff" 1; }
+  #
+  # Run it in a `set -e` SUBSHELL. A brace group's status is only its LAST command's, so a failing
+  # `head` used to commit a truncated document with exit 0 — destroying everything above the diff,
+  # which is the very data loss this window rewrite exists to prevent (fable-rd1-r6). The `head` is
+  # also skipped entirely when the body starts at line 2, because `head -n 0` is an error on BSD head
+  # and there is no prefix to emit.
+  # Every component propagates EXPLICITLY, and the status is captured OUTSIDE any tested context.
+  # `set -e` is not usable here: POSIX suppresses it inside a compound command that forms an `if`
+  # condition, so `if ! ( set -e; ... )` silently ignores the failure — the first attempt at this fix
+  # was defeated by exactly the class of defect it was written to close. Verified by reproduction.
+  ( if (( bstart > 2 )); then head -n "$((bstart - 2))" "$scratch" || exit 1; fi
+    printf '## Diff\n'                       || exit 1
+    cat "$bodyf"                             || exit 1
+    tail -n +"$((bend + 1))" "$scratch"      || exit 1 ) > "$tmp"
+  local splice_rc=$?
+  if (( splice_rc != 0 )); then
+    rm -f "$tmp" "$bodyf"; die "cannot write replacement diff (splice component failed)" 1
+  fi
   mv "$tmp" "$scratch" || { rm -f "$tmp" "$bodyf"; die "cannot update: $scratch" 1; }
   rm -f "$bodyf"
 }
@@ -559,9 +585,13 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
 # This lives in pr.sh, not merge: it is only reachable once a refresh happens, so the manifest,
 # the finding hashes, coverage and check-converged stay untouched.
 
-_anchor_line_text() { # <scratch> <path> <line> -> the RIGHT-side line's text, or empty
-  local scratch="$1" path="$2" line="$3"
-  cmd_diff_lines_with_text "$scratch" | awk -F'\t' -v p="$path" -v l="$line" \
+_anchor_line_text() { # <scratch> <path> <line> -> the RIGHT-side line's text; status 3 if unverifiable
+  local scratch="$1" path="$2" line="$3" all
+  # Capture, do not pipe: a pipeline's status is awk's, which discarded the window's status 3 and let
+  # `record-anchors` return 0 having recorded nothing at all (fable-rd1-r5). "No changed lines" and
+  # "the window could not be verified" must not be the same answer here either.
+  all="$(cmd_diff_lines_with_text "$scratch")" || return 3
+  printf '%s\n' "$all" | awk -F'\t' -v p="$path" -v l="$line" \
     '$1 == p && $2 == l { sub(/^[^\t]*\t[^\t]*\t/, ""); print; exit }'
 }
 
@@ -619,7 +649,8 @@ cmd_record_anchors() { # <scratch> — capture each anchor's line text BEFORE th
     ends="${BASH_REMATCH[4]:-}"
     for ep in "${BASH_REMATCH[2]}" ${ends:+$ends}; do
       ln="$ep"
-      text="$(_anchor_line_text "$scratch" "$path" "$ln")"
+      text="$(_anchor_line_text "$scratch" "$path" "$ln")" \
+        || die "cannot verify the diff window in ${scratch} — refusing to record anchors" 3
       [[ -n "$text" ]] || continue
       anchor="$(printf '%s' "$text" | shasum | cut -d' ' -f1)"
       # The key is path:line, but two findings from DIFFERENT rounds can anchor the same

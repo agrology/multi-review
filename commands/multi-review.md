@@ -244,7 +244,17 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      diff to work around it: report the message and STOP, because writing blind is what silently
      destroyed the description and the previous round's diff before this check existed. The
      recoverable path is a fresh `ingest --fresh` (losing accumulated findings) at the engineer's
-     choice. Then read both rounds' records and build each copy:
+     choice.
+
+     **Choosing `--fresh` also means clearing the PREVIOUS review's protocol artifacts** —
+     `<scratch>.manifest`, `<scratch>.baseline`, and every `<scratch>.<id>` copy. `ingest` resets
+     its own sidecar (`<scratch>.records`), but the manifest belongs to this protocol layer, and a
+     manifest left behind from an abandoned review **blocks every future merge on that path**:
+     `merge` refuses to build on a doc inconsistent with its manifest, so the new review cannot
+     proceed until the stale file is removed by hand. Observed live while reviewing PR #40, whose
+     earlier review had been abandoned without releasing its files at the gate.
+
+     Then read both rounds' records and build each copy:
 
          "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N-1>   # -> head|merge-base
          "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N>

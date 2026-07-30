@@ -151,6 +151,11 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
   case " $* " in
     *" body "*)                printf '%s\n' 'Body text line.' ; exit 0 ;;
     *"title,url,author"*)      printf '%s\t%s\t%s\t%s\n' 'My Title' 'https://github.com/o/r/pull/8' 'bob' 'feat/y'; exit 0 ;;
+    # Real gh answers this, and WITHOUT it the '--fresh overwrites' assertion below is VACUOUS:
+    # _head_and_merge_base falls into its `printf '|-'` arm, hsha is empty, and ingest never writes
+    # a round-1 head record — so the immutability collision that actually breaks --fresh (fable-rd1-r1)
+    # never happens in the test. Adding this one case is what turns that assertion red.
+    *"headRefOid,baseRefName"*) printf '%s\t%s\n' 'HEADSHA1' 'main'; exit 0 ;;
   esac
 fi
 echo "unexpected gh call: $*" >&2; exit 3
@@ -1156,7 +1161,7 @@ bash "$SUT" validate-anchor "$W5" src/app.js 2 \
 # ...and a re-record must still land on the composed body, not the below-the-section decoy
 bash "$SUT" replace-diff "$W5" "${WORK}/w2.diff" 2>/dev/null
 FENCE_W2="$(bash "$SUT" fence "${WORK}/w2.diff")"
-{ printf '\n%s\n' "$FENCE_W2"; cat "${WORK}/w2.diff"; printf '%s\n\n' "$FENCE_W2"; } \
+{ printf '\n%s\n' "$FENCE_W2"; cat "${WORK}/w2.diff"; printf '\n%s\n\n' "$FENCE_W2"; } \
   | shasum -a 256 | cut -d' ' -f1 > "${WORK}/want2"
 grep -qF "$(cat "${WORK}/want2")" "${W5}.records" \
   && ok "writer: re-record after refresh is the composed body, not a below-section decoy" \
@@ -1222,6 +1227,114 @@ a="$(bash "$SUT" diff-valid-lines "$W11" 2>/dev/null)"
 b="$(bash "$SUT" diff-lines-with-text "$W11" 2>/dev/null | cut -f1,2)"
 [[ -n "$a" && "$a" == "$b" ]] && ok "I3: both parsers see the same located window" \
   || bad "I3: parsers disagree about the window"
+
+# ================= round-1 review of the digest window: the fixes it forced =================
+# Every case below was raised by a secondary and reproduced before being fixed.
+
+# --- fable-rd1-r1: `ingest --fresh` must actually work, and re-record round 1 ---
+# The sidecar describes the document at that path. A fresh ingest replaces the document, so the old
+# records are stale by definition — and leaving them made the round-1 head record immutable, so
+# --fresh died AFTER overwriting the scratch. It is the only documented recovery from the window's
+# new hard refusals, so a broken --fresh means an unrecoverable scratch.
+FSTUB="${WORK}/fbin"; mkdir -p "$FSTUB"
+cat > "${FSTUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+case " $* " in
+  *"pr diff"*)                 printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1,2 @@\n keep\n+added\n'; exit 0 ;;
+  *"headRefOid,baseRefName"*)  printf 'HEADSHA1\tmain\n'; exit 0 ;;
+  *" body "*)                  printf 'desc\n'; exit 0 ;;
+  *"title,url,author"*)        printf 'T\thttps://github.com/o/r/pull/8\talice\tfeat/x\n'; exit 0 ;;
+esac
+exit 1
+STUBEOF
+chmod +x "${FSTUB}/gh"
+FW="${WORK}/freshrepo"; mkdir -p "$FW"
+( cd "$FW" && PATH="${FSTUB}:$PATH" bash "$SUT" ingest o r 8 ) >/dev/null 2>&1 \
+  && ok "fresh: first ingest succeeds" || bad "fresh: first ingest failed"
+( cd "$FW" && PATH="${FSTUB}:$PATH" bash "$SUT" ingest --fresh o r 8 ) >/dev/null 2>&1 \
+  && ok "fresh: --fresh succeeds against a real headRefOid stub" \
+  || bad "fresh: --fresh exits non-zero (stale sidecar makes round 1 immutable)"
+FSC="${FW}/.multi-review/reviews/o/r/pr-8.md"
+n="$(grep -c 'multi-review-pr-head' "${FSC}.records" 2>/dev/null || echo 0)"
+[[ "$n" == 1 ]] && ok "fresh: exactly one round-1 head record after --fresh" \
+  || bad "fresh: ${n} head records after --fresh (stale records survived)"
+n="$(grep -c 'multi-review-pr-diff' "${FSC}.records" 2>/dev/null || echo 0)"
+[[ "$n" == 1 ]] && ok "fresh: exactly one diff digest after --fresh" \
+  || bad "fresh: ${n} diff digests after --fresh (two documents' digests coexist)"
+
+# --- fable-rd1-r2: a re-seed over the same path must not leave stale ANCHOR records ---
+# A stale anchor record makes cmd_remap_anchor take its "a record exists" branch and fail, so a
+# brand-new anchor that validates fine is silently demoted to the summary — indistinguishable from a
+# genuinely vanished line.
+printf 'body\n' > "${WORK}/rs.desc"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n-x\n+alpha\n+bravo\n' > "${WORK}/rs1.diff"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n-x\n+CHANGED_alpha\n+CHANGED_bravo\n' > "${WORK}/rs2.diff"
+RS="${WORK}/reseed.md"
+bash "$SUT" seed "$RS" T 'https://github.com/o/r/pull/9' a b "${WORK}/rs.desc" "${WORK}/rs1.diff" >/dev/null
+printf '\n> [finding:x-rd1-r1|low] c\n> — via m\n> — at f.txt:1\n' >> "$RS"
+bash "$SUT" record-anchors "$RS" >/dev/null 2>&1
+bash "$SUT" seed "$RS" T 'https://github.com/o/r/pull/9' a b "${WORK}/rs.desc" "${WORK}/rs2.diff" >/dev/null
+grep -q 'multi-review-pr-anchor' "${RS}.records" \
+  && bad "re-seed: stale anchor records survived a fresh seed at the same path" \
+  || ok "re-seed: seed resets the sidecar it describes"
+
+# --- fable-rd1-r3: replace-diff needs seed's newline guard ---
+# Without the leading \n, a diff file whose last byte is not a newline glues the closing fence onto
+# the last diff line. The digest then certifies the corrupt bytes, so every read accepts them and
+# verify-vendor later refuses the document for an unbalanced fence.
+NLS="${WORK}/nonl.md"
+bash "$SUT" seed "$NLS" T 'https://github.com/o/r/pull/9' a b "${WORK}/rs.desc" "${WORK}/rs1.diff" >/dev/null
+printf 'diff --git a/g.txt b/g.txt\n--- a/g.txt\n+++ b/g.txt\n@@ -1 +1 @@\n-p\n+q' > "${WORK}/nonl.diff"   # no trailing newline
+bash "$SUT" replace-diff "$NLS" "${WORK}/nonl.diff" 2>/dev/null
+awk '/^`{3,}[[:space:]]*$/ {n++} END {exit !(n >= 2)}' "$NLS" \
+  && ok "no-trailing-newline diff: both fences are on their own lines" \
+  || bad "no-trailing-newline diff: closing fence glued to the last diff line"
+
+# --- fable-rd1-r4: the splice temp must sit beside the scratch, so mv is a same-fs rename ---
+# Asserted behaviourally: with TMPDIR unwritable, a temp in TMPDIR fails the whole splice.
+# NOTE: this bites only where plain `mktemp` honours TMPDIR — GNU coreutils does, BSD/macOS
+# does NOT (verified: it used /var/folders/... regardless). So this assertion is effective on
+# the Linux CI leg and vacuous on macOS; it is kept because Linux is where the hazard is real.
+TD="${WORK}/ro-tmp"; mkdir -p "$TD"; chmod 500 "$TD"
+RO="${WORK}/rotmp.md"
+bash "$SUT" seed "$RO" T 'https://github.com/o/r/pull/9' a b "${WORK}/rs.desc" "${WORK}/rs1.diff" >/dev/null
+TMPDIR="$TD" bash "$SUT" replace-diff "$RO" "${WORK}/rs2.diff" 2>/dev/null \
+  && ok "splice: works with an unwritable TMPDIR (temp is beside the scratch)" \
+  || bad "splice: depends on TMPDIR, so the rename can be cross-device"
+chmod 700 "$TD"
+
+# --- fable-rd1-r5: record-anchors must not swallow the window's status 3 ---
+AN="${WORK}/anch.md"
+bash "$SUT" seed "$AN" T 'https://github.com/o/r/pull/9' a b "${WORK}/rs.desc" "${WORK}/rs1.diff" >/dev/null
+printf '\n> [finding:y-rd1-r1|low] c\n> — via m\n> — at f.txt:1\n' >> "$AN"
+rm -f "${AN}.records"                      # unverifiable window
+bash "$SUT" record-anchors "$AN" >/dev/null 2>&1 \
+  && bad "record-anchors: returned 0 on an unverifiable window (status 3 swallowed)" \
+  || ok "record-anchors: propagates the unverifiable-window status"
+
+# --- fable-rd1-r6: a failing component inside the splice must be fatal, not swallowed ---
+# The brace group's status is only the LAST command's, so a failing `head` committed a truncated
+# document with exit 0 — destroying everything above the diff. Reproduced with a failing `head`.
+SPL="${WORK}/splice.md"
+printf 'PROLOGUE_MUST_SURVIVE\n' > "${WORK}/spl.desc"
+bash "$SUT" seed "$SPL" T 'https://github.com/o/r/pull/9' a b "${WORK}/spl.desc" "${WORK}/rs1.diff" >/dev/null
+cp "$SPL" "${WORK}/splice.before"
+HB="${WORK}/headbin"; mkdir -p "$HB"; printf '#!/bin/sh\nexit 1\n' > "${HB}/head"; chmod +x "${HB}/head"
+PATH="${HB}:$PATH" bash "$SUT" replace-diff "$SPL" "${WORK}/rs2.diff" >/dev/null 2>&1 \
+  && bad "splice: a failing head still exited 0 (truncated document committed)" \
+  || ok "splice: a failing component fails the whole write"
+cmp -s "$SPL" "${WORK}/splice.before" \
+  && ok "splice: the refused write left the document byte-identical" \
+  || bad "splice: PROLOGUE lost — the failed splice was committed anyway"
+
+# --- and the benign trigger for that path: a '## Diff' heading on line 1 (head -n 0) ---
+H1="${WORK}/head1.md"
+{ printf '## Diff\n\n```\n'; cat "${WORK}/rs1.diff"; printf '```\n\n## Review\n'; } > "$H1"
+recdiff "$H1"
+err="$(bash "$SUT" replace-diff "$H1" "${WORK}/rs2.diff" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && ok "splice: a '## Diff' on line 1 splices cleanly" || bad "splice: line-1 heading rc=$rc"
+[[ -z "$err" ]] && ok "splice: line-1 heading emits nothing on stderr" \
+  || bad "splice: line-1 heading printed: '$err'"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
