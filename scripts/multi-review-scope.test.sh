@@ -215,6 +215,174 @@ out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/n
 grep -q '^> Removed this round, no longer present: Zeta, Alpha\.$' <<<"$out" \
   && ok "removed: listed in document order" || bad "removed order not deterministic ($(grep 'Removed this' <<<"$out"))"
 
+# ============================== Phase B: pr-copy ==============================
+# A throwaway git repo so the guards can be exercised without a network or a real PR.
+GR="${WORK}/repo"; mkdir -p "$GR"
+( cd "$GR" && git init -q && git config user.email t@t && git config user.name t \
+  && printf 'line one\nline two\n' > f.txt && git add f.txt && git commit -qm base ) >/dev/null 2>&1
+BASE="$(cd "$GR" && git rev-parse HEAD)"
+# The r1 commit adds bulk so the whole-PR payload (BASE..H2) clears the round-2 delta with margin,
+# or the never-worse guard trips this happy path on an unrelated fixture edit (fable-rd2-r5).
+# Placement matters: the filler must land in the BASE..H1 leg AND >10 lines from the r2 hunk at the
+# end of the file, otherwise -W -U10 pulls it into the scoped payload too and no margin appears.
+( cd "$GR" && { printf 'line one\nline CHANGED\n'; seq 1 40 | sed 's/^/pad_/'; } > f.txt \
+  && git commit -qam r1 ) >/dev/null 2>&1
+H1="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && { printf 'line one\nline CHANGED\n'; seq 1 40 | sed 's/^/pad_/'; \
+    printf 'line added\n'; } > f.txt && git commit -qam r2 ) >/dev/null 2>&1
+H2="$(cd "$GR" && git rev-parse HEAD)"
+
+# --- happy path: the delta between two heads, plus the touched file's text at the head ---
+out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+        --head "$H2" --merge-base "$BASE" "$GR" 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && ok "pr-copy: exits 0 on a scopeable delta" || bad "pr-copy rc=$rc"
+grep -q '^## Changes since round 1$' <<<"$out" && ok "pr-copy: diff heading" || bad "pr-copy no diff heading"
+grep -q 'line added' <<<"$out" && ok "pr-copy: emits the delta" || bad "pr-copy delta missing"
+grep -q '^<!-- multi-review: awaiting-reviewer · round 2/5 -->$' <<<"$out" \
+  && ok "pr-copy: writes a copy marker" || bad "pr-copy marker missing"
+[[ "$(grep -v '^$' <<<"$out" | tail -1)" == "## Review" ]] \
+  && ok "pr-copy: ends with an empty ## Review" || bad "pr-copy ## Review not last"
+
+# --- exit 3: unresolvable --since ---
+bash "$SUT" pr-copy --round 2 --max 5 --since deadbeefdeadbeef --merge-base-prev "$BASE" \
+  --head "$H2" --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on unresolvable --since" || bad "unresolvable --since not exit 3"
+
+# --- exit 3: unresolvable --head (the fork case, once the fetch has failed) ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+  --head deadbeefdeadbeef --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on unresolvable --head" || bad "unresolvable --head not exit 3"
+
+# --- exit 3: the merge-base MOVED between rounds (a forward merge or a rebase) ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+  --head "$H2" --merge-base "$H1" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 when the merge-base moved" || bad "moved merge-base not exit 3"
+
+# --- exit 3: an UNKNOWN merge-base ("-") is a cannot-scope, not a silent pass ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev - \
+  --head "$H2" --merge-base - "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on an unknown merge-base" || bad "unknown merge-base not exit 3"
+
+# --- exit 3: --since is NOT an ancestor of --head (amend / force-push on the same base) ---
+( cd "$GR" && git checkout -q -b side "$H1" && printf 'line one\nline AMENDED\n' > f.txt \
+  && git commit -qam amended ) >/dev/null 2>&1
+AMEND="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && git checkout -q - ) >/dev/null 2>&1
+# H2 is not an ancestor of AMEND, and the merge-base did not move — only ancestry catches this
+bash "$SUT" pr-copy --round 3 --max 5 --since "$H2" --merge-base-prev "$BASE" \
+  --head "$AMEND" --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on a rewritten history (non-ancestor)" \
+  || bad "non-ancestor --since not exit 3 — the amend/force-push case"
+
+# --- empty delta (head unchanged since the previous round) is a converge signal, exit 3 ---
+bash "$SUT" pr-copy --round 2 --max 5 --since "$H2" --merge-base-prev "$BASE" \
+  --head "$H2" --merge-base "$BASE" "$GR" >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "pr-copy: exit 3 on an empty delta" || bad "empty delta not exit 3"
+
+# --- Q2: the copy carries the DELTA WITH FUNCTION CONTEXT, and no whole-file text ---
+# Fixture geometry is load-bearing and two obvious versions are vacuous:
+#   * git writes the enclosing funcname into the @@ header with OR without -W, so asserting on
+#     "target_fn" passes under a bare -U10 and pins nothing. Assert on a CONTEXT line at the top
+#     of the function body (inner_pad_1) instead — only -W reaches it.
+#   * -W -U10 still applies 10 lines of context PAST the function start, so the over-reach probe
+#     needs the preceding function to be more than 10 lines away (hence head_pad_1..20).
+( cd "$GR" && { echo 'header_untouched() {'; \
+    for i in $(seq 1 20); do echo "  head_pad_$i"; done; \
+    echo '}'; echo; \
+    echo 'target_fn() {'; \
+    for i in $(seq 1 20); do echo "  inner_pad_$i"; done; \
+    echo '  echo before'; \
+    echo '}'; echo; \
+    for i in $(seq 1 60); do echo "trailing_filler_$i"; done; } > big.sh \
+  && git add big.sh && git commit -qm addbig ) >/dev/null 2>&1
+BIG1="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && sed 's/echo before/echo AFTER/' big.sh > big.tmp && mv big.tmp big.sh \
+  && git commit -qam changebig ) >/dev/null 2>&1
+BIG2="$(cd "$GR" && git rev-parse HEAD)"
+
+# Guard the fixture itself: if -U10 already reaches inner_pad_1, the -W assertion below is vacuous.
+u10=$(cd "$GR" && git diff -U10 "$BIG1" "$BIG2" | grep -c 'inner_pad_1$')
+[[ "$u10" -eq 0 ]] && ok "fixture: a bare -U10 cannot reach inner_pad_1 (so the -W test bites)" \
+  || bad "fixture does not distinguish -W from -U10 (inner_pad_1 already in -U10)"
+
+out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$BIG1" --merge-base-prev "$BASE" \
+        --head "$BIG2" --merge-base "$BASE" "$GR" 2>/dev/null)"
+grep -q 'echo AFTER' <<<"$out" && ok "pr-copy: emits the changed line" || bad "changed line missing"
+grep -q 'trailing_filler_60' <<<"$out" && bad "pr-copy emitted untouched file text (Q2 regression)" \
+  || ok "pr-copy: no whole-file text — the untouched tail is absent"
+grep -q '^### big\.sh$' <<<"$out" && bad "pr-copy still emits per-file text headings" \
+  || ok "pr-copy: no ### <path> file-text heading"
+grep -q 'inner_pad_1$' <<<"$out" && ok "pr-copy: -W reaches the top of the enclosing function" \
+  || bad "no function context — -W not applied (a bare -U10 cannot reach inner_pad_1)"
+grep -q 'head_pad_1$' <<<"$out" && bad "-W over-reached into the preceding function" \
+  || ok "pr-copy: function context stops at the enclosing function"
+
+# --- diff.external must NOT reach the copy: git diff is porcelain and honours it, so a
+# difftastic/delta user would otherwise be shipped driver output as "what the author pushed",
+# exit 0, with the size guard comparing that output (fable-rd1-r4, reproduced).
+( cd "$GR" && git config diff.external 'echo EXTERNAL-DIFF-RAN' ) >/dev/null 2>&1
+out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$H1" --merge-base-prev "$BASE" \
+        --head "$H2" --merge-base "$BASE" "$GR" 2>/dev/null)"
+grep -q 'EXTERNAL-DIFF-RAN' <<<"$out" && bad "pr-copy shipped external diff driver output" \
+  || ok "pr-copy: --no-ext-diff — an external diff driver cannot reach the copy"
+grep -q 'line added' <<<"$out" && ok "pr-copy: still a real unified diff under diff.external" \
+  || bad "pr-copy produced no usable diff with diff.external set"
+( cd "$GR" && git config --unset diff.external ) >/dev/null 2>&1
+
+# ===================== A2: the never-worse guard (both subcommands) =====================
+# A revert-shaped round 2: the author backs out most of what round 1 did, so the whole-PR diff
+# shrinks toward empty while the round-2 delta is the entire revert. Realistic ("back this out")
+# and it genuinely loses, which a rigged fixture would not.
+( cd "$GR" && seq 1 100 | sed 's/^/orig_line_/' > w.txt && git add w.txt \
+  && git commit -qm wbase ) >/dev/null 2>&1
+WBASE="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && awk 'NR>=30 && NR<=69 {print "rd1_changed_" NR; next} {print}' w.txt > t \
+  && mv t w.txt && git commit -qam wrd1 ) >/dev/null 2>&1
+WIDE1="$(cd "$GR" && git rev-parse HEAD)"
+( cd "$GR" && awk 'NR>=30 && NR<=67 {print "orig_line_" NR; next} {print}' w.txt > t \
+  && mv t w.txt && git commit -qam wrd2 ) >/dev/null 2>&1
+WIDE2="$(cd "$GR" && git rev-parse HEAD)"
+
+# Prove the fixture LOSES before asserting on the guard, or the guard test passes vacuously.
+sp=$(cd "$GR" && git diff -W -U10 "$WIDE1" "$WIDE2" | wc -c | tr -d ' ')
+fp=$(cd "$GR" && git diff "$WBASE" "$WIDE2" | wc -c | tr -d ' ')
+(( sp >= fp )) && ok "guard fixture: the scoped payload really is not smaller ($sp vs $fp)" \
+  || bad "guard fixture does not lose ($sp vs $fp) — the guard test would pass vacuously"
+
+err="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$WIDE1" --merge-base-prev "$WBASE" \
+        --head "$WIDE2" --merge-base "$WBASE" "$GR" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 3 ]] && ok "pr-copy: exit 3 when the scoped copy is not smaller" \
+  || bad "no never-worse guard on pr-copy (rc=$rc)"
+grep -qE '[0-9]+ B.*[0-9]+ B' <<<"$err" && ok "pr-copy: the notice names both byte counts" \
+  || bad "guard notice does not name both sizes: $err"
+
+# Nothing half-composed reaches stdout on the exit-3 path (the guard runs BEFORE composition).
+sout="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$WIDE1" --merge-base-prev "$WBASE" \
+        --head "$WIDE2" --merge-base "$WBASE" "$GR" 2>/dev/null)"
+[[ -z "$sout" ]] && ok "pr-copy: exit-3 path emits nothing on stdout" \
+  || bad "half-composed copy leaked to stdout"
+
+# The happy-path fixture must clear the guard with MARGIN, or an unrelated future edit to it
+# trips the size guard and the failure message talks about copy size (fable-rd2-r5).
+hsp=$(cd "$GR" && git diff -W -U10 "$H1" "$H2" | wc -c | tr -d ' ')
+hfp=$(cd "$GR" && git diff "$BASE" "$H2" | wc -c | tr -d ' ')
+(( hfp > hsp * 2 )) && ok "happy-path fixture clears the guard with margin ($hsp vs $hfp)" \
+  || bad "happy-path fixture margin too thin ($hsp vs $hfp) — an unrelated edit will trip the guard"
+
+# local-copy is deliberately NOT guarded yet, and this asserts the CURRENT contract so the gap is
+# visible rather than assumed. Wiring _payload_guard into local-copy is correct (a real 102% copy
+# was measured on a live review) but it fires on every fixture in this file: a 2-section document
+# with 1 section touched is the "primary rewrote everything" case, where scoping genuinely cannot
+# win (measured 101 B scoped vs 43 B full on the fixture above). Guarding it therefore requires
+# re-baselining ~30 composition assertions onto realistically-sized fixtures, which is its own
+# change with its own review — not a green-making edit tacked onto this one.
+P9="$(mkbase prevw.md '## A' '' 'x')"
+C9="$(mkbase currw.md '## A' '' 'x' '' '## B' '' "$(seq 1 200 | tr '\n' ' ')")"
+bash "$SUT" local-copy --round 2 --max 5 --prev "$P9" --curr "$C9" >/dev/null 2>&1
+lc_rc=$?   # capture BEFORE the test, or the failure branch reports the [[ ]]'s own status (always 1)
+[[ $lc_rc -eq 0 ]] && ok "local-copy: still unguarded (documented gap — see issue #41)" \
+  || bad "local-copy behaviour changed unexpectedly (rc=$lc_rc) — the guard gap note is now stale"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

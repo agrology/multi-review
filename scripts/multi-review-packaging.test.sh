@@ -78,6 +78,20 @@ if [[ -f "$DR" ]]; then
   # round that cannot be scoped degrades to the FULL DOCUMENT and keeps running autonomously,
   # which the spec requires be described as a visible degraded path (§4.6). Widened here to the
   # thing actually removed — degrading or falling back to a manual/attended/two-session flow.
+  # The exit-3 CAUSE LIST must name the size guard, or an agent meeting a real exit 3 has no
+  # documented entry for it and the next sentence tells it to treat the case as a hard error.
+  # Scoped to the enumeration, not the file: a whole-file grep pins "the phrase appears somewhere",
+  # and the same phrase family legitimately appears elsewhere in this doc, so the entry could be
+  # deleted with the gate still green. The END anchor is asserted rather than non-emptiness --
+  # sed '/a/,/b/p' with a missing b prints to EOF, so a non-empty $enum does not prove it bounded.
+  enum="$(sed -n '/Exit 3 is not a failure/,/Any other non-zero exit/p' "$DR")"
+  if ! grep -q 'Any other non-zero exit' <<<"$enum"; then
+    bad "could not bound the exit-3 enumeration in multi-review.md -- anchors moved"
+  elif grep -qiE '(not smaller|larger than|no smaller)' <<<"$enum"; then
+    ok "the exit-3 enumeration names the size-guard reason"
+  else
+    bad "the exit-3 enumeration omits the size guard -- a real exit 3 has no documented entry"
+  fi
   grep -qiE '(degrad[a-z]*|fall[a-z]* back)[^.]{0,40}(manual|attended|two-session|second session)' "$DR" \
     && bad "multi-review.md still documents degrade-to-manual" \
     || ok "no degrade-to-manual path"

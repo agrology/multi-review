@@ -220,20 +220,68 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    again.
 
    - **Round 1** — `cp "<doc>.baseline" "<doc>.<id>"`, then rewrite that copy's header as below.
-   - **Round N ≥ 2** — build a **diff-scoped** copy instead, so the round costs what you changed
-     rather than the size of the document:
+   - **Round N ≥ 2, local doc** — build a **diff-scoped** copy instead, so the round costs what
+     you changed rather than the size of the document:
 
          "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-scope.sh" local-copy \
            --round <N> --max <MAX> \
            --prev "<doc>.baseline.rd<N-1>" --curr "<doc>.baseline.rd<N>" > "<doc>.<id>"
 
-     `local-copy` writes the whole copy, header and marker included — do NOT also rewrite the
-     header on this path.
+   - **Round N ≥ 2, PR flavor** — the primary never edits a PR diff, so the reviewable delta is
+     what the *author* pushed since the last round. **Before** seeding the copies, refresh the
+     scratch once for this round:
 
-     **Exit 3 is not a failure**: the round cannot be scoped (no retained prior baseline, or an
-     empty delta). Fall back to `cp "<doc>.baseline" "<doc>.<id>"` plus the header rewrite, and
-     **relay the reason it printed** in the round's message — a degraded round is never silent.
-     Any other non-zero exit is a real error: stop and surface it.
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" refresh "<doc>" <N>
+
+     `refresh` re-fetches the diff at the current head, records this round's head/merge-base,
+     captures existing anchors' line text, and replaces `## Diff` while preserving `## Review`
+     and the manifest.
+
+     **If `refresh` fails with a diff-window message** (`no '## Diff' section … matches a recorded
+     digest`, or `… ambiguous diff window`), it wrote NOTHING — that is deliberate. The diff window
+     is verified against a digest the writer recorded in the sidecar, so an unverifiable window
+     means the scratch or its `.records` sidecar was edited or lost. Do **not** hand-splice the
+     diff to work around it: report the message and STOP, because writing blind is what silently
+     destroyed the description and the previous round's diff before this check existed. The
+     recoverable path is a fresh `ingest --fresh` (losing accumulated findings) at the engineer's
+     choice.
+
+     **Choosing `--fresh` also means clearing the PREVIOUS review's protocol artifacts** —
+     `<scratch>.manifest`, `<scratch>.baseline`, and every `<scratch>.<id>` copy. `ingest` resets
+     its own sidecar (`<scratch>.records`), but the manifest belongs to this protocol layer, and a
+     manifest left behind from an abandoned review **blocks every future merge on that path**:
+     `merge` refuses to build on a doc inconsistent with its manifest, so the new review cannot
+     proceed until the stale file is removed by hand. Observed live while reviewing PR #40, whose
+     earlier review had been abandoned without releasing its files at the gate.
+
+     Then read both rounds' records and build each copy:
+
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N-1>   # -> head|merge-base
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N>
+         "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-scope.sh" pr-copy \
+           --round <N> --max <MAX> \
+           --since <head-rd(N-1)>  --merge-base-prev <mb-rd(N-1)> \
+           --head  <head-rdN>      --merge-base      <mb-rdN> \
+           "$(git rev-parse --show-toplevel)" > "<doc>.<id>"
+
+     Exit 3 here is common and expected — a rebase, a force-push, a forward merge of the base
+     branch, or an unchanged head all trip it. Fall back exactly as below and relay the reason.
+
+     The copy carries the delta with **function context** (`git diff -W -U10`) and **no whole-file
+     text**: hunks extend to their enclosing function, which is where the invariant a fix depends
+     on actually lives. Emitting each touched file in full was the original rule and cost 48–412%
+     of the round it replaced, because that scales with the size of the files touched rather than
+     with the size of the change.
+
+     Either way, `local-copy`/`pr-copy` writes the whole copy, header and marker included — do
+     NOT also rewrite the header on this path.
+
+     **Exit 3 is not a failure**: the round cannot be scoped — no retained prior baseline, an
+     empty delta, a PR whose history moved (rebase, force-push, forward merge, unresolvable head),
+     or **the scoped copy came out no smaller than the full artifact it would replace**, in which
+     case the notice names both byte counts. Fall back to `cp "<doc>.baseline" "<doc>.<id>"` plus
+     the header rewrite, and **relay the reason it printed** in the round's message — a degraded
+     round is never silent. Any other non-zero exit is a real error: stop and surface it.
 
      An **empty delta** also means nothing changed since the last round, which is a converge
      signal — prefer converging over re-fanning. The decision stays yours; #30's triggers govern
