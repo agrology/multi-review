@@ -1336,6 +1336,27 @@ err="$(bash "$SUT" replace-diff "$H1" "${WORK}/rs2.diff" 2>&1 >/dev/null)"; rc=$
 [[ -z "$err" ]] && ok "splice: line-1 heading emits nothing on stderr" \
   || bad "splice: line-1 heading printed: '$err'"
 
+# --- the r5 fix's own regression: an early-exiting awk in a pipeline + pipefail = SIGPIPE ---
+# `_anchor_line_text`'s awk exits on its first match. Piped, that closes the pipe while the writer is
+# still writing, and `pipefail` turns the resulting 141 into "the window is unverifiable" — so
+# `record-anchors` refused a good window. It only reproduces ABOVE the pipe buffer (~64 KB), which is
+# why every small fixture here passed and the first real PR (1600 diff lines) failed. This fixture is
+# deliberately large enough, and the anchor is on line 1 so awk exits with the most left to write.
+BIG="${WORK}/big.md"
+{ printf 'diff --git a/big.txt b/big.txt\n--- a/big.txt\n+++ b/big.txt\n@@ -1 +1,3000 @@\n'
+  i=1; while (( i <= 3000 )); do printf '+padding line %d with enough text to pass the pipe buffer\n' "$i"; i=$((i+1)); done
+} > "${WORK}/big.diff"
+bash "$SUT" seed "$BIG" T 'https://github.com/o/r/pull/9' a b "${WORK}/rs.desc" "${WORK}/big.diff" >/dev/null
+printf '\n> [finding:z-rd1-r1|low] c\n> — via m\n> — at big.txt:1\n' >> "$BIG"
+bytes="$(bash "$SUT" diff-lines-with-text "$BIG" | wc -c)"
+(( bytes > 65536 )) && ok "big fixture exceeds the pipe buffer (${bytes} bytes)" \
+  || bad "big fixture is only ${bytes} bytes — too small to reproduce the SIGPIPE case"
+bash "$SUT" record-anchors "$BIG" >/dev/null 2>&1 \
+  && ok "record-anchors: an early awk match on a large diff is not read as failure" \
+  || bad "record-anchors: SIGPIPE from the early awk exit was read as an unverifiable window"
+grep -q 'multi-review-pr-anchor: big.txt:1 ' "${BIG}.records" \
+  && ok "record-anchors: the anchor was actually recorded" || bad "record-anchors recorded nothing"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

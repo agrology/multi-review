@@ -591,8 +591,13 @@ _anchor_line_text() { # <scratch> <path> <line> -> the RIGHT-side line's text; s
   # `record-anchors` return 0 having recorded nothing at all (fable-rd1-r5). "No changed lines" and
   # "the window could not be verified" must not be the same answer here either.
   all="$(cmd_diff_lines_with_text "$scratch")" || return 3
-  printf '%s\n' "$all" | awk -F'\t' -v p="$path" -v l="$line" \
-    '$1 == p && $2 == l { sub(/^[^\t]*\t[^\t]*\t/, ""); print; exit }'
+  # A HERESTRING, not a pipe. The awk program `exit`s on its first match, which closes the pipe while
+  # the writer is still going; under `pipefail` that SIGPIPE (141) becomes the pipeline's status, so a
+  # SUCCESSFUL early match reported failure and `record-anchors` refused a perfectly good window. It
+  # only shows above the pipe buffer (~64 KB), so every small fixture passed and the first real PR —
+  # 1600 diff lines — failed. Verified: 200k lines piped -> 141, herestring -> 0.
+  awk -F'\t' -v p="$path" -v l="$line" \
+    '$1 == p && $2 == l { sub(/^[^\t]*\t[^\t]*\t/, ""); print; exit }' <<< "$all"
 }
 
 cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side diff lines
