@@ -196,8 +196,8 @@ verified) is enforced in practice.
   and again before requesting review. Resolve conflicts in small increments as they appear, never
   as one big end-of-effort pile-up.
 - **Open a draft PR as soon as work starts** — not when it's "done." It makes the work visible,
-  invites early feedback, and lets CI (including the branch-staleness check) watch the branch for
-  its whole life so divergence surfaces while it is still small.
+  invites early feedback, and lets CI watch the branch for its whole life so divergence surfaces
+  while it is still small.
 - **Keep history clean.** Rebase or squash trivial fixups before merge. No "wip"/"fix typo"
   noise in `main` history.
 - **CI must be green before merge.** No merging red or with required checks skipped.
@@ -353,8 +353,23 @@ If you are asked to review a doc that is under a multi-review review, read
   substantive changes go through a PR.
 - **Test gate:** the verification gate is `for t in scripts/*.test.sh; do bash "$t"; done`
   plus `shellcheck --severity=warning scripts/multi-review-*.sh` **plus
-  `scripts/multi-review-version-check.sh`**. A line-coverage percentage is not meaningful for
-  this bash test suite.
+  `scripts/multi-review-version-check.sh`** **plus
+  `scripts/multi-review-mutation-check.sh`**. A line-coverage percentage is not meaningful for
+  this bash test suite — and it would not measure the thing that actually goes wrong here, which is
+  a guard that is *executed* by a test that cannot fail.
+- **Mutation check: every new guard gets a table entry.** `multi-review-mutation-check.sh` deletes
+  or rewrites one guard line at a time and asserts a **named** assertion fails. It exists because a
+  guard has twice shipped with zero coverage behind a fully green gate (the combined-diff reset and
+  the `+++` TAB strips, both in `aa474f6`), and because the same class — a verification that reads
+  correctly but cannot fail — has recurred repeatedly in review. A line that is *deliberately*
+  redundant behind a covered outer layer is recorded as `SURVIVES-BY-DESIGN` rather than omitted, so
+  the reason survives and losing the outer layer surfaces as a failure.
+- **CI runs the whole gate** on every PR (`.github/workflows/gate.yml`): the suites on
+  `ubuntu-latest` **and** `macos-latest` — the latter pinned to `/bin/bash` 3.2, which is the
+  version the scripts claim to support and which Ubuntu's bash 5 cannot check — plus shellcheck
+  (which also covers `.githooks/pre-push`, outside the glob above) and the mutation sweep. The
+  version check runs there too: that is the one gate step the `pre-push` hook structurally cannot
+  cover, since `--no-verify` bypasses it and a merge performed on GitHub runs no local hook.
 - **Version bump is required to ship.** Anything that reaches `main` MUST raise
   `.claude-plugin/plugin.json`'s `version`. Installed copies decide whether to offer an update
   by comparing it, so landing a change without a bump leaves every existing install silently on
