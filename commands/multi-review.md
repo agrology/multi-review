@@ -235,7 +235,16 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
      `refresh` re-fetches the diff at the current head, records this round's head/merge-base,
      captures existing anchors' line text, and replaces `## Diff` while preserving `## Review`
-     and the manifest. Then read both rounds' records and build each copy:
+     and the manifest.
+
+     **If `refresh` fails with a diff-window message** (`no '## Diff' section … matches a recorded
+     digest`, or `… ambiguous diff window`), it wrote NOTHING — that is deliberate. The diff window
+     is verified against a digest the writer recorded in the sidecar, so an unverifiable window
+     means the scratch or its `.records` sidecar was edited or lost. Do **not** hand-splice the
+     diff to work around it: report the message and STOP, because writing blind is what silently
+     destroyed the description and the previous round's diff before this check existed. The
+     recoverable path is a fresh `ingest --fresh` (losing accumulated findings) at the engineer's
+     choice. Then read both rounds' records and build each copy:
 
          "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N-1>   # -> head|merge-base
          "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh" head-record "<doc>" <N>

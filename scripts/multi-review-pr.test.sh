@@ -9,6 +9,32 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 ok()  { echo "  ok: $1"; }
 bad() { echo "  FAIL: $1"; fails=$((fails+1)); }
 
+# recdiff <scratch> — TEST SCAFFOLDING ONLY: record a digest for a hand-built fixture's single
+# '## Diff' section, so the fixture has the sidecar record the reader now requires.
+# Product code NEVER locates a body this way — the writer digests the bytes it COMPOSED, because a
+# writer that enumerates has no digest to choose a candidate with and would record a decoy's digest
+# as ground truth (the spec's fable-rd1-r1). It is sound here only because these fixtures contain
+# exactly one such heading by construction, which the helper asserts rather than assumes.
+# A fixture that deliberately plants a decoy heading must say WHICH section is the real one, so the
+# index is required rather than guessed whenever there is more than one.
+recdiff() { # <scratch> [k] — record the k-th '## Diff' section (default: the only one)
+  local f="$1" k="${2:-}" n b rc
+  n="$(grep -c '^## Diff[[:space:]]*$' "$f")"
+  if [[ -z "$k" ]]; then
+    [[ "$n" == 1 ]] || { bad "recdiff: fixture has $n '## Diff' headings, pass an explicit index: $f"; return 1; }
+    k=1
+  fi
+  (( k >= 1 && k <= n )) || { bad "recdiff: index $k out of range (fixture has $n): $f"; return 1; }
+  b="$(mktemp)"
+  awk -v k="$k" '
+    /^## Diff[[:space:]]*$/ { c++; if (c == k) { f = 1; next } }
+    f && /^## / { exit }
+    f { print }
+  ' "$f" > "$b"
+  bash "$SUT" record-diff "$f" "$b"; rc=$?
+  rm -f "$b"; return $rc
+}
+
 # --- parse: full PR URL ---
 out="$(bash "$SUT" parse 'https://github.com/octocat/hello-world/pull/42' 2>/dev/null)"; code=$?
 [[ $code == 0 && "$out" == "octocat|hello-world|42" ]] && ok "parse: full URL" || bad "parse URL (got '$out' code $code)"
@@ -334,6 +360,7 @@ diff --git a/bar.sh b/bar.sh
 > — via gpt-5-codex
 EOF
 
+recdiff "$DV"
 vl="$(bash "$SUT" diff-valid-lines "$DV" 2>/dev/null)"
 printf '%s\n' "$vl" | grep -qF 'foo.sh	1' && ok "diff-valid-lines: foo context line 1" || bad "diff-valid-lines foo:1 (got: $vl)"
 printf '%s\n' "$vl" | grep -qF 'foo.sh	2' && ok "diff-valid-lines: foo added line 2" || bad "diff-valid-lines foo:2"
@@ -392,6 +419,7 @@ diff --combined other.txt
 
 ## Review
 EOF
+recdiff "$CDV"
 # Both parsers must apply the reset identically, or an anchor validates against one view and
 # remaps against the other — so every assertion below runs against each.
 for sub in diff-valid-lines diff-lines-with-text; do
@@ -427,6 +455,7 @@ TBV="${WORK}/tabpath.md"
   printf '@@ -1,2 +1,3 @@\n one\n+two\n three\n'
   printf '```\n\n## Review\n'
 } > "$TBV"
+recdiff "$TBV"
 for sub in diff-valid-lines diff-lines-with-text; do
   tvl="$(bash "$SUT" "$sub" "$TBV" 2>/dev/null)"
   printf '%s\n' "$tvl" | awk -F'\t' '$1=="my file.txt" && $2==2 {f=1} END{exit !f}' \
@@ -481,6 +510,7 @@ diff --git a/foo.sh b/foo.sh
 > [agree:f1]
 > — via claude-opus-4-8
 EOF
+recdiff "$AIN"
 : > "$ACALLS"
 PATH="${ASTUB}:$PATH" bash "$SUT" publish "$AIN" 'claude-opus-4-8' >/dev/null 2>&1
 code=$?
@@ -522,6 +552,7 @@ diff --git a/foo.sh b/foo.sh
 > [agree:f1]
 > — via claude-opus-4-8
 EOF
+recdiff "$ABAD"
 : > "$ACALLS"
 PATH="${ASTUB}:$PATH" bash "$SUT" publish "$ABAD" 'claude-opus-4-8' >/dev/null 2>&1
 # no valid inline comments -> falls back to the plain pr review path
@@ -583,6 +614,7 @@ diff --git a/foo.sh b/foo.sh
 > [agree:f2]
 > — via claude-opus-4-8
 EOF
+recdiff "$AMIX"
 : > "$ACALLS"
 PATH="${ASTUB}:$PATH" bash "$SUT" publish "$AMIX" 'claude-opus-4-8' >/dev/null 2>&1
 grep -q 'api .*repos/o/r/pulls/8/reviews' "$ACALLS" && ok "publish-mixed: posts via gh api (one valid inline)" || bad "publish-mixed api call (got: $(cat "$ACALLS"))"
@@ -647,6 +679,7 @@ diff --git a/foo.sh b/foo.sh
 > [agree:codex-rd1-a]
 > — via claude-opus-4-8
 EOF
+recdiff "$STARSCRATCH"
 : > "$ACALLS"; rm -f "${WORK}/api-payload.json" "${WORK}/posted-body.txt"
 PATH="${ASTUB}:$PATH" bash "$SUT" publish "$STARSCRATCH" 'claude-opus-4-8' >/dev/null 2>&1
 code=$?
@@ -934,6 +967,7 @@ SEV="${WORK}/evil-hdr.md"
   echo "+++ b/victim.txt"
   echo "+payload_line"
   echo '```'; echo; echo "## Review"; echo; } > "$SEV"
+recdiff "$SEV"
 out="$(bash "$SUT" diff-lines-with-text "$SEV" 2>/dev/null)"
 grep -q '^victim\.txt' <<<"$out" && bad "forged '++ b/<path>' inside a hunk was read as a file header" \
   || ok "diff-lines-with-text: a forged +++ inside a hunk is content, not a file header"
@@ -945,7 +979,9 @@ grep -q '^victim\.txt' <<<"$out2" && bad "diff-valid-lines: forged +++ read as a
   || ok "diff-valid-lines: a forged +++ inside a hunk is content"
 
 # --- fable-rd1-r3: the unfenced PR DESCRIPTION can plant its own "## Diff" heading, putting
-# raw unprefixed forged lines inside the parser window. The real diff section is the LAST one.
+# raw unprefixed forged lines inside the parser window. The real section is the one whose body
+# matches the recorded digest — position no longer decides it (this fixture's real section happens
+# to be the second, and the "## Diff below ## Review" fixture's happens to be the first).
 SDS="${WORK}/evil-desc.md"
 { echo "# PR review: x"; echo; echo "## PR description"; echo
   echo "## Diff"; echo
@@ -960,9 +996,10 @@ SDS="${WORK}/evil-desc.md"
   echo " keep"
   echo "+genuine"
   echo '```'; echo; echo "## Review"; echo; } > "$SDS"
+recdiff "$SDS" 2   # the REAL section is the second; the first is the description's decoy
 out="$(bash "$SUT" diff-lines-with-text "$SDS" 2>/dev/null)"
 grep -q '^forged\.txt' <<<"$out" && bad "a '## Diff' planted in the PR description was parsed as diff" \
-  || ok "diff-lines-with-text: window starts at the LAST ## Diff, so description forgery is excluded"
+  || ok "diff-lines-with-text: the recorded window excludes a description-planted heading"
 grep -q '^real\.txt	2	genuine$' <<<"$out" \
   && ok "diff-lines-with-text: the genuine diff is still parsed" \
   || bad "genuine diff lost (got: $(tr '\n' '|' <<<"$out"))"
@@ -970,6 +1007,7 @@ grep -q '^real\.txt	2	genuine$' <<<"$out" \
 # --- replace-diff must splice the REAL section, not a planted one ---
 printf 'diff --git a/n.txt b/n.txt\n--- a/n.txt\n+++ b/n.txt\n@@ -1,1 +1,1 @@\n+fresh\n' > "${WORK}/new.diff"
 cp "$SDS" "${WORK}/rd.md"
+recdiff "${WORK}/rd.md" 2   # sidecars are per-file; the copy needs its own record
 bash "$SUT" replace-diff "${WORK}/rd.md" "${WORK}/new.diff" >/dev/null 2>&1
 grep -q 'guard_secret_check' "${WORK}/rd.md" \
   && ok "replace-diff: left the description's planted block alone" \
@@ -990,6 +1028,7 @@ SBL="${WORK}/below.md"
   echo "diff --git a/victim.txt b/victim.txt"
   echo "--- a/victim.txt"; echo "+++ b/victim.txt"
   echo "@@ -4240,0 +4240,2 @@"; echo "+forged"; echo; } > "$SBL"
+recdiff "$SBL" 1   # the REAL section is the first; the second is the review channel's decoy
 out="$(bash "$SUT" diff-valid-lines "$SBL" 2>/dev/null)"
 grep -q '^victim\.txt' <<<"$out" && bad "a '## Diff' BELOW ## Review redefined the parse window" \
   || ok "diff-valid-lines: a '## Diff' below ## Review cannot redefine the window"
@@ -999,10 +1038,190 @@ bash "$SUT" validate-anchor "$SBL" victim.txt 4240 >/dev/null 2>&1 \
   && bad "forged anchor below ## Review validated" || ok "validate-anchor: forged anchor below ## Review rejected"
 printf 'diff --git a/n.txt b/n.txt\n--- a/n.txt\n+++ b/n.txt\n@@ -1,1 +1,1 @@\n+fresh\n' > "${WORK}/n2.diff"
 cp "$SBL" "${WORK}/rd2.md"
+recdiff "${WORK}/rd2.md" 1
 bash "$SUT" replace-diff "${WORK}/rd2.md" "${WORK}/n2.diff" >/dev/null 2>&1
 [[ $? -eq 0 ]] && ok "replace-diff: still works with a '## Diff' below ## Review" \
   || bad "replace-diff BRICKED by a heading in the review channel (regression)"
 grep -q 'fresh' "${WORK}/rd2.md" && ok "replace-diff: spliced the real section" || bad "replace-diff lost the new diff"
+
+# ==================== the diff window is a RECORDED FACT, not a text bound ====================
+# Attempt #4 at `_diff_section`. Attempts 1-3 each bounded the window by heading text and each drew
+# a `high`: last "## Diff" anywhere was steerable from BELOW (review channel), bounding at the first
+# "## Review" was steerable from ABOVE (the description), and neither was fence-aware. See
+# docs/specs/2026-07-30-pr-diff-window-invariant.md. The window is now the ONE "## Diff" section
+# whose body matches a digest recorded in the sidecar by the writer that composed it.
+
+# mkpr <name> <desc-heredoc-file> <diff-file> -> a seeded scratch path
+mkpr() { local p="${WORK}/$1"; bash "$SUT" seed "$p" "T" "https://github.com/o/r/pull/9" "auth" "br" "$2" "$3" >/dev/null; echo "$p"; }
+
+# the real diff every fixture below carries: src/app.js right-side line 2 is the added line
+printf 'diff --git a/src/app.js b/src/app.js\nindex 1111111..2222222 100644\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,3 +1,4 @@\n const a = 1;\n+const injected = 2;\n const b = 3;\n const c = 4;\n' > "${WORK}/w.diff"
+printf 'diff --git a/src/app.js b/src/app.js\nindex 2222222..3333333 100644\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,4 +1,5 @@\n const a = 1;\n const injected = 2;\n+const round2 = 9;\n const b = 3;\n const c = 4;\n' > "${WORK}/w2.diff"
+
+# outside_body <scratch> -> every line of the file EXCEPT the recorded body's line range.
+# Used instead of "the description survived", which passes an off-by-one that eats '## Review'.
+outside_body() {
+  local f="$1" span s e
+  span="$(bash "$SUT" diff-span "$f" 2>/dev/null)" || return 1
+  s="${span%% *}"; e="${span##* }"
+  awk -v s="$s" -v e="$e" 'NR < s || NR > e' "$f"
+}
+
+# R1 — a BENIGN fenced layout example in the description (an author documenting the review-doc shape)
+cat > "${WORK}/w-fenced.desc" <<'EOF'
+This PR changes the scoped copy composition.
+
+The review document we produce looks like this:
+
+```markdown
+# PR review: <title>
+
+## Diff
+
+<the diff>
+
+## Review
+
+> [finding:codex-rd1-r1] ...
+```
+
+That is the whole layout.
+EOF
+W1="$(mkpr w1.md "${WORK}/w-fenced.desc" "${WORK}/w.diff")"
+bash "$SUT" validate-anchor "$W1" src/app.js 2 \
+  && ok "window R1: a fenced layout example in the description cannot empty the window" \
+  || bad "window R1: genuine anchor rejected (fenced description example)"
+
+# R2 — the SAME fixture through the write path, which is where the worst damage landed
+before_out="$(outside_body "$W1")"
+bash "$SUT" replace-diff "$W1" "${WORK}/w2.diff" 2>/dev/null
+[[ $? -eq 0 ]] && ok "window R2: replace-diff succeeds on a fenced description example" \
+  || bad "window R2: replace-diff failed"
+[[ "$(outside_body "$W1")" == "$before_out" ]] \
+  && ok "window R2: everything outside the diff body is byte-identical" \
+  || bad "window R2: replace-diff altered the document outside the diff body"
+grep -q 'That is the whole layout' "$W1" \
+  && ok "window R2: the description tail survived the splice" \
+  || bad "window R2: replace-diff destroyed the description (data loss)"
+bash "$SUT" validate-anchor "$W1" src/app.js 3 \
+  && ok "window R2: the refreshed diff is what anchors resolve against" \
+  || bad "window R2: post-refresh anchor rejected"
+
+# R3 — an UNFENCED '## Review' in the description: an ordinary PR section header, no fence involved
+printf 'Changes the parser.\n\n## Review\n\nPlease focus on containment.\n' > "${WORK}/w-review.desc"
+W3="$(mkpr w3.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
+bash "$SUT" validate-anchor "$W3" src/app.js 2 \
+  && ok "window R3: an unfenced '## Review' in the description cannot empty the window" \
+  || bad "window R3: genuine anchor rejected (unfenced ## Review in description)"
+bash "$SUT" replace-diff "$W3" "${WORK}/w2.diff" 2>/dev/null \
+  && ok "window R3: replace-diff succeeds past an unfenced '## Review'" \
+  || bad "window R3: replace-diff failed on an unfenced ## Review"
+
+# attempt-2's direction — a '## Diff' planted UNFENCED in the description, with a forged body
+{ printf 'Look at the diff below.\n\n## Diff\n\n```\n'
+  printf 'diff --git a/victim.txt b/victim.txt\n--- a/victim.txt\n+++ b/victim.txt\n@@ -1,1 +4240,3 @@\n+pwned\n'
+  printf '```\n\nEnd of description.\n'; } > "${WORK}/w-decoy.desc"
+W4="$(mkpr w4.md "${WORK}/w-decoy.desc" "${WORK}/w.diff")"
+bash "$SUT" validate-anchor "$W4" victim.txt 4240 >/dev/null 2>&1 \
+  && bad "window: a '## Diff' decoy in the DESCRIPTION forged an anchor" \
+  || ok "window: a '## Diff' decoy in the description cannot forge an anchor"
+bash "$SUT" validate-anchor "$W4" src/app.js 2 \
+  && ok "window: the genuine diff survives a description decoy" \
+  || bad "window: description decoy displaced the genuine window"
+
+# THE round-1 `high` (fable-rd1-r1): the WRITER must digest the body it COMPOSED, never enumerate
+# the file it just wrote. An enumerating writer records the DECOY's digest as ground truth, and the
+# forged window becomes the verified one. Asserted as a POSITIVE property so no enumeration order
+# (first OR last) can satisfy it (fable-rd2-r1).
+composed_digest() { # <diff-file> <fence> -> digest of the body seed composes for that diff
+  { printf '\n%s\n' "$2"; cat "$1"; printf '\n%s\n\n' "$2"; } | shasum -a 256 | cut -d' ' -f1
+}
+FENCE_W="$(bash "$SUT" fence "${WORK}/w.diff")"
+want="$(composed_digest "${WORK}/w.diff" "$FENCE_W")"
+grep -qF "$want" "${W4}.records" \
+  && ok "writer: records the digest of the body it composed, not a decoy's" \
+  || bad "writer: recorded digest is not the composed body's (enumerating writer?)"
+
+# attempt-1's direction — a '## Diff' planted in the REVIEW CHANNEL (what merge copies at column 0)
+W5="$(mkpr w5.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
+{ printf '\n## Diff\n\n```\n'
+  printf 'diff --git a/victim.txt b/victim.txt\n--- a/victim.txt\n+++ b/victim.txt\n@@ -1,1 +777,3 @@\n+pwned\n'
+  printf '```\n'; } >> "$W5"
+bash "$SUT" validate-anchor "$W5" victim.txt 777 >/dev/null 2>&1 \
+  && bad "window: a '## Diff' in the review channel forged an anchor" \
+  || ok "window: a '## Diff' in the review channel cannot forge an anchor"
+bash "$SUT" validate-anchor "$W5" src/app.js 2 \
+  && ok "window: the genuine diff survives a review-channel decoy" \
+  || bad "window: review-channel decoy displaced the genuine window"
+# ...and a re-record must still land on the composed body, not the below-the-section decoy
+bash "$SUT" replace-diff "$W5" "${WORK}/w2.diff" 2>/dev/null
+FENCE_W2="$(bash "$SUT" fence "${WORK}/w2.diff")"
+{ printf '\n%s\n' "$FENCE_W2"; cat "${WORK}/w2.diff"; printf '%s\n\n' "$FENCE_W2"; } \
+  | shasum -a 256 | cut -d' ' -f1 > "${WORK}/want2"
+grep -qF "$(cat "${WORK}/want2")" "${W5}.records" \
+  && ok "writer: re-record after refresh is the composed body, not a below-section decoy" \
+  || bad "writer: refresh recorded the wrong body (enumerate-take-last?)"
+
+# unique-match: a byte-identical duplicate section is a LOUD refusal, never "first match wins"
+W6="$(mkpr w6.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
+span="$(bash "$SUT" diff-span "$W6")"
+awk -v s="${span%% *}" -v e="${span##* }" 'NR==s-1, NR==e' "$W6" >> "$W6"   # exact duplicate section
+bash "$SUT" diff-valid-lines "$W6" >/dev/null 2>&1 \
+  && bad "unique-match: two matching sections were accepted (first-match-wins)" \
+  || ok "unique-match: two matching sections fail the read path"
+cp "$W6" "${WORK}/w6.before"
+bash "$SUT" replace-diff "$W6" "${WORK}/w2.diff" >/dev/null 2>&1 \
+  && bad "unique-match: replace-diff wrote despite an ambiguous window" \
+  || ok "unique-match: replace-diff refuses an ambiguous window"
+cmp -s "$W6" "${WORK}/w6.before" \
+  && ok "unique-match: the refused write left the file byte-identical" \
+  || bad "unique-match: refused write still modified the file"
+
+# no record at all -> loud failure, never a silent empty window
+W7="$(mkpr w7.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
+rm -f "${W7}.records"
+bash "$SUT" diff-valid-lines "$W7" >/dev/null 2>&1 \
+  && bad "no record: read path succeeded with no recorded digest" \
+  || ok "no record: read path fails loud"
+[[ -n "$(bash "$SUT" diff-valid-lines "$W7" 2>&1 >/dev/null)" ]] \
+  && ok "no record: a reason is printed on stderr" || bad "no record: failed silently"
+
+# byte-extent pinned THROUGH THE READER (codex-rd2-r1): the seeded body ENDS in a blank line, so a
+# reader that drops it digests different bytes than the writer and every read fails.
+W8="$(mkpr w8.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
+span="$(bash "$SUT" diff-span "$W8")"
+awk -v e="${span##* }" 'NR==e' "$W8" | grep -q '^$' \
+  && ok "byte-extent: the located body's last line is the trailing blank the writer emitted" \
+  || bad "byte-extent: reader's body end does not match the writer's composed body"
+bash "$SUT" diff-valid-lines "$W8" >/dev/null 2>&1 \
+  && ok "byte-extent: a body ending in a blank line round-trips writer -> reader" \
+  || bad "byte-extent: trailing-blank body failed to locate"
+
+# two consecutive refreshes: records ACCUMULATE, and every round still reads (fable-rd2-r3)
+W9="$(mkpr w9.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
+n0="$(grep -c 'multi-review-pr-diff' "${W9}.records")"
+bash "$SUT" replace-diff "$W9" "${WORK}/w2.diff" 2>/dev/null
+bash "$SUT" diff-valid-lines "$W9" >/dev/null 2>&1 && ok "refresh 1: read still works" || bad "refresh 1: read broke"
+bash "$SUT" replace-diff "$W9" "${WORK}/w.diff" 2>/dev/null
+bash "$SUT" diff-valid-lines "$W9" >/dev/null 2>&1 && ok "refresh 2: read still works" || bad "refresh 2: read broke"
+n2="$(grep -c 'multi-review-pr-diff' "${W9}.records")"
+(( n2 == n0 + 2 )) && ok "records accumulate across refreshes (${n0} -> ${n2})" \
+  || bad "records did not accumulate (${n0} -> ${n2}, expected $((n0+2)))"
+
+# crash-safety (fable-rd2-r2): the record is appended BEFORE the rename, so the window where the
+# document is still the OLD body but a NEW record exists must still read.
+W10="$(mkpr w10.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
+cat "${WORK}/want2" | sed 's/^/<!-- multi-review-pr-diff: /; s/$/ -->/' >> "${W10}.records"
+bash "$SUT" diff-valid-lines "$W10" >/dev/null 2>&1 \
+  && ok "crash-safety: an extra unmatched record does not break the read" \
+  || bad "crash-safety: a pending record broke the read (no recoverable state)"
+
+# both parsers agree on the located window (I3)
+W11="$(mkpr w11.md "${WORK}/w-fenced.desc" "${WORK}/w.diff")"
+a="$(bash "$SUT" diff-valid-lines "$W11" 2>/dev/null)"
+b="$(bash "$SUT" diff-lines-with-text "$W11" 2>/dev/null | cut -f1,2)"
+[[ -n "$a" && "$a" == "$b" ]] && ok "I3: both parsers see the same located window" \
+  || bad "I3: parsers disagree about the window"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

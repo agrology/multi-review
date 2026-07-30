@@ -11,6 +11,8 @@
 #   publish <scratch> <model>        -> compose via multi-review-star.sh and post one neutral PR review via gh
 #   diff-valid-lines <scratch>       -> "path\tline" for every added/context (RIGHT-side) line in ## Diff
 #   validate-anchor <scratch> <path> <start> [end] -> exit 0 iff path is changed and all lines are in the diff
+#   record-diff <scratch> <body-file> -> record the sha256 of a composed diff-section body (writers only)
+#   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
 set -uo pipefail
 
 die() { echo "multi-review-pr: $1" >&2; exit "${2:-1}"; }
@@ -44,6 +46,15 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
   [[ -f "$difff" ]] || die "diff file not found: $difff" 1
   mkdir -p "$(dirname "$out")" || die "cannot create dir for: $out" 1
   local fence; fence="$(cmd_fence "$difff")"
+  # Compose the diff-section body ONCE, into a file, so the bytes recorded and the bytes written are
+  # the same bytes. The body is everything between the "## Diff" heading and the next "## " heading,
+  # trailing blank line included — that is what a reader will digest, so it is what is recorded.
+  local bodyf; bodyf="$(mktemp)" || die "mktemp failed" 1
+  { printf '\n%s\n' "$fence"; cat "$difff"; printf '\n%s\n\n' "$fence"; } > "$bodyf" \
+    || { rm -f "$bodyf"; die "cannot compose the diff body" 1; }
+  # Record before the document exists: a crash here leaves no scratch, so `ingest` proceeds
+  # normally next time rather than finding a scratch it refuses to clobber.
+  cmd_record_diff "$out" "$bodyf" || { rm -f "$bodyf"; die "cannot record the diff digest" 1; }
   {
     printf '# PR review: %s\n\n' "$title"
     printf -- '- **PR:** %s\n'     "$url"
@@ -51,10 +62,11 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
     printf -- '- **Branch:** %s\n\n' "$branch"
     printf '## PR description\n\n'
     cat "$descf"
-    printf '\n\n## Diff\n\n%s\n' "$fence"
-    cat "$difff"
-    printf '\n%s\n\n## Review\n' "$fence"
-  } > "$out" || die "cannot write scratch file: $out" 1
+    printf '\n\n## Diff\n'
+    cat "$bodyf"
+    printf '## Review\n'
+  } > "$out" || { rm -f "$bodyf"; die "cannot write scratch file: $out" 1; }
+  rm -f "$bodyf"
 }
 
 cmd_publish() { # <scratch> <model> -> post ONE neutral review via gh (star-only)
@@ -241,42 +253,92 @@ cmd_scratch_path() { # <owner> <repo> <number>
   printf '.multi-review/reviews/%s/%s/pr-%s.md\n' "$o" "$r" "$n"
 }
 
-_diff_section() { # <scratch> -> ONLY the real diff body (the LAST "## Diff" to the next "## ")
-  # The scratch has NO trusted region — title, description and diff are all author-written, the
-  # same premise that moved control records to a sidecar. Two containments live here:
-  #
-  #  * The window starts at the LAST "## Diff", not the first (fable-rd1-r3). The PR description
-  #    is written UNFENCED above the diff, so a description that plants its own "## Diff" would
-  #    otherwise put raw unprefixed "+++"/"@@"/"+" lines inside the parser window, letting author
-  #    prose forge diff-line records. Symmetric with merge reading the LAST "## Review".
-  #  * Only this section is emitted, so nothing outside it can be read as a diff line at all.
-  #
-  # A "## Diff" cannot be forged INSIDE the real diff: every line within a hunk carries a +/-/space
-  # prefix, so "## Diff" at column 0 cannot occur there.
-  awk '
-    # A "## Diff" at or below "## Review" is NOT the diff heading. The review channel is appended
-    # by secondaries and `namespace_blocks` copies every line of it, so a heading inside a
-    # reviewer comment would otherwise redefine the window from BELOW — a forged anchor validates
-    # and the genuine diff disappears (fable-rd2-r1, reproduced). Bounding the search above the
-    # first "## Review" closes both directions: author prose sits above the real heading, reviewer
-    # prose below it, and neither can move the window.
-    /^## Review[[:space:]]*$/ { if (!rev) rev = NR }
-    /^## Diff[[:space:]]*$/   { if (!rev) start = NR }
-    { a[NR] = $0 }
-    END {
-      if (!start) exit
-      for (i = start + 1; i <= NR; i++) {
-        if (a[i] ~ /^## /) break
-        print a[i]
-      }
+# ---- the diff window is a RECORDED FACT, not a text bound -------------------------------------
+# Three earlier attempts bounded this window by heading text and each drew a `high`: the LAST
+# "## Diff" anywhere was steerable from BELOW (a heading in the review channel, which
+# `namespace_blocks` copies at column 0), bounding at the FIRST "## Review" was steerable from
+# ABOVE (the PR description closes the window before the real heading), and neither was
+# fence-aware, so a benign fenced layout example in the description emptied the window and made
+# `replace-diff` splice INTO the description. The scratch has NO trusted region — title,
+# description and diff are all author-written — so no bound over its free text can be sound.
+#
+# So the window is not located by text at all. The two writers that ever compose it (`seed`,
+# `replace-diff`) digest the exact bytes they composed and record the digest in the sidecar; a
+# reader accepts the ONE "## Diff" section whose body matches a recorded digest. Enumeration is a
+# reader-only operation: a writer has no digest to select a candidate with, so an enumerating
+# writer would fall back to text order and record a decoy's digest as ground truth.
+# See docs/specs/2026-07-30-pr-diff-window-invariant.md.
+
+_diff_digest() { shasum -a 256 | cut -d' ' -f1; }   # stdin -> sha256; never via $(...) on the body
+
+cmd_record_diff() { # <scratch> <body-file> — record the digest of the body the CALLER composed
+  local scratch="${1:?scratch}" bodyf="${2:?body-file}" d rf
+  [[ -f "$bodyf" ]] || die "diff body file not found: $bodyf" 1
+  d="$(_diff_digest < "$bodyf")" || die "cannot digest the diff body" 1
+  [[ -n "$d" ]] || die "empty digest for the diff body" 1
+  rf="$(_records_path "$scratch")"
+  mkdir -p "$(dirname "$rf")" || die "cannot create dir for: $rf" 1
+  # Records ACCUMULATE, append-only, like the head records in the same sidecar. Nothing is ever
+  # replaced, so "last wins" never has to be defined, and `replace-diff` can append BEFORE its
+  # rename — leaving no crash window in which neither the old nor the new body matches a record.
+  printf '<!-- multi-review-pr-diff: %s -->\n' "$d" >> "$rf" || die "cannot write diff record: $rf" 1
+}
+
+_locate_diff() { # <scratch> -> "<body-start> <body-end>"; exit 3 if not EXACTLY one match
+  local scratch="${1:?scratch}" rf recs s e d n=0 got=""
+  rf="$(_records_path "$scratch")"
+  recs="$(grep -oE 'multi-review-pr-diff: [0-9a-f]{64}' "$rf" 2>/dev/null | awk '{print $2}')"
+  if [[ -z "$recs" ]]; then
+    echo "multi-review-pr: no recorded diff digest for ${scratch} — the diff window cannot be verified" >&2
+    return 3
+  fi
+  # Candidate spans: each "## Diff" heading to the line before the next "## " (or EOF). A "## Diff"
+  # cannot be forged INSIDE a real diff — every hunk line carries a +/-/space prefix — so the real
+  # section always extracts correctly even when the document also contains decoys. The digest, not
+  # the position, decides which candidate is the window, which is why fence-awareness is moot here.
+  while read -r s e; do
+    d="$(awk -v s="$s" -v e="$e" 'NR >= s && NR <= e' "$scratch" | _diff_digest)"
+    if printf '%s\n' "$recs" | grep -qxF "$d"; then n=$((n + 1)); got="$s $e"; fi
+  done < <(awk '
+    /^## / {
+      if (h) { print (h + 1) " " (NR - 1); h = 0 }
+      if ($0 ~ /^## Diff[[:space:]]*$/) h = NR
+      next
     }
-  ' "$1"
+    END { if (h) print (h + 1) " " NR }
+  ' "$scratch")
+  if (( n == 0 )); then
+    echo "multi-review-pr: no '## Diff' section in ${scratch} matches a recorded digest — refusing to guess the diff window" >&2
+    return 3
+  fi
+  # Never "first match wins": under that rule a decoy above the real section takes the window and
+  # `replace-diff` splices there, deleting the description tail and the real diff (codex-rd1-r1).
+  if (( n > 1 )); then
+    echo "multi-review-pr: ${n} '## Diff' sections in ${scratch} match a recorded digest — ambiguous diff window, refusing" >&2
+    return 3
+  fi
+  printf '%s\n' "$got"
+}
+
+cmd_diff_span() { # <scratch> -> "<body-start> <body-end>" for the verified window
+  local scratch="${1:?scratch}"
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  _locate_diff "$scratch"
+}
+
+_diff_section() { # <scratch> -> ONLY the verified diff body; exit 3 if it cannot be verified
+  local span
+  span="$(_locate_diff "$1")" || return $?
+  awk -v s="${span%% *}" -v e="${span##* }" 'NR >= s && NR <= e' "$1"
 }
 
 cmd_diff_valid_lines() { # <scratch> -> "path\tnewline" for added/context (RIGHT-side) lines
-  local scratch="${1:?scratch}"
+  local scratch="${1:?scratch}" sect
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
-  _diff_section "$scratch" | awk '
+  # Status 3, not an empty result: "no changed lines" and "the parser lost the diff" must not be
+  # indistinguishable. Callers degrade the anchor to the summary; the review still posts.
+  sect="$(_diff_section "$scratch")" || return 3
+  printf '%s\n' "$sect" | awk '
     # A "+++ " line declares a path ONLY in the header region between "diff --git" and the first
     # "@@" (fable-rd1-r2). Inside a hunk it is CONTENT: an added line whose text is "++ b/x"
     # renders as "+++ b/x", and honouring it there let a malicious push steer an agreed finding
@@ -368,34 +430,34 @@ cmd_replace_diff() { # <scratch> <diff-file> — swap ## Diff, preserve everythi
   local scratch="${1:?scratch}" difff="${2:?diff-file}"
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
   [[ -f "$difff"   ]] || die "diff file not found: $difff" 1
-  local dstart rstart
-  # The LAST "## Diff" ABOVE the review channel. tail -1 over the whole file was a regression:
-  # one "## Diff" in a secondary's prose made dstart exceed rstart and bricked every later
-  # refresh (fable-rd2-r2, gemini-rd2-r1). Author prose sits above the heading, reviewer prose
-  # below it; bounding at "## Review" excludes both.
-  local _rl
-  _rl="$(grep -n '^## Review[[:space:]]*$' "$scratch" | head -1 | cut -d: -f1)"
-  if [[ -n "$_rl" ]]; then
-    dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | awk -F: -v r="$_rl" '$1 < r {n=$1} END {print n}')"
-  else
-    dstart="$(grep -n '^## Diff[[:space:]]*$' "$scratch" | tail -1 | cut -d: -f1)"
-  fi
-  [[ -n "$dstart" ]] || die "no '## Diff' section in: $scratch" 1
-  # Everything from the LAST "## Review" is preserved byte-identical — that is the whole point
-  # of refresh, and why ingest refuses to touch an existing scratch.
-  rstart="$(grep -n '^## Review[[:space:]]*$' "$scratch" | tail -1 | cut -d: -f1)"
-  [[ -n "$rstart" ]] || die "no '## Review' section in: $scratch" 1
-  (( rstart > dstart )) || die "'## Review' precedes '## Diff' in: $scratch" 1
+  # The window comes from the shared locator, never from a heading search — that search is what
+  # three attempts got wrong in three directions. A window that cannot be VERIFIED is not written
+  # to: silently destroying the description and the previous round's diff is far worse than a
+  # stalled refresh the engineer can see.
+  local span
+  span="$(_locate_diff "$scratch")" \
+    || die "cannot verify the diff window in ${scratch} — refusing to write (see the reason above)" 1
+  local bstart="${span%% *}" bend="${span##* }"
   local fence; fence="$(cmd_fence "$difff")"
-  local tmp; tmp="$(mktemp)" || die "mktemp failed" 1
+  local bodyf; bodyf="$(mktemp)" || die "mktemp failed" 1
+  { printf '\n%s\n' "$fence"; cat "$difff"; printf '%s\n\n' "$fence"; } > "$bodyf" \
+    || { rm -f "$bodyf"; die "cannot compose the diff body" 1; }
+  # Append the record BEFORE the rename. Records accumulate and a reader matches against ANY of
+  # them, so neither crash window is unrecoverable: before the rename the old body still matches
+  # the old record, after it the new body matches the new one. Recording after the rename would
+  # leave a document no record matches, wedging every later read and write with nothing to run.
+  cmd_record_diff "$scratch" "$bodyf" || { rm -f "$bodyf"; die "cannot record the diff digest" 1; }
+  local tmp; tmp="$(mktemp)" || { rm -f "$bodyf"; die "mktemp failed" 1; }
+  # Splice on the located span, so every byte outside the body — description, header, and the whole
+  # review channel from its heading on — is carried through untouched.
   {
-    head -n $((dstart - 1)) "$scratch"
-    printf '## Diff\n\n%s\n' "$fence"
-    cat "$difff"
-    printf '%s\n\n' "$fence"
-    tail -n +"$rstart" "$scratch"
-  } > "$tmp" || { rm -f "$tmp"; die "cannot write replacement diff" 1; }
-  mv "$tmp" "$scratch" || { rm -f "$tmp"; die "cannot update: $scratch" 1; }
+    head -n $((bstart - 2)) "$scratch"
+    printf '## Diff\n'
+    cat "$bodyf"
+    tail -n +$((bend + 1)) "$scratch"
+  } > "$tmp" || { rm -f "$tmp" "$bodyf"; die "cannot write replacement diff" 1; }
+  mv "$tmp" "$scratch" || { rm -f "$tmp" "$bodyf"; die "cannot update: $scratch" 1; }
+  rm -f "$bodyf"
 }
 
 # _head_and_merge_base <repo> <ref> <number> -> "head|merge-base"
@@ -504,12 +566,13 @@ _anchor_line_text() { # <scratch> <path> <line> -> the RIGHT-side line's text, o
 }
 
 cmd_diff_lines_with_text() { # <scratch> -> "path\tnewline\ttext" for RIGHT-side diff lines
-  local scratch="${1:?scratch}"
+  local scratch="${1:?scratch}" sect
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
-  # Same two containments as cmd_diff_valid_lines, from the same shared _diff_section — the two
-  # parsers must agree about what counts as a diff line, or an anchor can validate against one
-  # view and remap against the other.
-  _diff_section "$scratch" | awk '
+  # Same containments as cmd_diff_valid_lines, over the same verified window from the same shared
+  # _diff_section — the two parsers must agree about what counts as a diff line, or an anchor can
+  # validate against one view and remap against the other.
+  sect="$(_diff_section "$scratch")" || return 3
+  printf '%s\n' "$sect" | awk '
     /^diff --git / { inhdr = 1; inhunk = 0; p = ""; next }
     /^diff --cc |^diff --combined / { inhdr = 0; inhunk = 0; p = ""; next }
     /^@@@/ { inhdr = 0; inhunk = 0; p = ""; next }
@@ -614,6 +677,8 @@ main() {
     diff-lines-with-text) cmd_diff_lines_with_text "$@" ;;
     record-head)  cmd_record_head "$@" ;;
     head-record)  cmd_head_record "$@" ;;
+    record-diff)  cmd_record_diff "$@" ;;
+    diff-span)    cmd_diff_span "$@" ;;
     replace-diff) cmd_replace_diff "$@" ;;
     fence)        cmd_fence "$@" ;;
     seed)         cmd_seed "$@" ;;
