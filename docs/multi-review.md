@@ -8,7 +8,7 @@
 
 - **Primary** (Claude, via `/multi-review`): drafts/revises the doc, dispatches secondaries,
   adjudicates every finding, and decides convergence.
-- **Secondaries** (independent reviewers — `fable` always included, plus any of `codex`,
+- **Secondaries** (independent reviewers — `fable` by default unless `MULTI_REVIEW_FABLE=off`, plus any of `codex`,
   `gemini` you add): each reviews its OWN isolated copy of the doc. A secondary never sees
   another secondary's findings or the primary's responses — that independence is the point.
 - **Autonomous by default:** `/multi-review` fans out, waits, merges, and adjudicates

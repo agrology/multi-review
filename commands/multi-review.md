@@ -389,7 +389,7 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    fence — the findings are usually real and merely misplaced.
    - **All secondaries quarantined** (including `fable`) → an **anomaly stop**: do not advance the
      marker; surface every quarantine reason and STOP. A round with zero trustworthy findings
-     cannot merge. (In practice `fable` runs in-harness and should always be admissible, so this
+     cannot merge. (With the fable floor on, `fable` runs in-harness and should be admissible, so this
      should not occur.)
 7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
    <id>:<reason> ...] "<doc>" <admitted copies...>`.
