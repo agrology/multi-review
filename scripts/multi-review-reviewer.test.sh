@@ -494,13 +494,33 @@ done
 # never flipped. auto_edit (not yolo) approves edit tools only, never shell.
 bash "$SUT" command "$D" --reviewer gemini > "${WORK}/argv-approval.bin" 2>/dev/null
 appr=(); while IFS= read -r -d '' a; do appr+=("$a"); done < "${WORK}/argv-approval.bin"
+
+# issue #52 capture. These three assertions have failed twice on macos/bash-3.2, a DIFFERENT one
+# each time, passing on re-run — and one of those failures printed an argv that visibly contained
+# the token it claimed was missing. Two hypotheses (SIGPIPE under pipefail; gemini CLI absent)
+# were tested and refuted, so the open question is whether the ARGV itself differs or only the
+# assertion's view of it.
+#
+# The dump must be armed IN ADVANCE, not gathered after a red run: ${WORK} is a mktemp dir removed
+# by the EXIT trap, so by the time CI reports the failure the bytes are already gone. Re-running is
+# worse than useless here — it overwrites the run conclusion and destroys the only evidence.
+argv52_capture() {
+  echo "  [#52] parsed elements: ${#appr[@]}"
+  local i=0 a
+  for a in ${appr[@]+"${appr[@]}"}; do echo "  [#52] argv[$i]=<${a}>"; i=$((i + 1)); done
+  echo "  [#52] raw bytes of argv-approval.bin:"
+  od -c "${WORK}/argv-approval.bin" 2>&1 | sed 's/^/  [#52] /'
+}
+
 printf '%s\n' "${appr[@]}" | grep -qx -- '--approval-mode' \
-  && ok "gemini argv carries --approval-mode" || bad "gemini argv lacks --approval-mode"
+  && ok "gemini argv carries --approval-mode" \
+  || { bad "gemini argv lacks --approval-mode"; argv52_capture; }
 printf '%s\n' "${appr[@]}" | grep -qx -- 'auto_edit' \
   && ok "gemini approval mode is auto_edit (edit tools only, not yolo)" \
-  || bad "gemini approval mode is not auto_edit: ${appr[*]}"
+  || { bad "gemini approval mode is not auto_edit: ${appr[*]}"; argv52_capture; }
 ! printf '%s\n' "${appr[@]}" | grep -qx -- 'yolo' \
-  && ok "gemini argv does NOT use yolo (would auto-approve shell too)" || bad "gemini argv uses yolo"
+  && ok "gemini argv does NOT use yolo (would auto-approve shell too)" \
+  || { bad "gemini argv uses yolo"; argv52_capture; }
 
 # --- vendor mapping: bare OpenAI reasoning model ids (codex's own help uses `model="o3"`) ---
 for id in o1 o3 o1-preview o3-mini; do
