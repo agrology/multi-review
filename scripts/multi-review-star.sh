@@ -148,6 +148,35 @@ STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
 REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
 
+# Emitted only when MULTI_REVIEW_FABLE=off left the set empty. Reasons are the reviewer helper's
+# own `check` stderr — the same strings `doctor` prints — so this never invents a diagnosis it
+# cannot stand behind, and it stays correct as provider readiness rules change.
+_no_secondaries_notice() {
+  local id reason
+  echo "multi-review-star: no secondaries available." >&2
+  echo "  fable is disabled (MULTI_REVIEW_FABLE=${MULTI_REVIEW_FABLE:-})" >&2
+  # ROSTER DUPLICATION: this list must stay in step with the one `doctor` walks in
+  # multi-review-reviewer.sh. Adding a provider without updating both makes THIS diagnosis
+  # silently incomplete — the operator is told why two providers are unusable and never hears
+  # about the third. Left as a literal rather than refactored to a shared roster: extracting one
+  # is a change to the registry's public surface, out of scope here, and the duplication predates
+  # this function.
+  # Report BOTH states. Listing only broken providers is useless in the dominant case — the
+  # operator exported off and ran bare while a provider sat installed and merely unnamed, and a
+  # refusal that mentions nothing gives them nothing to act on.
+  for id in codex gemini; do
+    if reason="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then
+      echo "  • ${id}: available — add --reviewers ${id}" >&2
+    else
+      echo "  ✗ ${id}: ${reason:-unavailable}" >&2
+    fi
+  done
+  echo "" >&2
+  echo "A star review needs at least one independent secondary. Either:" >&2
+  echo "  --reviewers <id>          name an available provider" >&2
+  echo "  MULTI_REVIEW_FABLE=on     re-enable fable (spends Claude tokens)" >&2
+}
+
 # resolve-set [--fable-floor] [--reviewers csv] [--pref-file path]
 # Source precedence: --reviewers(non-empty) > MULTI_REVIEW_REVIEWERS(non-empty) > pref-file(non-empty).
 # Pref source ONLY: strip literal fable, drop unknown/unavailable ids with a notice (degrade, never
@@ -209,7 +238,13 @@ cmd_resolve_set() {
       out="${out}${row}"$'\n' ;;
     esac
   fi
-  [[ -n "$out" ]] || exit 3            # empty set -> not star (legacy path only; unreachable with --fable-floor)
+  # Empty set. Two distinct causes, and they must not be conflated: the LEGACY no-floor path
+  # (a caller that never asked for a floor) stays quiet as before, while a set emptied BY the
+  # switch gets the operator a diagnosis. Same exit code — the caller's routing is unchanged.
+  if [[ -z "$out" ]]; then
+    (( fable_floor && ! floor_on )) && _no_secondaries_notice
+    exit 3
+  fi
   printf '%s' "$out"
 }
 

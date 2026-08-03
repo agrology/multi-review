@@ -174,6 +174,60 @@ for v in on ON 1 true; do
     || bad "'$v' did not keep the floor (got '$out')"
 done
 
+# --- refusal: fable off and nothing else usable ---
+# A dedicated stub: everything RESOLVES (so ids are known) but nothing CHECKS as available, and
+# each failure carries a reason — mirroring how the real reviewer.sh reports an absent CLI.
+STUB_NONE="${WORK}/stub-none.sh"
+cat > "$STUB_NONE" <<'STUBEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+sub="${1:-}"; shift || true
+id=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--reviewer" ]] && { id="${2:-}"; shift 2; continue; }; shift; done
+case "$sub" in
+  resolve) case "$id" in codex|fable|gemini) echo "${id}|vendor|kind|model|no"; exit 0;; *) exit 1;; esac ;;
+  check)   echo "${id} CLI not on PATH" >&2; exit 1 ;;
+  *) exit 2 ;;
+esac
+STUBEOF
+chmod +x "$STUB_NONE"
+
+unset MULTI_REVIEW_REVIEWERS
+MULTI_REVIEW_FABLE=off MULTI_REVIEW_REVIEWER_SH="$STUB_NONE" bash "$SUT" \
+  resolve-set --fable-floor >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "refusal: no secondaries -> exit 3" \
+  || bad "an empty secondary set did not exit 3"
+
+msg="$(MULTI_REVIEW_FABLE=off MULTI_REVIEW_REVIEWER_SH="$STUB_NONE" bash "$SUT" \
+  resolve-set --fable-floor 2>&1 >/dev/null)"
+[[ "$msg" == *"no secondaries available"* ]] \
+  && ok "refusal: says no secondaries are available" \
+  || bad "refusal message missing the headline ('$msg')"
+[[ "$msg" == *"MULTI_REVIEW_FABLE"* ]] \
+  && ok "refusal: names the switch that disabled fable" \
+  || bad "refusal did not mention MULTI_REVIEW_FABLE ('$msg')"
+[[ "$msg" == *"codex CLI not on PATH"* && "$msg" == *"gemini CLI not on PATH"* ]] \
+  && ok "refusal: names EACH unavailable provider with its reason" \
+  || bad "refusal did not relay per-provider reasons ('$msg')"
+
+# The DOMINANT real case: the operator exported off and ran bare, but a provider is installed and
+# simply was not named. Listing only BROKEN providers tells them nothing — the actionable fact is
+# that codex is ready and one flag away. (STUB: codex checks OK, gemini fails.)
+msg="$(MULTI_REVIEW_FABLE=off MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" \
+  resolve-set --fable-floor 2>&1 >/dev/null)"
+[[ "$msg" == *"codex"*"available"* ]] \
+  && ok "refusal: names an AVAILABLE provider that was simply not selected" \
+  || bad "refusal hid a ready-to-use provider ('$msg')"
+[[ "$msg" == *"gemini"* ]] \
+  && ok "refusal: still names the unavailable provider alongside it" \
+  || bad "refusal dropped the unavailable provider ('$msg')"
+
+# The refusal must NOT fire when the emptiness has nothing to do with the switch — the legacy
+# no-floor path already exits 3 and must keep its quiet behaviour.
+msg="$(MULTI_REVIEW_REVIEWER_SH="$STUB_NONE" bash "$SUT" resolve-set 2>&1 >/dev/null)"
+[[ "$msg" != *"no secondaries available"* ]] \
+  && ok "refusal: silent on the legacy no-floor empty path" \
+  || bad "the refusal notice leaked onto the legacy path ('$msg')"
+
 # registry-unknown id in pref degrades (dropped, not exit 2); bad id alone -> fable-only.
 # Capture resolve-set's OWN exit (not the trailing pipe's) so the exit-0 assertion is real (fable-rd1-r3).
 printf 'bogus\n' > "$PREF"
