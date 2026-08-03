@@ -214,7 +214,11 @@ msg="$(MULTI_REVIEW_FABLE=off MULTI_REVIEW_REVIEWER_SH="$STUB_NONE" bash "$SUT" 
 # that codex is ready and one flag away. (STUB: codex checks OK, gemini fails.)
 msg="$(MULTI_REVIEW_FABLE=off MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" \
   resolve-set --fable-floor 2>&1 >/dev/null)"
-[[ "$msg" == *"codex"*"available"* ]] \
+# Match the ACTIONABLE text, not the word "available": the unavailable branch prints
+# "✗ codex: unavailable", and *"codex"*"available"* matches that too — an assertion that
+# passes on the broken code and can therefore never fail (caught by star/no-secondaries-
+# available-split, which is precisely why that entry exists).
+[[ "$msg" == *"add --reviewers codex"* ]] \
   && ok "refusal: names an AVAILABLE provider that was simply not selected" \
   || bad "refusal hid a ready-to-use provider ('$msg')"
 [[ "$msg" == *"gemini"* ]] \
