@@ -269,4 +269,59 @@ else
   bad "cross-manifest sync could not run — marketplace.json or plugin.json missing (this is a FAILURE, not a skip)"
 fi
 
+# --- doc↔code sync: a documented DEFAULT cannot drift from the constant it describes (#44) ---
+# This suite had no temp dir (it makes them ad hoc and leaks them); the fixtures below need one
+# that is cleaned up, so declare it here with the first EXIT trap in the file.
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+
+DOCCHK="${ROOT}/scripts/multi-review-docs-check.sh"
+[[ -x "$DOCCHK" ]] && ok "docs-check: present and executable" || bad "docs-check missing/not executable: $DOCCHK"
+
+# (a) the real repo must be in sync — this is the guard itself
+bash "$DOCCHK" "$ROOT" >/dev/null 2>&1 \
+  && ok "doc↔code: every documented MULTI_REVIEW_DOC_DIRS default matches DOC_DIRS_DEFAULT" \
+  || bad "doc↔code default drift in this repo (run scripts/multi-review-docs-check.sh)"
+
+# A guard whose failure path is never exercised is indistinguishable from one that cannot fail —
+# the defect class #44 IS. (b)-(d) run it against synthetic roots so each outcome is demonstrated.
+mkroot() {                      # mkroot <dir> <documented-default> [<code-default>]
+  local d="$1" doc="$2" code="${3:-docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans}"
+  mkdir -p "$d/scripts" "$d/docs" "$d/.agents/skills/multi-review/protocol" "$d/commands"
+  printf "DOC_DIRS_DEFAULT='%s'\n" "$code" > "$d/scripts/multi-review-core.sh"
+  local f
+  for f in README.md docs/multi-review.md \
+           .agents/skills/multi-review/protocol/multi-review.md commands/multi-review.md; do
+    # NB: backticks are literal inside single quotes — do NOT backslash-escape them here. Doing so
+    # writes a literal backslash into the fixture, the pattern then matches nothing, and the drift
+    # test passes for the WRONG reason (blind rather than drifted). Caught by assertion (b).
+    printf 'x `MULTI_REVIEW_DOC_DIRS` (default `%s`) y\n' "$doc" > "$d/$f"
+  done
+}
+
+# (b) aligned fixture -> pass
+FX="${WORK}/fx-ok"; mkroot "$FX" "docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans"
+bash "$DOCCHK" "$FX" >/dev/null 2>&1 \
+  && ok "docs-check: an aligned tree passes" || bad "docs-check false-positived on an aligned tree"
+
+# (c) drifted fixture -> fail, and NAME the offending site (this is #44's exact shape)
+FX2="${WORK}/fx-drift"; mkroot "$FX2" "docs/specs docs/plans"
+bash "$DOCCHK" "$FX2" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "docs-check: a stale documented default FAILS" \
+  || bad "docs-check passed a doc that contradicts the code (#44 would recur)"
+msg="$(bash "$DOCCHK" "$FX2" 2>&1 >/dev/null)"
+[[ "$msg" == *"docs/multi-review.md"* && "$msg" == *"documents"* ]] \
+  && ok "docs-check: names the drifted file and both values" \
+  || bad "docs-check failure is not actionable ('$msg')"
+
+# (d) prose the pattern cannot see -> BLIND, not clean. Without this the guard silently degrades
+# to asserting nothing the moment someone reflows a sentence or renames the variable.
+FX3="${WORK}/fx-blind"; mkroot "$FX3" "docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans"
+for f in README.md docs/multi-review.md \
+         .agents/skills/multi-review/protocol/multi-review.md commands/multi-review.md; do
+  echo 'the default is documented in prose the regex cannot match' > "$FX3/$f"
+done
+bash "$DOCCHK" "$FX3" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "docs-check: matching nothing is a FAILURE (blind, not clean)" \
+  || bad "docs-check passed while matching zero sites — it can no longer fail"
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

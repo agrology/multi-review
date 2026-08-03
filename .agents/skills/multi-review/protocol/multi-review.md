@@ -160,7 +160,8 @@ each round is a normal terminal outcome, not a failure state.
 ## Egress
 
 - **Mechanical (primary side):** `/multi-review` refuses to arm on any path outside
-  `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans`), or on a symlink/`../` escape.
+  `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowers/specs
+  docs/superpowers/plans`), or on a symlink/`../` escape.
 - **Protocol requirement (secondary side, trusted):** a conforming secondary reads only the
   copy it is pointed at, captures no env/secrets, and uploads nothing beyond that copy's
   content without explicit authorization. This is a trust contract, not a mechanical

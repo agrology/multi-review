@@ -435,6 +435,23 @@ mutations() {
     '    if reason="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then' \
     '    if false; then'
 
+  # --- doc/code default sync (#44) ---
+  # The comparison itself. Lose it and the checker walks every doc, reports success, and the
+  # described-but-unenforced state #44 recorded returns with a green gate on top of it.
+  mutate 'docs/default-comparison' 'scripts/multi-review-docs-check.sh' replace \
+    'docs-check passed a doc that contradicts the code' 'multi-review-packaging.test.sh' \
+    '        if got != want:' \
+    '        if False:'
+
+  # The anti-vacuity floor. This is the one that matters most: rename the variable or reflow the
+  # prose and every regex misses, so the loop finds nothing and the check passes while asserting
+  # NOTHING. A guard that silently degrades to always-green is the exact defect #44 is about, and
+  # without this entry that degradation is invisible.
+  mutate 'docs/default-antivacuity' 'scripts/multi-review-docs-check.sh' replace \
+    'docs-check passed while matching zero sites' 'multi-review-packaging.test.sh' \
+    'if found < MIN_SITES:' \
+    'if False:'
+
 }
 
 if (( list )); then mutations; exit 0; fi
