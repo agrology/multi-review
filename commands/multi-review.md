@@ -5,8 +5,9 @@ argument-hint: "[doc-path | PR-URL] [--reviewers <csv>]"
 
 You are the **primary** in a multi-review star review: you dispatch N independent secondaries,
 adjudicate their findings, and drive convergence — always stopping at a **human gate**. `fable`
-is always one of the secondaries (your guaranteed in-harness review voice); any `--reviewers`
-you name are added to it. Drive the review with the repo's shell helpers; you own prose edits
+is one of the secondaries by default (your guaranteed in-harness review voice) and any
+`--reviewers` you name are added to it — unless the operator set `MULTI_REVIEW_FABLE=off`, which
+suppresses that floor; see §2. Drive the review with the repo's shell helpers; you own prose edits
 and marker flips, the helpers own grammar/merge/convergence. There is one review model — star —
 for every doc; never advance past the human gate.
 
@@ -44,6 +45,7 @@ pref. When it is genuinely ambiguous whether a name is this run's choice, **ask 
 | "multi-review with just codex this time" | one-off | codex (+fable) | none |
 | "just fable this once" | one-off | fable only | none |
 | "forget the reviewers" / "fable-only from now on" | revoke | fable only | `remember-set --clear` |
+| revoke while `MULTI_REVIEW_FABLE=off` | revoke | *(empty)* → refusal | `remember-set --clear`, then STOP on exit 3 |
 | "like last time with codex?" (a question about a past run) | not a choice | (per pref/env) | none |
 | ambiguous whether it's this run's choice | ask (default to one-off) | (per ask) | none until clarified |
 
@@ -108,7 +110,7 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh parse "<positional>"`.
     message — it names the dirs searched and any sibling holding dated docs — and ask for an
     explicit path. Do NOT guess.
 
-## 2. Resolve the reviewer set (`fable` always included)
+## 2. Resolve the reviewer set (`fable` included unless `MULTI_REVIEW_FABLE=off`)
 
 Determine the secondaries once, here, and carry the rows through the whole run — never
 re-resolve later (a mutable env var could otherwise swap providers mid-review unnoticed).
@@ -124,15 +126,25 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 2. **Fresh-request check:** run
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-set --fable-floor --pref-file
    .multi-review/reviewers.pref`, appending `--reviewers <csv>` when §1 extracted a set (flag or
-   prose). Precedence is flag/prose → `MULTI_REVIEW_REVIEWERS` → the pref → fable-only; the pref is
-   consulted **only** when neither a named set nor the env supplied one.
+   prose). Precedence is flag/prose → `MULTI_REVIEW_REVIEWERS` → the pref → the fable floor
+   (suppressed when `MULTI_REVIEW_FABLE=off`, in which case an otherwise-empty set is a refusal,
+   not a fallback); the pref is consulted **only** when neither a named set nor the env supplied
+   one.
    - **One-off exception (§1, fable-rd1-r1):** when the §1 intent is a **one-off override**, OMIT
      `--pref-file` from this call, so the remembered combo does not leak into a run the user scoped
      to just this once (this is required for "just fable this once" to actually resolve fable-only —
      an empty `--reviewers` alone would fall through to the pref).
-   - **Exit 0** → the resolved set, one `id|vendor|kind|model|has-skill` row per line. `fable` is
-     always present (the `--fable-floor` union), so the set is never empty. These are the
-     secondaries for the whole run.
+   - **Exit 0** → the resolved set, one `id|vendor|kind|model|has-skill` row per line. These are
+     the secondaries for the whole run. `fable` is present via the `--fable-floor` union unless
+     the operator set `MULTI_REVIEW_FABLE=off`, in which case it appears only when a source
+     NAMED it.
+   - **Exit 3** → no secondaries are available at all (the switch is off and nothing else is
+     usable). `resolve-set` has already printed a per-provider diagnosis naming both the
+     providers that are unusable and any that are ready but simply were not selected. **Relay it
+     and STOP — arm nothing.** A star review with no independent secondary is not a cheaper
+     review; do not proceed as a primary-only self-review.
+   - **Exit 2 naming `MULTI_REVIEW_FABLE`** → the operator's env value is not a recognised
+     on/off spelling. Relay it and STOP.
    - **Capture `resolve-set`'s stderr.** When it prints a `pref reviewer '<id>' … dropping` line
      (a stale/unavailable remembered reviewer self-healed away), **relay it at arm time** (§3) so a
      silently narrowed combo is visible.
@@ -377,7 +389,7 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    fence — the findings are usually real and merely misplaced.
    - **All secondaries quarantined** (including `fable`) → an **anomaly stop**: do not advance the
      marker; surface every quarantine reason and STOP. A round with zero trustworthy findings
-     cannot merge. (In practice `fable` runs in-harness and should always be admissible, so this
+     cannot merge. (With the fable floor on, `fable` runs in-harness and should be admissible, so this
      should not occur.)
 7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
    <id>:<reason> ...] "<doc>" <admitted copies...>`.

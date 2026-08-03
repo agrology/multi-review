@@ -22,6 +22,22 @@ set -uo pipefail
 
 die() { echo "multi-review-star: $1" >&2; exit "${2:-1}"; }
 
+# MULTI_REVIEW_FABLE — operator switch for the fable FLOOR (the implicit union), not for fable
+# itself. Unset/on reproduces the historical behaviour exactly. off suppresses the floor, so
+# fable is included only when a source NAMES it. An unrecognized value is fatal on purpose:
+# silently reading it as "on" would restore the in-harness token spend the switch exists to stop,
+# with no signal to the operator that their setting did nothing.
+_fable_floor_enabled() {            # -> 0 floor applies, 1 suppressed; exits 2 on a bad value
+  local v="${MULTI_REVIEW_FABLE:-on}"
+  # LC_ALL=C: an unpinned fold has already produced a locale bug in this repo (vendor_of_model).
+  v="$(printf '%s' "$v" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  case "$v" in
+    on|1|true)   return 0 ;;
+    off|0|false) return 1 ;;
+    *) die "MULTI_REVIEW_FABLE: unrecognized value '${MULTI_REVIEW_FABLE:-}' (want on|1|true or off|0|false)" 2 ;;
+  esac
+}
+
 # header region = lines before the first "## " section heading
 header_region() { awk '/^## /{ exit } { print }' "$1"; }
 
@@ -132,6 +148,35 @@ STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
 REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
 
+# Emitted only when MULTI_REVIEW_FABLE=off left the set empty. Reasons are the reviewer helper's
+# own `check` stderr — the same strings `doctor` prints — so this never invents a diagnosis it
+# cannot stand behind, and it stays correct as provider readiness rules change.
+_no_secondaries_notice() {
+  local id reason
+  echo "multi-review-star: no secondaries available." >&2
+  echo "  fable is disabled (MULTI_REVIEW_FABLE=${MULTI_REVIEW_FABLE:-})" >&2
+  # ROSTER DUPLICATION: this list must stay in step with the one `doctor` walks in
+  # multi-review-reviewer.sh. Adding a provider without updating both makes THIS diagnosis
+  # silently incomplete — the operator is told why two providers are unusable and never hears
+  # about the third. Left as a literal rather than refactored to a shared roster: extracting one
+  # is a change to the registry's public surface, out of scope here, and the duplication predates
+  # this function.
+  # Report BOTH states. Listing only broken providers is useless in the dominant case — the
+  # operator exported off and ran bare while a provider sat installed and merely unnamed, and a
+  # refusal that mentions nothing gives them nothing to act on.
+  for id in codex gemini; do
+    if reason="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then
+      echo "  • ${id}: available — add --reviewers ${id}" >&2
+    else
+      echo "  ✗ ${id}: ${reason:-unavailable}" >&2
+    fi
+  done
+  echo "" >&2
+  echo "A star review needs at least one independent secondary. Either:" >&2
+  echo "  --reviewers <id>          name an available provider" >&2
+  echo "  MULTI_REVIEW_FABLE=on     re-enable fable (spends Claude tokens)" >&2
+}
+
 # resolve-set [--fable-floor] [--reviewers csv] [--pref-file path]
 # Source precedence: --reviewers(non-empty) > MULTI_REVIEW_REVIEWERS(non-empty) > pref-file(non-empty).
 # Pref source ONLY: strip literal fable, drop unknown/unavailable ids with a notice (degrade, never
@@ -148,6 +193,10 @@ cmd_resolve_set() {
       *) die "resolve-set: unexpected argument: $1" 2 ;;
     esac
   done
+  # Validate BEFORE any source selection, and regardless of --fable-floor: a typo'd value must
+  # fail on every path, not only the one that happens to consult the floor.
+  local floor_on=1
+  _fable_floor_enabled || floor_on=0
   # Every source is comma-OR-space tolerant: `tr ',' ' '` on all three, so a csv env value
   # ("codex,gemini") splits the same as the flag and pref (fable-rd1-r1).
   if [[ -n "$csv" ]]; then
@@ -181,13 +230,21 @@ cmd_resolve_set() {
     out="${out}${row}"$'\n'
   done
   set +f
-  if (( fable_floor )); then
+  # floor_on comes from MULTI_REVIEW_FABLE. The floor is the IMPLICIT union only — a fable named
+  # by flag/env/prose was already resolved by the loop above and is untouched here.
+  if (( fable_floor && floor_on )); then
     case " $seen " in *" fable "*) : ;; *)
       row="$("$REVIEWER_SH" resolve --reviewer fable 2>/dev/null)" || die "fable unavailable" 2
       out="${out}${row}"$'\n' ;;
     esac
   fi
-  [[ -n "$out" ]] || exit 3            # empty set -> not star (legacy path only; unreachable with --fable-floor)
+  # Empty set. Two distinct causes, and they must not be conflated: the LEGACY no-floor path
+  # (a caller that never asked for a floor) stays quiet as before, while a set emptied BY the
+  # switch gets the operator a diagnosis. Same exit code — the caller's routing is unchanged.
+  if [[ -z "$out" ]]; then
+    (( fable_floor && ! floor_on )) && _no_secondaries_notice
+    exit 3
+  fi
   printf '%s' "$out"
 }
 

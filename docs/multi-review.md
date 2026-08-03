@@ -8,7 +8,7 @@
 
 - **Primary** (Claude, via `/multi-review`): drafts/revises the doc, dispatches secondaries,
   adjudicates every finding, and decides convergence.
-- **Secondaries** (independent reviewers — `fable` always included, plus any of `codex`,
+- **Secondaries** (independent reviewers — `fable` by default unless `MULTI_REVIEW_FABLE=off`, plus any of `codex`,
   `gemini` you add): each reviews its OWN isolated copy of the doc. A secondary never sees
   another secondary's findings or the primary's responses — that independence is the point.
 - **Autonomous by default:** `/multi-review` fans out, waits, merges, and adjudicates
@@ -104,9 +104,13 @@ convergence impossible.
 
 ## Fable floor & independence
 
-- `fable` is always included in the secondary set — it runs in-harness (no CLI, no extra
-  auth), so a round always has at least one admissible secondary even if every external
+- `fable` is included in the secondary set by default — it runs in-harness (no CLI, no extra
+  auth), so a round normally has at least one admissible secondary even if every external
   provider is unavailable or gets quarantined.
+- That floor is an operator switch, not a law: `MULTI_REVIEW_FABLE=off` suppresses it, so a run
+  costs no Claude tokens for review. `fable` still appears when a source NAMES it. With the floor
+  off and no other secondary usable the run **refuses to arm** rather than degrading to a
+  primary-only self-review — a review with no independent voice is not a cheaper review.
 - A secondary is **quarantined** — excluded from the merge, with its reason recorded durably
   in the doc — when it can't be dispatched, times out, or fails vendor verification (its
   disclosed model doesn't match the vendor it was dispatched as). All secondaries quarantined

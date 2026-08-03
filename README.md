@@ -8,7 +8,8 @@
 
 An **opt-in, human-gated** code/design review where Claude (the **primary**) fans a doc or PR out
 to **N independent secondaries**, adjudicates their findings, and converges — always stopping at a
-**human approval gate**. `fable` is always one secondary (Claude's guaranteed review voice); add
+**human approval gate**. `fable` is one secondary by default (Claude's guaranteed review voice),
+and `MULTI_REVIEW_FABLE=off` drops it so a run spends no Claude tokens on review; add
 cross-vendor reviewers (`codex`, `gemini`) for independent perspective.
 
 One command, one model — **star** — for both local design docs and GitHub PRs.
@@ -19,7 +20,7 @@ flowchart TB
   subgraph R["each round · up to MULTI_REVIEW_MAX_ROUNDS (default 5)"]
     direction TB
     P["Claude · primary<br/>(neutral — adjudicates,<br/>never authors findings)"]
-    P -- blind copy --> F["fable · always"]
+    P -- blind copy --> F["fable · default"]
     P -- blind copy --> C["codex"]
     P -- blind copy --> G["gemini"]
     F & C & G -- findings --> M["merge + verify-vendor<br/>(impostor → quarantine, not fail)"]
@@ -81,9 +82,12 @@ unless a named test catches it — because a green suite is not by itself eviden
 - **The combo is remembered per repo.** The last explicitly-named set is saved to
   `.multi-review/reviewers.pref`; a later bare run reuses it (self-healing — a reviewer that
   isn't set up is dropped for that run with a notice, not an error). Say "forget the reviewers"
-  to reset to fable-only.
+  to reset to fable-only (which, under `MULTI_REVIEW_FABLE=off`, leaves nothing — the next run
+  refuses to arm rather than self-reviewing).
 - PR refs also accept `owner/repo#n` and, in the current repo, `#n`.
-- The set is always **`(--reviewers) ∪ {fable}`** — `fable` can't be removed.
+- The set is **`(--reviewers) ∪ {fable}`** by default. `MULTI_REVIEW_FABLE=off` drops the
+  `∪ {fable}` union, leaving just what you named; naming `fable` explicitly still includes it.
+  With the union off and nothing else usable, the run refuses to arm rather than self-reviewing.
 - Local docs are found under `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` — both the plain and `superpowers` layouts); pass an
   explicit path otherwise.
 - On a PR, `gh` ingests the diff into a gitignored scratch file; on approval the primary posts
@@ -94,7 +98,7 @@ unless a named test catches it — because a green suite is not by itself eviden
 
 | reviewer | vendor | setup |
 |---|---|---|
-| `fable` *(always on)* | anthropic | **none** — runs in-harness |
+| `fable` *(on by default)* | anthropic | **none** — runs in-harness |
 | `codex` | openai | `codex` CLI authed — skill provisioned automatically per run (git-ignored) |
 | `gemini` | google | `gemini` CLI authed + 3 settings (below) |
 
@@ -129,6 +133,7 @@ Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a 
 | env | default | meaning |
 |---|---|---|
 | `MULTI_REVIEW_REVIEWERS` | *(empty)* | comma set of extra secondaries, e.g. `codex,gemini` (per-run: `--reviewers`) |
+| `MULTI_REVIEW_FABLE` | `on` | `off`/`0`/`false` drops the default in-harness `fable` secondary, so a run spends no Claude tokens on review. Naming `fable` explicitly (`--reviewers fable`) still includes it. With no other secondary available the run **refuses to arm** rather than self-reviewing. An unrecognised value is a hard error. |
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.6-terra`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |
 | `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` | where bare-name local docs are resolved. Covers the plain and `superpowers` layouts out of the box. Bare-name resolution **warns** when a newer dated doc sits in a directory it did not search — the egress guard cannot catch that, since the doc it picked is legitimately inside the configured dirs. |
@@ -144,7 +149,7 @@ run. Reset it with a "forget the reviewers" request.
 ## How it works
 
 - **Neutral primary.** Claude only agrees/disputes secondaries' findings — it never authors its
-  own. That's the anti-rubber-stamp property. `fable` is the always-present secondary so Claude's
+  own. That's the anti-rubber-stamp property. `fable` is the default secondary so Claude's
   *review* voice is still heard, but adjudicated like any other.
 - **Blind, independent copies.** Each secondary reviews its own copy and never sees the others —
   uncorrelated perspective, not consensus.
