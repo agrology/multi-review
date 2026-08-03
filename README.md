@@ -129,6 +129,7 @@ Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a 
 | env | default | meaning |
 |---|---|---|
 | `MULTI_REVIEW_REVIEWERS` | *(empty)* | comma set of extra secondaries, e.g. `codex,gemini` (per-run: `--reviewers`) |
+| `MULTI_REVIEW_FABLE` | `on` | `off`/`0`/`false` drops the always-on in-harness `fable` secondary, so a run spends no Claude tokens on review. Naming `fable` explicitly (`--reviewers fable`) still includes it. With no other secondary available the run **refuses to arm** rather than self-reviewing. An unrecognised value is a hard error. |
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.6-terra`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |
 | `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` | where bare-name local docs are resolved. Covers the plain and `superpowers` layouts out of the box. Bare-name resolution **warns** when a newer dated doc sits in a directory it did not search — the egress guard cannot catch that, since the doc it picked is legitimately inside the configured dirs. |
