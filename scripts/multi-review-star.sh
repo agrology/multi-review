@@ -22,6 +22,22 @@ set -uo pipefail
 
 die() { echo "multi-review-star: $1" >&2; exit "${2:-1}"; }
 
+# MULTI_REVIEW_FABLE — operator switch for the fable FLOOR (the implicit union), not for fable
+# itself. Unset/on reproduces the historical behaviour exactly. off suppresses the floor, so
+# fable is included only when a source NAMES it. An unrecognized value is fatal on purpose:
+# silently reading it as "on" would restore the in-harness token spend the switch exists to stop,
+# with no signal to the operator that their setting did nothing.
+_fable_floor_enabled() {            # -> 0 floor applies, 1 suppressed; exits 2 on a bad value
+  local v="${MULTI_REVIEW_FABLE:-on}"
+  # LC_ALL=C: an unpinned fold has already produced a locale bug in this repo (vendor_of_model).
+  v="$(printf '%s' "$v" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  case "$v" in
+    on|1|true)   return 0 ;;
+    off|0|false) return 1 ;;
+    *) die "MULTI_REVIEW_FABLE: unrecognized value '${MULTI_REVIEW_FABLE:-}' (want on|1|true or off|0|false)" 2 ;;
+  esac
+}
+
 # header region = lines before the first "## " section heading
 header_region() { awk '/^## /{ exit } { print }' "$1"; }
 
@@ -148,6 +164,10 @@ cmd_resolve_set() {
       *) die "resolve-set: unexpected argument: $1" 2 ;;
     esac
   done
+  # Validate BEFORE any source selection, and regardless of --fable-floor: a typo'd value must
+  # fail on every path, not only the one that happens to consult the floor.
+  local floor_on=1
+  _fable_floor_enabled || floor_on=0
   # Every source is comma-OR-space tolerant: `tr ',' ' '` on all three, so a csv env value
   # ("codex,gemini") splits the same as the flag and pref (fable-rd1-r1).
   if [[ -n "$csv" ]]; then

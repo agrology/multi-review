@@ -8,6 +8,11 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 ok()  { echo "  ok: $1"; }
 bad() { echo "  FAIL: $1"; fails=$((fails+1)); }
 
+# The suite asserts FLOOR behaviour throughout, so it must not inherit the operator's switch.
+# The people most likely to export MULTI_REVIEW_FABLE=off are precisely this feature's users.
+# Tests that exercise the switch set it per-invocation; everything else must see the default.
+unset MULTI_REVIEW_FABLE
+
 # mkdoc <name> <header-extra-lines...> -> path with H1 + extras + a ## Review section
 mkdoc() { local p="${WORK}/$1"; shift; { echo "# Doc"; printf '%s\n' "$@"; echo; echo "## Review"; echo; } > "$p"; echo "$p"; }
 
@@ -114,6 +119,23 @@ out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --
 
 # availability drop is non-destructive: pref file unchanged after the run
 grep -q 'gemini' "$PREF" && ok "pref: unavailable drop does not rewrite pref" || bad "pref rewritten on drop"
+
+# --- MULTI_REVIEW_FABLE validation ---
+# An unrecognized value is FATAL. Defaulting it to "on" would silently restore the in-harness
+# token spend the switch exists to stop, and the operator would have no signal.
+MULTI_REVIEW_FABLE=no bash "$SUT" resolve-set --fable-floor >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "MULTI_REVIEW_FABLE: unrecognized value -> exit 2" \
+  || bad "an unrecognized MULTI_REVIEW_FABLE was accepted"
+
+msg="$(MULTI_REVIEW_FABLE=no bash "$SUT" resolve-set --fable-floor 2>&1 >/dev/null)"
+[[ "$msg" == *"MULTI_REVIEW_FABLE"* && "$msg" == *"no"* ]] \
+  && ok "MULTI_REVIEW_FABLE: message names the variable and the bad value" \
+  || bad "unhelpful message for a bad MULTI_REVIEW_FABLE ('$msg')"
+
+# Validation runs even on the legacy path (no --fable-floor), so a typo cannot hide there.
+MULTI_REVIEW_FABLE=no bash "$SUT" resolve-set --reviewers codex >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "MULTI_REVIEW_FABLE: validated without --fable-floor too" \
+  || bad "bad MULTI_REVIEW_FABLE slipped through the no-floor path"
 
 # registry-unknown id in pref degrades (dropped, not exit 2); bad id alone -> fable-only.
 # Capture resolve-set's OWN exit (not the trailing pipe's) so the exit-0 assertion is real (fable-rd1-r3).
