@@ -403,6 +403,38 @@ mutations() {
     '    if (( seed_h != copy_h )) || ! grep -q '"'"'^## Review[[:space:]]*$'"'"' "$copy"; then' \
     '    if false; then'
 
+  # --- MULTI_REVIEW_FABLE off switch ---
+  # The switch's whole value is that it reliably suppresses the floor. If this gate regresses to an
+  # unconditional floor, fable silently returns to every round and the operator's token spend comes
+  # back with no signal — the exact failure the switch exists to prevent, wearing a green gate.
+  mutate 'star/fable-floor-switch' 'scripts/multi-review-star.sh' replace \
+    'fable off did not suppress the floor' 'multi-review-star.test.sh' \
+    '  if (( fable_floor && floor_on )); then' \
+    '  if (( fable_floor )); then'
+
+  # The validation arm. If a bad value degrades to "on" instead of dying, an operator who typo'd
+  # their export gets the old behaviour with no signal — the switch appears set and is not.
+  mutate 'star/fable-value-validation' 'scripts/multi-review-star.sh' replace \
+    'an unrecognized MULTI_REVIEW_FABLE was accepted' 'multi-review-star.test.sh' \
+    '    *) die "MULTI_REVIEW_FABLE: unrecognized value '"'"'${MULTI_REVIEW_FABLE:-}'"'"' (want on|1|true or off|0|false)" 2 ;;' \
+    '    *) return 0 ;;'
+
+  # The refusal diagnosis. The exit code alone is not the contract — a silent exit 3 tells the
+  # operator nothing about WHY nothing armed, which is the whole point of refusing rather than
+  # self-reviewing. Losing the notice is invisible without this entry.
+  mutate 'star/no-secondaries-notice' 'scripts/multi-review-star.sh' replace \
+    'refusal message missing the headline' 'multi-review-star.test.sh' \
+    '    (( fable_floor && ! floor_on )) && _no_secondaries_notice' \
+    '    :'
+
+  # The available/unavailable split inside that notice. Collapsing it to "everything is broken"
+  # still prints a plausible-looking diagnosis, so the regression is invisible by inspection — and
+  # it destroys the only actionable line in the dominant case (a provider installed but unnamed).
+  mutate 'star/no-secondaries-available-split' 'scripts/multi-review-star.sh' replace \
+    'refusal hid a ready-to-use provider' 'multi-review-star.test.sh' \
+    '    if reason="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then' \
+    '    if false; then'
+
 }
 
 if (( list )); then mutations; exit 0; fi
