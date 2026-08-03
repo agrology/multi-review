@@ -1285,13 +1285,25 @@ RSD="${WORK}/rs-decay.md"
 out="$(bash "$SUT" round-stats "$RSD" 2>&1)"
 grep -qE '^verdict: re-fan' <<<"$out" && ok "round-stats: decaying rate -> re-fan verdict" || bad "round-stats should re-fan: '$out'"
 
-# round 1 only -> re-fan (no trend yet; one round is never evidence of convergence)
+# round 1 only -> CONVERGE (issue #38). This assertion previously demanded `re-fan`, which made
+# the loop's only QUANTITATIVE signal contradict the protocol's own documented default on every
+# single review: docs/multi-review.md says "One round is the default", and the command doc is
+# more emphatic still. A primary that defers to the number therefore re-fanned every time, which
+# is precisely the standing behaviour issue #29 set out to end. The old assertion was not weakened
+# to reach green — it encoded the bug, and the contract underneath it changed.
 RS1="${WORK}/rs-one.md"
 { echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 1/5 -->'
   echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; fnd fable 1 a
 } > "$RS1"
 out="$(bash "$SUT" round-stats "$RS1" 2>&1)"
-grep -qE '^verdict: re-fan' <<<"$out" && ok "round-stats: single round -> re-fan (no trend yet)" || bad "round-stats round1: '$out'"
+grep -qE '^verdict: converge' <<<"$out" \
+  && ok "round-stats: round 1 -> converge (the documented default)" \
+  || bad "round-stats round1 verdict: '$out'"
+# Converging by default is only safe if the verdict also says WHEN to re-fan — otherwise the fix
+# trades one misleading number for another. The listed triggers must appear in the line itself.
+grep -qE 'verdict: converge.*high' <<<"$out" \
+  && ok "round-stats: the round-1 verdict names the re-fan triggers" \
+  || bad "round-1 verdict does not name the triggers: '$out'"
 
 # a genuinely DRY round is invisible in the ns-ids (nothing merged), so the round count must come
 # from the MARKER, not from the highest round seen in findings — otherwise a dry round silently
