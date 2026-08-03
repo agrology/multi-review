@@ -564,6 +564,23 @@ cmd_channel_check() {
   added_visible="$(LC_ALL=C comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
   rm -f "$sa" "$sv" "$ca" "$cv"
 
+  # Issue #42. Zero RECOGNISED additions makes the comparison above vacuous: a copy whose
+  # findings are indented (` > [finding:`) matches neither grep, so added_total and
+  # added_visible are both 0 and the turn scores as clean while merge ingests nothing. Before
+  # accepting a zero as a genuine "found nothing", assert the copy is still SHAPED like the
+  # document that was dispatched — a reviewer is contracted to append under `## Review`, never
+  # to reformat. Scoped to the zero case deliberately: when findings DID land, a heading change
+  # is not worth destroying them over (same rationale as the partial case below).
+  if (( added_total == 0 )); then
+    local seed_h copy_h
+    seed_h="$(grep -c '^## ' "$base" || true)"
+    copy_h="$(grep -c '^## ' "$copy" || true)"
+    if (( seed_h != copy_h )) || ! grep -q '^## Review[[:space:]]*$' "$copy"; then
+      die "the copy's heading structure changed (seed has ${seed_h} '## ' heading(s), copy has ${copy_h}); a reformatted copy loses its whole turn silently. Merging would record this turn as clean." 1
+    fi
+    return 0
+  fi
+
   (( added_total <= added_visible )) && return 0
   stray=$(( added_total - added_visible ))
 

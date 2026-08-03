@@ -361,7 +361,10 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    copy may be a scoped reduction, and differencing that against the full baseline lets absent
    lines absorb misplaced findings, which would miss the very incident #32 came from.
    **Exit 1** — NONE of that reviewer's findings reached what `merge` ingests → **quarantine that
-   provider** with the message as the reason.
+   provider** with the message as the reason. This covers two shapes: findings captured by an
+   earlier or fenced `## Review`, and (issue #42) a copy whose **heading structure changed** —
+   a reviewer that reformats, e.g. indenting every appended line so `## Review` loses line-start,
+   produces no recognisable findings at all and would otherwise score as a clean empty turn.
    **Exit 0 with a `note —` line on stderr** — some findings landed and some did not (usually a
    quoted example inside a fence). The turn is admitted; relay the note at the gate.
    **Exit 2** — a usage/infra error on YOUR side (bad path, missing value). Fix the invocation.
