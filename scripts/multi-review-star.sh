@@ -1144,7 +1144,14 @@ cmd_round_stats() {
       else if (tot[rounds] == 0)
         v = "converge — round " rounds " went dry"
       else if (rounds + 0 < 2)
-        v = "re-fan — round 1, no trend yet"
+        # Issue #38. This used to read "re-fan — round 1, no trend yet", so the only QUANTITATIVE
+        # signal in the loop argued against the protocol on every single review: one round IS the
+        # default (docs/multi-review.md), and a primary deferring to the number re-fanned every
+        # time — the standing behaviour issue #29 set out to end. "No trend yet" is true and is
+        # not a reason to spend another fan-out; the triggers are named so a primary that SHOULD
+        # re-fan still knows when. NB: no apostrophes anywhere in this awk program — it is
+        # single-quoted in the shell and one ends the program mid-flight (this comment did it).
+        v = "converge — round 1 is the default; re-fan only if you agreed to a non-trivial high, your edits introduced new logic no reviewer has seen, or the engineer asked for depth"
       else if (!cmp_ok)
         v = "re-fan — no provider was admitted in both rounds " (rounds-1) " and " rounds ", so there is no comparable trend"
       else if (cmp_last < cmp_prev)
