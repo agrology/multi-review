@@ -315,10 +315,21 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    one after another. Branch on `kind`, pointed at `<doc>.<id>`:
    - **`subagent`** → dispatch the Agent tool with the resolved `model`, passing the output of
      `multi-review-reviewer.sh prompt "<doc>.<id>" --reviewer <id>` as the task text. For `codex`
-     use the `codex:codex-rescue` agent with `--model <model> --write`; for `fable` use
-     `general-purpose` with `model: fable`. `--model`/`--write` are runtime controls, stripped
-     from the task text. Run it in the same working root the reviewer was just provisioned into
-     (step 3) — the two must never diverge.
+     use the `codex:codex-rescue` agent with `--model <model> --write --background`; for `fable`
+     use `general-purpose` with `model: fable`. `--model`/`--write`/`--background` are runtime
+     controls, stripped from the task text. Run it in the same working root the reviewer was just
+     provisioned into (step 3) — the two must never diverge.
+
+     **`--background` is not optional for `codex`.** The rescue wrapper forwards to
+     `codex-companion.mjs task`, which runs in the FOREGROUND by default; a real review outlives
+     the harness's 10-minute foreground window, so the subagent's turn ends and the detached codex
+     process is torn down *before it writes any findings*. The failure is silent and expensive:
+     the working copy stays byte-identical to its seed, step 5's wait times out, and step 6
+     quarantines the provider with no error anywhere — a round that cost a reviewer slot and
+     produced nothing, indistinguishable from a reviewer that genuinely found nothing. With
+     `--background` the companion returns a managed job id immediately and the job survives the
+     caller; step 5's per-copy marker wait is already the correct completion signal, so nothing
+     else changes. (Observed live on a PR review: the companion's own job output file was 0 bytes.)
    - **`shell`** → read NUL-delimited argv and execute it without a shell round-trip (macOS bash
      3.2 has no `mapfile`), launched as a background task so it does not block the batch:
 

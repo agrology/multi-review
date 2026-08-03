@@ -37,6 +37,27 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- codex dispatch must ask for a BACKGROUND companion job ---
+# The codex:codex-rescue wrapper forwards to `codex-companion.mjs task` in the FOREGROUND unless
+# the dispatch asks otherwise. A real review outlives the harness's 10-minute foreground window,
+# so the subagent's turn ends and the detached codex process is torn down before it writes any
+# findings: the working copy stays byte-identical to its seed, the per-copy wait times out, and
+# the provider is quarantined with no error recorded anywhere (observed live on PR #25 — the
+# companion's own job output file was 0 bytes). `--background` returns a managed job id
+# immediately and the job survives the caller; the existing marker wait is already the right
+# completion signal. This guard is prose-level because the dispatch itself is prose.
+f="${ROOT}/commands/multi-review.md"
+if [[ -f "$f" ]]; then
+  n="$(grep -n 'codex:codex-rescue' "$f" | head -1 | cut -d: -f1)"
+  if [[ -z "$n" ]]; then
+    bad "no codex:codex-rescue dispatch instruction in $(basename "$f")"
+  elif sed -n "${n},$((n+2))p" "$f" | grep -q -- '--background'; then
+    ok "codex dispatch requests a background companion job"
+  else
+    bad "codex dispatch lacks --background — a foreground task is killed at the 10-min window before it writes findings"
+  fi
+fi
+
 # --- scripts self-locate from a FOREIGN cwd (spec §2 regression guard for the plugin move) ---
 # multi-review-pr.sh's publish resolves its sibling multi-review-star.sh via
 # "$(dirname "$0")", not the caller's cwd — this is the live self-locating call now that
