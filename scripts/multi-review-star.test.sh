@@ -137,6 +137,43 @@ MULTI_REVIEW_FABLE=no bash "$SUT" resolve-set --reviewers codex >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "MULTI_REVIEW_FABLE: validated without --fable-floor too" \
   || bad "bad MULTI_REVIEW_FABLE slipped through the no-floor path"
 
+# --- MULTI_REVIEW_FABLE=off suppresses the FLOOR only ---
+# off + a named third party -> that party alone, no fable
+out="$(MULTI_REVIEW_FABLE=off MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" \
+  resolve-set --fable-floor --reviewers codex 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex " ]] && ok "fable off: floor suppressed, named party kept" \
+  || bad "fable off did not suppress the floor (got '$out')"
+
+# off + an EXPLICITLY named fable -> fable survives. This is the per-run override, and it is also
+# what keeps an in-flight review intact: the resume path replays the doc header's reviewer list as
+# a named set, so a review armed with fable keeps it even if the operator exports off mid-review.
+out="$(MULTI_REVIEW_FABLE=off MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" \
+  resolve-set --fable-floor --reviewers fable,codex 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "fable codex " ]] && ok "fable off: an explicitly named fable still resolves" \
+  || bad "off stripped a fable that was named explicitly (got '$out')"
+
+# on/unset is unchanged — the floor still unions fable in
+out="$(MULTI_REVIEW_FABLE=on MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" \
+  resolve-set --fable-floor --reviewers codex 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "codex fable " ]] && ok "fable on: floor still applies" \
+  || bad "explicit on changed behaviour (got '$out')"
+
+# every accepted off-spelling behaves identically, including uppercase (LC_ALL=C fold)
+for v in off OFF 0 false; do
+  out="$(MULTI_REVIEW_FABLE="$v" MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" \
+    resolve-set --fable-floor --reviewers codex 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+  [[ "$out" == "codex " ]] && ok "fable off: '$v' suppresses the floor" \
+    || bad "'$v' did not suppress the floor (got '$out')"
+done
+
+# every accepted on-spelling behaves identically
+for v in on ON 1 true; do
+  out="$(MULTI_REVIEW_FABLE="$v" MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" \
+    resolve-set --fable-floor --reviewers codex 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+  [[ "$out" == "codex fable " ]] && ok "fable on: '$v' keeps the floor" \
+    || bad "'$v' did not keep the floor (got '$out')"
+done
+
 # registry-unknown id in pref degrades (dropped, not exit 2); bad id alone -> fable-only.
 # Capture resolve-set's OWN exit (not the trailing pipe's) so the exit-0 assertion is real (fable-rd1-r3).
 printf 'bogus\n' > "$PREF"

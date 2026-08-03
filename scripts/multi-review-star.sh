@@ -201,7 +201,9 @@ cmd_resolve_set() {
     out="${out}${row}"$'\n'
   done
   set +f
-  if (( fable_floor )); then
+  # floor_on comes from MULTI_REVIEW_FABLE. The floor is the IMPLICIT union only — a fable named
+  # by flag/env/prose was already resolved by the loop above and is untouched here.
+  if (( fable_floor && floor_on )); then
     case " $seen " in *" fable "*) : ;; *)
       row="$("$REVIEWER_SH" resolve --reviewer fable 2>/dev/null)" || die "fable unavailable" 2
       out="${out}${row}"$'\n' ;;
