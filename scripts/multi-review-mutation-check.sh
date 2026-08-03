@@ -394,6 +394,15 @@ mutations() {
     "     END { exit !found }' <<< \"\$all\"" \
     "     ' <<< \"\$all\""
 
+  # Issue #42. The zero case is the one branch where channel-check's additions comparison proves
+  # NOTHING — a copy whose findings are indented matches neither grep, so both counts are 0 and a
+  # lost turn scores identically to a clean one. This guard is the only thing standing between that
+  # and a silent merge, so it must be shown to be able to fail.
+  mutate 'star/channel-zero-structure' 'scripts/multi-review-star.sh' replace \
+    'an indented copy passed' 'multi-review-star.test.sh' \
+    '    if (( seed_h != copy_h )) || ! grep -q '"'"'^## Review[[:space:]]*$'"'"' "$copy"; then' \
+    '    if false; then'
+
 }
 
 if (( list )); then mutations; exit 0; fi

@@ -1462,6 +1462,32 @@ SOK="$(mkcc sok.md '# Doc' '' '## B' '' 'b' '' '## Review' '> [finding:r1|med] r
 bash "$SUT" channel-check --seed "$SEED" "$SOK" >/dev/null 2>&1 \
   && ok "channel-check: conforming scoped turn passes" || bad "false positive on a scoped turn"
 
+# --- issue #42: a copy whose HEADINGS were reformatted loses its whole turn silently ---
+# A gemini secondary returned every appended line indented one space, so "## Review" lost
+# line-start and merge read an empty section. Zero RECOGNISED findings made the additions
+# comparison vacuous (added_total == added_visible == 0), so the guard passed it as clean.
+INDB="$(mkcc indb.md '# Doc' '' '## B' '' 'b' '' '## Review')"
+IND="$(mkcc ind.md '# Doc' '' '## B' '' 'b' '' ' ## Review' \
+  ' > [finding:r1|high] a real defect, indented' ' > — via gemini-1.5-pro')"
+bash "$SUT" channel-check --seed "$INDB" "$IND" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "channel-check: a reformatted (indented) copy fails loud" \
+  || bad "an indented copy passed — its whole turn would merge as clean (issue #42)"
+
+# the reason becomes a quarantine reason, so it must name the structural break, not guess
+msg="$(bash "$SUT" channel-check --seed "$INDB" "$IND" 2>&1 >/dev/null)"
+[[ "$msg" == *"heading structure"* ]] \
+  && ok "channel-check: reason names the heading-structure break" \
+  || bad "indented copy reported with a misleading reason ('$msg')"
+
+# ...but the structural check is scoped to the ZERO case on purpose. A copy whose headings
+# changed while its findings DID land must still pass: quarantining it would destroy good
+# findings, which is #32's harm inverted (the same reason the partial case only warns).
+INDA="$(mkcc inda.md '# Doc' '' '## B' '' 'b' '' '## Review' '> [finding:r1|med] real' \
+  '> — via gpt-5' '' '## My Notes' 'extra section')"
+bash "$SUT" channel-check --seed "$INDB" "$INDA" >/dev/null 2>&1 \
+  && ok "channel-check: a landed turn is not quarantined for a heading change" \
+  || bad "a turn whose findings landed was quarantined over structure (destroys good findings)"
+
 # --- codex-rd2-r1 / fable-rd2-r1: --baseline is REFUSED, not silently aliased ---
 bash "$SUT" channel-check --baseline "$CCB" "$CCX" >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "channel-check: --baseline refused with a usage error" \
