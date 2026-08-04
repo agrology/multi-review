@@ -334,6 +334,13 @@ know — "empty batch → index 0 raises IndexError", or "ran X, got rc=1". A co
 ground that way is still worth raising; raise it as \`low\`. Padding a round with speculative
 \`med\`s costs the author real edits and the review real rounds.
 
+If you read the document in full and have NOTHING to raise, say so explicitly under the same
+\`## Review\` heading — do not simply flip the marker:
+  \`> [no-findings] reviewed in full; nothing to raise\`
+  \`> — via <your-model-id>\` — required, immediately after
+A silent turn is indistinguishable from a reviewer that never opened the document, so an
+unsignalled empty turn cannot be credited as a review.
+
 Flip the status marker from \`awaiting-reviewer\` to \`awaiting-author\` as your FINAL edit (the
 flip is the handoff).
 
@@ -464,8 +471,9 @@ assert_balanced_fences() { # <file> — hard error (exit 1) on an unterminated c
 # are deliberately kept (sorted, not uniqued) to match via_ids' multiset semantics.
 protocol_lines() { # <file>
   strip_fences "$1" \
-    | grep -E '^> \[(reviewer|author: resolved|finding|concur|dispute|withdraw):' 2>/dev/null \
-    | sed -E 's/^> \[(reviewer|author: resolved|finding|concur|dispute|withdraw):([^]|]*).*/\1:\2/' \
+    | grep -E '^> \[((reviewer|author: resolved|finding|concur|dispute|withdraw):|no-findings[]:])' 2>/dev/null \
+    | sed -E -e 's/^> \[(reviewer|author: resolved|finding|concur|dispute|withdraw):([^]|]*).*/\1:\2/' \
+             -e 's/^> \[(no-findings)[]:].*/\1:/' \
     | sort
 }
 
@@ -705,5 +713,11 @@ case "$sub" in
   doctor)  cmd_doctor "$@" ;;
   verify-vendor) cmd_verify_vendor "$@" ;;
   vendor-of-model) cmd_vendor_of_model "$@" ;;
+  # Test-only accessor. protocol_lines has no CLI surface, but its normalised KEY is a contract
+  # (codex-rd2-r1): two copies whose free text differs must produce the same key, or a reworded
+  # line reads as new protocol content. Underscore-prefixed and undocumented on purpose.
+  _protocol_lines_for_test)
+    [[ $# -ge 1 ]] || die "_protocol_lines_for_test requires a file argument" 2
+    protocol_lines "$@" ;;
   *)       die "unknown subcommand: $sub" 2 ;;
 esac

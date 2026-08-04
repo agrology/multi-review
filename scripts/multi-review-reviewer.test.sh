@@ -910,6 +910,60 @@ grep -qF '.multi-review' <<<"$err" \
   && ok "check gemini: names the gitignored PR scratch dir" \
   || bad "check gemini: missed the PR scratch blocker: '$err'"
 
+# --- issue #50 / codex-rd1-r1: the signal's `> — via` must be ENFORCED, not merely documented ---
+# protocol_lines is the guard that catches "added protocol content but no usable disclosure". Its
+# pattern matched only tags ending in a COLON, so `> [no-findings]` matched nothing and a bare
+# signal passed verify-vendor with exit 0 — the exact vacuity #50 exists to close.
+NFB="$(mkdoc nf-base.md awaiting-reviewer)"
+printf '\n## Review\n' >> "$NFB"
+
+NFBARE="$(mkdoc nf-bare.md awaiting-author)"
+printf '\n## Review\n> [no-findings] reviewed in full; nothing to raise\n' >> "$NFBARE"
+bash "$SUT" verify-vendor --baseline "$NFB" "$NFBARE" --reviewer codex >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "verify-vendor: a no-findings signal without '> — via' fails" \
+  || bad "a bare [no-findings] with no disclosure passed verify-vendor (issue #50, codex-rd1-r1)"
+
+# ...and a properly disclosed signal still passes — the guard must not reject conforming turns
+NFVIA="$(mkdoc nf-via.md awaiting-author)"
+printf '\n## Review\n> [no-findings] reviewed in full; nothing to raise\n> — via gpt-5\n' >> "$NFVIA"
+bash "$SUT" verify-vendor --baseline "$NFB" "$NFVIA" --reviewer codex >/dev/null 2>&1 \
+  && ok "verify-vendor: a disclosed no-findings signal passes" \
+  || bad "a conforming signalled-clean turn was rejected"
+
+# ...and the disclosure is now a SUBJECT, so a wrong vendor is caught where it was once vacuous
+NFWRONG="$(mkdoc nf-wrong.md awaiting-author)"
+printf '\n## Review\n> [no-findings] reviewed in full; nothing to raise\n> — via claude-opus-5[1m]\n' >> "$NFWRONG"
+bash "$SUT" verify-vendor --baseline "$NFB" "$NFWRONG" --reviewer codex >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "verify-vendor: a wrong vendor on a signal-only turn is caught" \
+  || bad "an anthropic id disclosed by the codex secondary passed on a signal-only turn"
+
+# --- codex-rd2-r1: the key must be NORMALISED, or rewording re-opens a fixed false positive ---
+# protocol_lines once did a full-LINE diff and a merely reworded finding registered as new
+# protocol content. Normalisation fixed that; an unnormalised tag re-opens the same class.
+# Two copies whose signal free-text differs must produce the SAME key.
+NFT1="$(mkdoc nf-t1.md awaiting-author)"
+printf '\n## Review\n> [no-findings] reviewed in full; nothing to raise\n> — via gpt-5\n' >> "$NFT1"
+NFT2="$(mkdoc nf-t2.md awaiting-author)"
+printf '\n## Review\n> [no-findings] read it all, nothing worth raising\n> — via gpt-5\n' >> "$NFT2"
+k1="$(bash "$SUT" _protocol_lines_for_test "$NFT1" 2>/dev/null || true)"
+k2="$(bash "$SUT" _protocol_lines_for_test "$NFT2" 2>/dev/null || true)"
+[[ -n "$k1" && "$k1" == "$k2" ]] \
+  && ok "protocol_lines: differing signal wording normalises to one key ('$k1')" \
+  || bad "no-findings key is not normalised — rewording looks like new protocol content ('$k1' vs '$k2')"
+[[ "$k1" == "no-findings:" ]] \
+  && ok "protocol_lines: the normalised key is exactly 'no-findings:'" \
+  || bad "normalised key is '$k1', expected 'no-findings:'"
+
+# _protocol_lines_for_test with no argument must fail via this file's `die` convention (a
+# named, prefixed message on stderr and exit 2), not a raw `set -u` "unbound variable" trap.
+pl_err="$(bash "$SUT" _protocol_lines_for_test 2>&1 >/dev/null)"; pl_rc=$?
+[[ "$pl_rc" -eq 2 ]] \
+  && ok "_protocol_lines_for_test: missing argument exits 2" \
+  || bad "_protocol_lines_for_test with no argument exited $pl_rc, expected 2"
+[[ "$pl_err" == "multi-review-reviewer: "*"file"* ]] \
+  && ok "_protocol_lines_for_test: missing argument reports via die(), not an unbound-variable trap" \
+  || bad "_protocol_lines_for_test error was not a die()-style message: '$pl_err'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

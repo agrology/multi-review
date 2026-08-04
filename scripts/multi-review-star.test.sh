@@ -1704,6 +1704,90 @@ bash "$SUT" blind-check "${WORK}/does-not-exist.md" >/dev/null 2>&1
 bash "$SUT" blind-check >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "blind-check: no argument exits 2" || bad "blind-check with no argument did not exit 2"
 
+# --- issue #50: a carried-over `[no-findings]` is a record too ---
+# The signal says "a reviewer already read this and reported it clean". A copy carrying it is not
+# blind: the secondary would see that verdict before forming its own.
+BC_NF="$(mkcc bc-nf.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5')"
+bash "$SUT" blind-check "$BC_NF" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "blind-check: a carried-over no-findings signal fails" \
+  || bad "a copy carrying a previous round's [no-findings] passed as blind (issue #50)"
+
+# the reason must NAME it, since the primary acts on the message
+msg="$(bash "$SUT" blind-check "$BC_NF" 2>&1 >/dev/null)"
+[[ "$msg" == *"no-findings"* ]] && ok "blind-check: names the carried-over signal" \
+  || bad "blind-check reason did not name the no-findings line ('$msg')"
+
+# a FENCED signal is documentation, not a record — this repo's own docs show the grammar
+BC_NFF="$(mkcc bc-nf-fence.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Grammar' '```' \
+  '> [no-findings] an EXAMPLE in the docs' '```' '' '## Review')"
+bash "$SUT" blind-check "$BC_NFF" >/dev/null 2>&1 \
+  && ok "blind-check: a fenced no-findings example is not a record" \
+  || bad "blind-check rejected a doc whose FENCED example shows the no-findings grammar"
+
+# --- issue #50: the signal and real findings are mutually exclusive ---
+# A reviewer cannot have nothing to raise while raising things. Caught in channel-check rather
+# than merge so the copy is still per-provider and the natural remedy (quarantine) is available.
+NFSEED="$(mkcc nfseed.md '# Doc' '' '## B' '' 'b' '' '## Review')"
+
+# (a) the signal ALONE is a clean turn — this is the whole point of #50, and must keep passing
+NFOK="$(mkcc nfok.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFOK" >/dev/null 2>&1 \
+  && ok "channel-check: a signal-only turn passes" \
+  || bad "channel-check rejected an honest signalled-clean turn (issue #50)"
+
+# (b) the signal PLUS a real finding contradicts itself
+NFBAD="$(mkcc nfbad.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5' \
+  '> [finding:r1|high] but here is a defect' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFBAD" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: signal plus findings is a contradiction" \
+  || bad "a copy claiming no-findings while raising findings was accepted (issue #50)"
+
+# the reason names the contradiction, since it becomes a quarantine reason
+msg="$(bash "$SUT" channel-check --seed "$NFSEED" "$NFBAD" 2>&1 >/dev/null)"
+[[ "$msg" == *"no-findings"* && "$msg" == *"finding"* ]] \
+  && ok "channel-check: contradiction reason names both sides" \
+  || bad "contradiction reason is not actionable ('$msg')"
+
+# (c) a FENCED signal beside real findings is documentation, not a contradiction
+NFFENCE="$(mkcc nffence.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [finding:r1|med] a real finding' '> — via gpt-5' '> — risk: r' \
+  '> — evidence: the grammar is' '```' '> [no-findings] a quoted example' '```')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFFENCE" >/dev/null 2>&1 \
+  && ok "channel-check: a fenced signal beside findings is not a contradiction" \
+  || bad "a quoted no-findings example quarantined a legitimate turn"
+
+# (c2) codex-rd1-r1 (PR #58): the signal takes NO id, so `]` is its only valid terminator. The
+# shared `[]:]` class — right for `finding:`/`agree:`/`observation]` — also matched a malformed
+# `[no-findings: …]`, and a malformed signal-shaped line beside REAL findings then read as a
+# contradiction and quarantined the turn, destroying its good findings. That is fable-rd2-r4's
+# harm inverted. Deliberately scoped to channel-check: blind-check and protocol_lines are
+# permissive in the FAIL-CLOSED direction (more copies re-seeded, more lines needing a
+# disclosure), so narrowing those would loosen them.
+NFMAL="$(mkcc nfmal.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings: malformed] not the documented tag' \
+  '> [finding:r1|high] a real defect that must survive' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFMAL" >/dev/null 2>&1 \
+  && ok "channel-check: a malformed [no-findings:…] is not the clean-turn signal" \
+  || bad "a malformed signal-shaped line quarantined a turn with real findings (codex-rd1-r1)"
+
+# (d) an INHERITED signal is not the reviewer's own claim — the design (§3 rule 3) says "adds"
+# means additions relative to the seed, not presence anywhere in the copy. A seed whose
+# `## Review` already carries `[no-findings]` (e.g. a stale prior round), with the reviewer
+# adding only its own honest finding, must NOT be quarantined for a line it inherited.
+NFISEED="$(mkcc nfiseed.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5')"
+NFINHERITED="$(mkcc nfinherited.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5' \
+  '> [finding:r1|med] a real finding the reviewer actually added' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --seed "$NFISEED" "$NFINHERITED" >/dev/null 2>&1 \
+  && ok "channel-check: an inherited no-findings signal is not blamed on the reviewer that adds a finding" \
+  || bad "channel-check quarantined a reviewer for a [no-findings] line it inherited from the seed, not added itself"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

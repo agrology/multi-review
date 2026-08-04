@@ -606,8 +606,8 @@ cmd_channel_check() {
   [[ -f "$base" ]] || die "seed not found: $base" 2
   [[ -n "$copy" && -f "$copy" ]] || die "copy not found: ${copy:-<unset>}" 2
 
-  local sa sv ca cv added_total added_visible stray
-  sa="$(mktemp)" && sv="$(mktemp)" && ca="$(mktemp)" && cv="$(mktemp)" \
+  local sa sv ca cv sn cn added_total added_visible signalled stray
+  sa="$(mktemp)" && sv="$(mktemp)" && ca="$(mktemp)" && cv="$(mktemp)" && sn="$(mktemp)" && cn="$(mktemp)" \
     || die "cannot create temp files for channel-check" 2
   # ALL finding lines anywhere in the file...
   # LC_ALL=C so sort/comm agree byte-wise regardless of the caller's locale.
@@ -616,12 +616,38 @@ cmd_channel_check() {
   # ...versus exactly what MERGE will ingest: the last ## Review section, fences stripped.
   review_section "$base" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | LC_ALL=C sort > "$sv" || true
   review_section "$copy" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | LC_ALL=C sort > "$cv" || true
+  # ...and the no-findings signal itself, same fence-stripped review-section idiom as $sv/$cv.
+  # codex-rd1-r1 (PR #58): matched EXACTLY, `]` and nothing else. The signal carries no id, so
+  # unlike `finding:`/`agree:` the shared `[]:]` class is wrong for it — under that class a
+  # malformed `[no-findings: …]` beside REAL findings read as a contradiction and quarantined the
+  # turn, destroying its good findings (fable-rd2-r4's harm, inverted). Scoped to THIS guard on
+  # purpose: blind-check and protocol_lines are permissive in the fail-CLOSED direction (more
+  # copies re-seeded, more lines required to carry a disclosure), so narrowing them would loosen
+  # them instead.
+  review_section "$base" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$sn" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$cn" || true
 
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
   added_total="$(LC_ALL=C comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
   added_visible="$(LC_ALL=C comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
-  rm -f "$sa" "$sv" "$ca" "$cv"
+  # Issue #50 (design §3 rule 3). Judged the same way: additions relative to the SEED, not
+  # presence anywhere in the copy — a reviewer is never blamed for a `[no-findings]` line it
+  # inherited (e.g. a stale prior round) rather than claimed itself.
+  # Count the additions themselves. The captures above already restricted these files to signal
+  # lines, so re-matching the tag here would put the pattern in TWO places — and a mutation in
+  # either one would be masked by the other, leaving both individually untestable.
+  signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^' || true)"
+  rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn"
+
+  # Issue #50. The signal and real findings are mutually exclusive: a reviewer cannot have
+  # nothing to raise while raising things. A copy carrying both is self-contradictory, and the
+  # ambiguity is not harmless — merge would ingest the findings while the signal tells the gate
+  # the turn was clean. Checked here rather than at merge so the copy is still attributable to
+  # ONE provider and the natural remedy (quarantine that secondary) is still available.
+  if (( signalled > 0 && added_total > 0 )); then
+    die "the copy claims '[no-findings]' while adding ${added_total} finding(s) — a turn cannot be both clean and raising concerns. Merging would ingest the findings while the gate reports the turn as clean." 1
+  fi
 
   # Issue #42. Zero RECOGNISED additions makes the comparison above vacuous: a copy whose
   # findings are indented (` > [finding:`) matches neither grep, so added_total and
@@ -684,7 +710,7 @@ cmd_blind_check() { # <copy> -> 0 blind, 1 carries a prior round (offenders on s
   live="$(strip_fences "$copy")"
   # Every control line a previous round leaves behind: a secondary's findings, and the primary's
   # responses/observations. Any one of them means this copy is not blind.
-  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation)[]:]' || true)"
+  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|no-findings)[]:]' || true)"
   # The footer mirrors the merged manifest, so its presence alone proves the copy was merged into.
   footer="$(printf '%s\n' "$live" | grep '<!-- star-findings:' || true)"
 

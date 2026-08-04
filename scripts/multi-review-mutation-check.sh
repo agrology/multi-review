@@ -494,7 +494,7 @@ mutations() {
   # still pass while the gate reports N INDEPENDENT secondaries.
   mutate 'star/blind-check-records' 'scripts/multi-review-star.sh' replace \
     "a copy carrying round 1's findings passed as blind" 'multi-review-star.test.sh' \
-    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\"" \
     '  records=""'
 
   # The footer is an independent tell: it mirrors the merged manifest, so its presence alone proves
@@ -503,6 +503,58 @@ mutations() {
     'a copy carrying the findings footer passed as blind' 'multi-review-star.test.sh' \
     "  footer=\"\$(printf '%s\\n' \"\$live\" | grep '<!-- star-findings:' || true)\"" \
     '  footer=""'
+
+  # A carried-over `[no-findings]` is a record: it tells the next secondary that someone already
+  # read this document and called it clean. Dropping the tag from the alternation restores the
+  # exact blind spot #50 exists to close, and every other guard still passes.
+  mutate 'star/blind-check-no-findings' 'scripts/multi-review-star.sh' replace \
+    "a copy carrying a previous round's [no-findings] passed as blind (issue #50)" 'multi-review-star.test.sh' \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation)[]:]' || true)\""
+
+  # Without the die, a copy that claims it found nothing while appending findings merges those
+  # findings AND reports the turn as clean — the gate reads a contradiction as a clean turn.
+  mutate 'star/channel-check-contradiction' 'scripts/multi-review-star.sh' replace \
+    "a copy claiming no-findings while raising findings was accepted (issue #50)" 'multi-review-star.test.sh' \
+    '  if (( signalled > 0 && added_total > 0 )); then' \
+    '  if false; then'
+
+  # codex-rd1-r1 (PR #58). The signal takes no id, so `]` is its only valid terminator. Widening
+  # back to the shared `[]:]` class lets a malformed `[no-findings: …]` beside REAL findings read
+  # as a contradiction, quarantining the turn and destroying its good findings — fable-rd2-r4's
+  # harm inverted. The COPY's capture grep is the one that decides: widen it and the malformed
+  # line enters $cn, so comm reports an addition and the guard fires on a turn it must not.
+  mutate 'star/channel-check-signal-strict' 'scripts/multi-review-star.sh' replace \
+    "a malformed signal-shaped line quarantined a turn with real findings (codex-rd1-r1)" 'multi-review-star.test.sh' \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep '^> \\[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true"
+
+  # The SEED-side capture and the count grep are DELIBERATELY redundant behind the copy-side grep
+  # above. `comm -13 $sn $cn` reports what the COPY added, so a pattern only the seed side would
+  # match adds nothing to the result, and the count can never see a line the capture excluded.
+  # Recorded rather than omitted (§11) so the next person to notice the survival does not file it
+  # as a coverage gap, and so that losing the copy-side narrowing surfaces here.
+  mutate 'star/channel-check-signal-strict-seed' 'scripts/multi-review-star.sh' replace \
+    'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
+    "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true" \
+    "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true"
+
+  # --- the no-findings signal's disclosure (#50) ---
+  # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
+  # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as
+  # unverifiable as one that emitted nothing (codex-rd1-r1, reproduced).
+  mutate 'reviewer/protocol-lines-no-findings' 'scripts/multi-review-reviewer.sh' replace \
+    "a bare [no-findings] with no disclosure passed verify-vendor (issue #50, codex-rd1-r1)" 'multi-review-reviewer.test.sh' \
+    "    | grep -E '^> \\[((reviewer|author: resolved|finding|concur|dispute|withdraw):|no-findings[]:])' 2>/dev/null \\" \
+    "    | grep -E '^> \\[(reviewer|author: resolved|finding|concur|dispute|withdraw):' 2>/dev/null \\"
+
+  # Recognising the tag but MIS-KEYING it is a distinct failure (codex-rd2-r1): the raw line
+  # carries the reviewer's free text, so rewording it registers as new protocol content — the
+  # exact false positive normalisation was introduced to fix.
+  mutate 'reviewer/protocol-lines-no-findings-normalise' 'scripts/multi-review-reviewer.sh' replace \
+    "no-findings key is not normalised" 'multi-review-reviewer.test.sh' \
+    "             -e 's/^> \\[(no-findings)[]:].*/\\1:/' \\" \
+    "             -e 's/^__never_matches__//' \\"
 
 }
 
