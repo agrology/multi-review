@@ -459,6 +459,19 @@ mutations() {
     '        problems.append(f"{rel}: MISSING FILE"); per_file[rel] = 0; continue' \
     '        per_file[rel] = 1; continue'
 
+  # One entry per PATTERN. The per-file floor cannot cover these: it counts hits per FILE, so in a
+  # README carrying both forms, losing either pattern still leaves the file non-blind and the other
+  # form keeps the run green while the lost one stops being checked entirely.
+  mutate 'docs/default-pattern-prose' 'scripts/multi-review-docs-check.sh' replace \
+    'docs-check passed a doc that contradicts the code' 'multi-review-packaging.test.sh' \
+    '    re.compile(r"MULTI_REVIEW_DOC_DIRS`?\s*\(default\s*`([^`]*)`"),' \
+    '    re.compile(r"NEVER_MATCHES_PROSE`([^`]*)`"),'
+
+  mutate 'docs/default-pattern-table' 'scripts/multi-review-docs-check.sh' replace \
+    'the table-row pattern is not exercised' 'multi-review-packaging.test.sh' \
+    '    re.compile(r"\|\s*`MULTI_REVIEW_DOC_DIRS`\s*\|\s*`([^`]*)`\s*\|"),' \
+    '    re.compile(r"NEVER_MATCHES_TABLE`([^`]*)`"),'
+
 }
 
 if (( list )); then mutations; exit 0; fi

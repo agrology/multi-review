@@ -349,4 +349,28 @@ msg="$(bash "$DOCCHK" "$FX5" 2>&1 >/dev/null)"
 [[ "$msg" == *"MISSING FILE"* ]] && ok "docs-check: names the missing file" \
   || bad "missing-file failure not named ('$msg')"
 
+# (g) the ENV-TABLE-ROW form, exercised on its own. Every fixture above writes only the prose
+# form, so the second pattern had no coverage at all — and the per-file floor cannot supply it,
+# because it counts hits per FILE, not per FORM: README's prose hit keeps the file non-blind while
+# the table row silently stops being checked. That is this guard's own defect class, reintroduced
+# by the fix for it. The drifted row here sits in a README whose prose site is ALIGNED, so only a
+# working table pattern can catch it.
+FX6="${WORK}/fx-table"; mkroot "$FX6" "docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans"
+printf 'x `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans`) y\n| `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans` | meaning |\n' \
+  > "$FX6/README.md"
+bash "$DOCCHK" "$FX6" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "docs-check: a drifted ENV-TABLE row fails even when the prose site is aligned" \
+  || bad "the table-row pattern is not exercised — it can be lost silently"
+msg="$(bash "$DOCCHK" "$FX6" 2>&1 >/dev/null)"
+[[ "$msg" == *"documents 'docs/specs docs/plans'"* ]] \
+  && ok "docs-check: reports the table row's own drifted value" \
+  || bad "table-row drift not reported with its value ('$msg')"
+
+# ...and the mirror case: an ALIGNED table row must not be mistaken for drift.
+FX7="${WORK}/fx-table-ok"; mkroot "$FX7" "docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans"
+printf 'x `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans`) y\n| `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` | meaning |\n' \
+  > "$FX7/README.md"
+bash "$DOCCHK" "$FX7" >/dev/null 2>&1 \
+  && ok "docs-check: an aligned table row passes" || bad "false positive on an aligned table row"
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
