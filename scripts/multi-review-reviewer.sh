@@ -334,6 +334,13 @@ know — "empty batch → index 0 raises IndexError", or "ran X, got rc=1". A co
 ground that way is still worth raising; raise it as \`low\`. Padding a round with speculative
 \`med\`s costs the author real edits and the review real rounds.
 
+If you read the document in full and have NOTHING to raise, say so explicitly under the same
+\`## Review\` heading — do not simply flip the marker:
+  \`> [no-findings] reviewed in full; nothing to raise\`
+  \`> — via <your-model-id>\` — required, immediately after
+A silent turn is indistinguishable from a reviewer that never opened the document, so an
+unsignalled empty turn cannot be credited as a review.
+
 Flip the status marker from \`awaiting-reviewer\` to \`awaiting-author\` as your FINAL edit (the
 flip is the handoff).
 
