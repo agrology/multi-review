@@ -435,6 +435,43 @@ mutations() {
     '    if reason="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then' \
     '    if false; then'
 
+  # --- doc/code default sync (#44) ---
+  # The comparison itself. Lose it and the checker walks every doc, reports success, and the
+  # described-but-unenforced state #44 recorded returns with a green gate on top of it.
+  mutate 'docs/default-comparison' 'scripts/multi-review-docs-check.sh' replace \
+    'docs-check passed a doc that contradicts the code' 'multi-review-packaging.test.sh' \
+    '        if got != want:' \
+    '        if False:'
+
+  # The anti-vacuity floor, PER FILE. This is the one that matters most: rename the variable or
+  # reflow one doc and that site matches nothing, so it stops being checked while the others keep
+  # the run green. A guard that silently degrades to always-green is the exact defect #44 is about,
+  # and without this entry the degradation is invisible.
+  mutate 'docs/default-antivacuity' 'scripts/multi-review-docs-check.sh' replace \
+    'one site went blind and the aggregate total hid it' 'multi-review-packaging.test.sh' \
+    '    if n == 0 and f"{rel}: MISSING FILE" not in problems:' \
+    '    if False:'
+
+  # The missing-file branch. Skipping an absent doc instead of failing would mean deleting a file
+  # silently drops its coverage — the guard reports clean while one listed site is not checked.
+  mutate 'docs/default-missing-file' 'scripts/multi-review-docs-check.sh' replace \
+    'docs-check passed with a listed doc absent' 'multi-review-packaging.test.sh' \
+    '        problems.append(f"{rel}: MISSING FILE"); per_file[rel] = 0; continue' \
+    '        per_file[rel] = 1; continue'
+
+  # One entry per PATTERN. The per-file floor cannot cover these: it counts hits per FILE, so in a
+  # README carrying both forms, losing either pattern still leaves the file non-blind and the other
+  # form keeps the run green while the lost one stops being checked entirely.
+  mutate 'docs/default-pattern-prose' 'scripts/multi-review-docs-check.sh' replace \
+    'docs-check false-positived on an aligned tree' 'multi-review-packaging.test.sh' \
+    '    re.compile(r"MULTI_REVIEW_DOC_DIRS`?\s*\(default\s*`([^`]*)`"),' \
+    '    re.compile(r"NEVER_MATCHES_PROSE`([^`]*)`"),'
+
+  mutate 'docs/default-pattern-table' 'scripts/multi-review-docs-check.sh' replace \
+    'the table-row pattern is not exercised' 'multi-review-packaging.test.sh' \
+    '    re.compile(r"\|\s*`MULTI_REVIEW_DOC_DIRS`\s*\|\s*`([^`]*)`\s*\|"),' \
+    '    re.compile(r"NEVER_MATCHES_TABLE`([^`]*)`"),'
+
 }
 
 if (( list )); then mutations; exit 0; fi
