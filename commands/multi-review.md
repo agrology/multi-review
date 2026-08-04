@@ -388,6 +388,9 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    earlier or fenced `## Review`, and (issue #42) a copy whose **heading structure changed** —
    a reviewer that reformats, e.g. indenting every appended line so `## Review` loses line-start,
    produces no recognisable findings at all and would otherwise score as a clean empty turn.
+   **Exit 1, contradiction** — the copy claims `[no-findings]` while also adding findings. The
+   turn is self-contradictory: `merge` would ingest the findings while the signal tells the gate
+   the turn was clean. Quarantine that provider with the message as the reason.
    **Exit 0 with a `note —` line on stderr** — some findings landed and some did not (usually a
    quoted example inside a fence). The turn is admitted; relay the note at the gate.
    **Exit 2** — a usage/infra error on YOUR side (bad path, missing value). Fix the invocation.

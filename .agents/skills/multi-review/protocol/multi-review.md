@@ -73,6 +73,25 @@ A secondary raises findings only — it never responds to a finding (its own or 
 and never converges the review. Only top-level `> [..]` lines are control markers; nested
 `> > ...` is ignored. Ids must be unique within the copy; a duplicate id is a hard error.
 
+### Nothing to raise
+
+A secondary that read the document in full and has **nothing to raise** must say so explicitly:
+
+    > [no-findings] reviewed in full; nothing to raise
+    > — via <model>
+
+- This is a **MUST**, not a courtesy. A turn that flips the marker and writes nothing is
+  byte-identical to one from a reviewer that never opened the document — the signal is the only
+  thing that distinguishes a careful empty review from a no-op.
+- The `> — via <model>` disclosure is **required**, exactly as on a finding, and is enforced:
+  a signal without it fails `verify-vendor`. Without a disclosure there is no model id to check,
+  so an empty turn would satisfy the identity guard vacuously.
+- Trailing text after the tag is optional and free-form.
+- It is **not a finding**: it never merges as one, never needs an `agree`/`dispute`, and never
+  affects convergence.
+- It is **mutually exclusive with findings**. A copy that emits the signal *and* raises findings
+  in the same turn is self-contradictory and fails `channel-check`.
+
 ## Primary adjudication
 
 On the merged doc (marker `awaiting-primary`), the primary responds to **every** merged
