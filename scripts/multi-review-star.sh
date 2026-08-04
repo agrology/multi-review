@@ -13,6 +13,8 @@
 #   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
 #                              and a converge/re-fan verdict (advisory; pure read)
 #   evidence-gaps <doc>     -> high/med findings lacking a "> — evidence:" line (report, not gate)
+#   blind-check <copy>      -> exit 1 if a SEEDED copy still carries a previous round's
+#                              findings/responses (issue #39); the reviewer would not be blind
 #   channel-check --seed <seed> <copy> -> exit 1 if a reviewer's findings landed outside the
 #                              merged '## Review' channel (issue #32); the turn would merge clean
 #   compose-review <doc> <primary-model-id>  -> neutral PR review body (dormant; Task A4)
@@ -657,6 +659,45 @@ cmd_channel_check() {
   die "NONE of the reviewer's ${added_total} finding(s) reached what merge ingests (${why}). Merging would record this turn as clean." 1
 }
 
+# blind-check <copy> — is this seeded copy actually BLIND? (issue #39)
+#
+# Reviewer independence is the property the star model rests on — "a secondary never sees another
+# secondary's findings or the primary's responses". Producing the blind copies is the one step of
+# the loop with no script behind it and no check after it: the primary truncates the baseline after
+# the last '## Review' by hand, per round, per provider.
+#
+# The failure is silent in exactly the direction that matters. Get the truncation wrong and the
+# "blind" copy still carries the previous round's findings and the primary's responses — so the
+# secondary reviews a document that tells it what everyone else already said, and nothing
+# downstream notices: merge accepts the copy, verify passes, check-converged passes, and
+# gate-summary reports N INDEPENDENT secondaries. Every other trust property in this protocol has a
+# mechanical check (verify-vendor, channel-check, the manifest self-check); this one had none.
+#
+# FENCES ARE NOT RECORDS. Any doc about this protocol legitimately shows the grammar inside a code
+# block — this repo's own docs do — so a fenced example must not make a copy unseedable. Same
+# fence-aware rule the rest of the file already applies to live records.
+cmd_blind_check() { # <copy> -> 0 blind, 1 carries a prior round (offenders on stderr), 2 usage
+  local copy="${1:-}" live records footer
+  [[ -n "$copy" ]] || die "blind-check requires a copy path" 2
+  [[ -f "$copy" ]] || die "copy not found: $copy" 2
+
+  live="$(strip_fences "$copy")"
+  # Every control line a previous round leaves behind: a secondary's findings, and the primary's
+  # responses/observations. Any one of them means this copy is not blind.
+  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation)[]:]' || true)"
+  # The footer mirrors the merged manifest, so its presence alone proves the copy was merged into.
+  footer="$(printf '%s\n' "$live" | grep '<!-- star-findings:' || true)"
+
+  if [[ -n "$records" || -n "$footer" ]]; then
+    echo "multi-review-star: NOT BLIND — ${copy} carries a previous round; a secondary handed this would see what others already said:" >&2
+    [[ -n "$records" ]] && printf '%s\n' "$records" | sed 's/^/  /' >&2
+    [[ -n "$footer" ]] && printf '%s\n' "$footer" | sed 's/^/  /' >&2
+    echo "Re-seed it from the baseline, truncating after the LAST '## Review' outside any fence." >&2
+    return 1
+  fi
+  return 0
+}
+
 # --- doc↔manifest consistency (issue #16) ----------------------------------
 # Returns 0 iff the doc is internally well-formed AND matches its .manifest;
 # nonzero with a specific stderr message otherwise. Reused by the `verify`
@@ -1248,6 +1289,7 @@ main() {
     round-stats) cmd_round_stats "$@" ;;
     evidence-gaps) cmd_evidence_gaps "$@" ;;
     channel-check) cmd_channel_check "$@" ;;
+    blind-check) cmd_blind_check "$@" ;;
     compose-review) cmd_compose_review "$@" ;;
     compose-inline) cmd_compose_inline "$@" ;;
     *)    die "unknown subcommand: ${cmd:-<none>}" 2 ;;

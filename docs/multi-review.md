@@ -111,6 +111,10 @@ convergence impossible.
   costs no Claude tokens for review. `fable` still appears when a source NAMES it. With the floor
   off and no other secondary usable the run **refuses to arm** rather than degrading to a
   primary-only self-review — a review with no independent voice is not a cheaper review.
+- **A seeded copy is checked for blindness** before dispatch (`multi-review-star.sh blind-check`):
+  it must carry no previous round's findings and none of the primary's responses. Seeding is done
+  by hand, and a botched truncation is silent in the direction that matters — the secondary would
+  read what everyone else already said while every downstream check still passes.
 - A secondary is **quarantined** — excluded from the merge, with its reason recorded durably
   in the doc — when it can't be dispatched, times out, or fails vendor verification (its
   disclosed model doesn't match the vendor it was dispatched as). All secondaries quarantined

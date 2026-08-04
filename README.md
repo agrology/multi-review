@@ -176,7 +176,7 @@ run. Reset it with a "forget the reviewers" request.
 - `docs/multi-review.md` — the star protocol contract (also vendored into the reviewer skill)
 - `.agents/skills/multi-review/` — the self-contained reviewer skill, auto-provisioned into consumer repos for `codex` (git-ignored)
 - `.claude-plugin/plugin.json` — plugin manifest
-- `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / channel-check / compose
+- `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / blind-check / channel-check / compose
 - `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / ensure-skill / doctor / verify-vendor / vendor-of-model
 - `scripts/multi-review-pr.sh` — PR ingest (via `gh`), `refresh` for a later round, per-round head/merge-base records, content-based anchor remapping, a digest-verified diff window (the writer records the SHA-256 of the section body it composed; readers accept the one section that matches, so neither the PR description nor the review channel can move the window), + the one-neutral-review publish
 - `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2: `local-copy` (docs — fence-aware region mapping) and `pr-copy` (PRs — what the author pushed since the last round as a `git diff -W -U10` delta with function context, guarded against rebases, forward merges, and a scoped copy that comes out no smaller than the full diff it replaces). Every path that cannot scope exits 3 with its reason and the round falls back to the full artifact, announced.
