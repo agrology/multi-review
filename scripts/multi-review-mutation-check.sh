@@ -519,6 +519,23 @@ mutations() {
     '  if (( signalled > 0 && added_total > 0 )); then' \
     '  if false; then'
 
+  # --- the no-findings signal's disclosure (#50) ---
+  # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
+  # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as
+  # unverifiable as one that emitted nothing (codex-rd1-r1, reproduced).
+  mutate 'reviewer/protocol-lines-no-findings' 'scripts/multi-review-reviewer.sh' replace \
+    "a bare [no-findings] with no disclosure passed verify-vendor (issue #50, codex-rd1-r1)" 'multi-review-reviewer.test.sh' \
+    "    | grep -E '^> \\[((reviewer|author: resolved|finding|concur|dispute|withdraw):|no-findings[]:])' 2>/dev/null \\" \
+    "    | grep -E '^> \\[(reviewer|author: resolved|finding|concur|dispute|withdraw):' 2>/dev/null \\"
+
+  # Recognising the tag but MIS-KEYING it is a distinct failure (codex-rd2-r1): the raw line
+  # carries the reviewer's free text, so rewording it registers as new protocol content — the
+  # exact false positive normalisation was introduced to fix.
+  mutate 'reviewer/protocol-lines-no-findings-normalise' 'scripts/multi-review-reviewer.sh' replace \
+    "no-findings key is not normalised" 'multi-review-reviewer.test.sh' \
+    "             -e 's/^> \\[(no-findings)[]:].*/\\1:/' \\" \
+    "             -e 's/^__never_matches__//' \\"
+
 }
 
 if (( list )); then mutations; exit 0; fi

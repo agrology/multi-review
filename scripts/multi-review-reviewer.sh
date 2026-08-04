@@ -464,8 +464,9 @@ assert_balanced_fences() { # <file> — hard error (exit 1) on an unterminated c
 # are deliberately kept (sorted, not uniqued) to match via_ids' multiset semantics.
 protocol_lines() { # <file>
   strip_fences "$1" \
-    | grep -E '^> \[(reviewer|author: resolved|finding|concur|dispute|withdraw):' 2>/dev/null \
-    | sed -E 's/^> \[(reviewer|author: resolved|finding|concur|dispute|withdraw):([^]|]*).*/\1:\2/' \
+    | grep -E '^> \[((reviewer|author: resolved|finding|concur|dispute|withdraw):|no-findings[]:])' 2>/dev/null \
+    | sed -E -e 's/^> \[(reviewer|author: resolved|finding|concur|dispute|withdraw):([^]|]*).*/\1:\2/' \
+             -e 's/^> \[(no-findings)[]:].*/\1:/' \
     | sort
 }
 
@@ -705,5 +706,9 @@ case "$sub" in
   doctor)  cmd_doctor "$@" ;;
   verify-vendor) cmd_verify_vendor "$@" ;;
   vendor-of-model) cmd_vendor_of_model "$@" ;;
+  # Test-only accessor. protocol_lines has no CLI surface, but its normalised KEY is a contract
+  # (codex-rd2-r1): two copies whose free text differs must produce the same key, or a reworded
+  # line reads as new protocol content. Underscore-prefixed and undocumented on purpose.
+  _protocol_lines_for_test) protocol_lines "$@" ;;
   *)       die "unknown subcommand: $sub" 2 ;;
 esac
