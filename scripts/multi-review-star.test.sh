@@ -1642,6 +1642,68 @@ msg="$(bash "$SUT" channel-check --seed "$QSEED" "$QMIX" 2>&1 >/dev/null)"
 [[ "$msg" == *"will merge normally"* ]] && ok "channel-check: the partial case warns" \
   || bad "partial case produced no warning ('$msg')"
 
+# --- blind-check: a seeded copy must carry no prior round's findings (issue #39) ---
+# Reviewer independence is the property the star model rests on, and producing the blind copies is
+# the ONE step of the loop with no script behind it and no check after it. The failure is silent in
+# the direction that matters: get the truncation wrong and the "blind" copy still carries the
+# previous round's findings and the primary's responses, so the secondary reviews a document that
+# tells it what everyone else already said. merge accepts it, verify passes, check-converged passes,
+# and the gate reports N INDEPENDENT secondaries.
+BC_OK="$(mkcc bc-ok.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Body' 'text' '' '## Review')"
+bash "$SUT" blind-check "$BC_OK" >/dev/null 2>&1 \
+  && ok "blind-check: a properly seeded copy passes" || bad "blind-check rejected a blind copy"
+
+# a copy still carrying a previous round's FINDING is not blind
+BC_F="$(mkcc bc-find.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Review' \
+  '> [finding:codex-rd1-r1|high] carried over from round 1' '> — via gpt-5')"
+bash "$SUT" blind-check "$BC_F" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "blind-check: a carried-over finding fails" \
+  || bad "a copy carrying round 1's findings passed as blind (issue #39)"
+
+# ...and the primary's RESPONSES are just as disqualifying — they tell the reviewer what was decided
+# Distinct labels per kind: the mutation table credits a guard by the NAME of the failing
+# assertion, so three identically-named assertions could not tell the runner which one bit.
+bc_resp() { # <kind> <line>
+  local kind="$1" line="$2" p
+  p="$(mkcc "bc-resp-${kind}.md" '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+    '<!-- multi-review-mode: star -->' '' '## Review' "$line" '> — via claude-opus-5[1m]')"
+  bash "$SUT" blind-check "$p" >/dev/null 2>&1
+  [[ $? -eq 1 ]] && ok "blind-check: a carried-over ${kind} response fails" \
+    || bad "a copy carrying a ${kind} response passed as blind"
+}
+bc_resp agree      '> [agree:codex-rd1-r1]'
+bc_resp dispute    '> [dispute:codex-rd1-r1] no'
+bc_resp observation '> [observation] note'
+
+# the findings FOOTER is the other tell: a seeded copy must never carry the merged manifest mirror
+BC_FOOT="$(mkcc bc-foot.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Review' '' '<!-- star-findings: codex-rd1-r1=abc -->')"
+bash "$SUT" blind-check "$BC_FOOT" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "blind-check: a carried-over findings footer fails" \
+  || bad "a copy carrying the findings footer passed as blind"
+
+# the reason must NAME what it found, since it is what the primary acts on
+msg="$(bash "$SUT" blind-check "$BC_F" 2>&1 >/dev/null)"
+[[ "$msg" == *"finding:codex-rd1-r1"* ]] && ok "blind-check: names the offending line" \
+  || bad "blind-check reason is not actionable ('$msg')"
+
+# FENCED examples are documentation, not a live record — this protocol's own docs contain them, and
+# rejecting them would make every copy of this repo's docs unseedable.
+BC_FENCE="$(mkcc bc-fence.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Grammar' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '```' '' '## Review')"
+bash "$SUT" blind-check "$BC_FENCE" >/dev/null 2>&1 \
+  && ok "blind-check: a fenced grammar example is not a carried-over finding" \
+  || bad "blind-check rejected a doc whose FENCED example shows the grammar"
+
+# usage errors are exit 2, never a silent pass
+bash "$SUT" blind-check "${WORK}/does-not-exist.md" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "blind-check: missing file exits 2" || bad "blind-check missing file did not exit 2"
+bash "$SUT" blind-check >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "blind-check: no argument exits 2" || bad "blind-check with no argument did not exit 2"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

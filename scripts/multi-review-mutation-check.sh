@@ -487,6 +487,23 @@ mutations() {
     '  elif [[ "$arg" =~ ^[[:space:]]*([Pp][Rr])?[[:space:]]*#?([0-9]+)[[:space:]]*$ ]]; then' \
     '  elif [[ "$arg" =~ ^[[:space:]]*([Pp][Rr])?[[:space:]]*#?([0-9]+) ]]; then'
 
+  # --- blind-copy guard (#39) ---
+  # Independence is the property the star model rests on, and seeding is the one step done by hand.
+  # Lose the record scan and a copy carrying the previous round's findings dispatches as "blind":
+  # the secondary reads what everyone else already said, and merge/verify/check-converged/gate all
+  # still pass while the gate reports N INDEPENDENT secondaries.
+  mutate 'star/blind-check-records' 'scripts/multi-review-star.sh' replace \
+    "a copy carrying round 1's findings passed as blind" 'multi-review-star.test.sh' \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation)[]:]' || true)\"" \
+    '  records=""'
+
+  # The footer is an independent tell: it mirrors the merged manifest, so its presence alone proves
+  # the copy was merged into. A copy could carry it with the record lines stripped.
+  mutate 'star/blind-check-footer' 'scripts/multi-review-star.sh' replace \
+    'a copy carrying the findings footer passed as blind' 'multi-review-star.test.sh' \
+    "  footer=\"\$(printf '%s\\n' \"\$live\" | grep '<!-- star-findings:' || true)\"" \
+    '  footer=""'
+
 }
 
 if (( list )); then mutations; exit 0; fi

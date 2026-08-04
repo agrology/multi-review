@@ -314,6 +314,16 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    `<doc>.baseline` is NOT it, and `channel-check` refuses `--baseline` for that reason. Do this
    AFTER the header rewrite — a pre-rewrite snapshot differs from the dispatched copy. Retain it
    with the other working files; the terminal gate releases it.
+
+   **Then prove the copy is BLIND, before dispatching it** (issue #39):
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh blind-check "<doc>.<id>"`.
+   **Exit 1** — the copy still carries a previous round's findings or your responses. Do NOT
+   dispatch it: the secondary would read what everyone else already said, and independence is the
+   whole point of the star. Re-seed from the baseline (truncating after the LAST `## Review`
+   outside any fence) and re-run the check. **Exit 2** — a usage error on your side; fix the path.
+   Seeding is the one step you perform by hand, so it is the one step with no other check on it:
+   get the truncation wrong and nothing downstream notices — `merge` accepts the copy, `verify`
+   passes, `check-converged` passes, and the gate reports N *independent* secondaries.
 3. **Provision each secondary's skill, right before dispatch.** The working root is the git
    toplevel of the repo under review — your own invocation directory (`git rev-parse
    --show-toplevel`) — **never** `<doc>`'s own location: for a PR-flavor doc, `<doc>` is a
