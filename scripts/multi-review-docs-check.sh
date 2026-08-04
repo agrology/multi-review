@@ -44,33 +44,42 @@ DOCS = [
     ".agents/skills/multi-review/protocol/multi-review.md",
     "commands/multi-review.md",
 ]
-# Whitespace-collapsed match: the statement WRAPS across lines in commands/multi-review.md, and a
-# line-oriented check would skip the wrapped one while looking thorough.
-PAT = re.compile(r"MULTI_REVIEW_DOC_DIRS`?\s*\(default\s*`([^`]*)`")
-MIN_SITES = 3
+# TWO shapes, because the default is stated two ways and a single pattern silently covered only
+# one. Prose form wraps across lines in commands/multi-review.md, so match whitespace-collapsed
+# text; a line-oriented check would skip the wrapped site while looking thorough.
+PATS = (
+    # prose:  ...`MULTI_REVIEW_DOC_DIRS` (default `a b c`)...
+    re.compile(r"MULTI_REVIEW_DOC_DIRS`?\s*\(default\s*`([^`]*)`"),
+    # env table row:  | `MULTI_REVIEW_DOC_DIRS` | `a b c` | meaning |
+    re.compile(r"\|\s*`MULTI_REVIEW_DOC_DIRS`\s*\|\s*`([^`]*)`\s*\|"),
+)
 
-found, problems = 0, []
+problems, per_file = [], {}
 for rel in DOCS:
     p = os.path.join(root, rel)
     if not os.path.exists(p):
-        problems.append(f"{rel}: MISSING FILE"); continue
+        problems.append(f"{rel}: MISSING FILE"); per_file[rel] = 0; continue
     text = " ".join(open(p, encoding="utf-8").read().split())
-    for hit in PAT.finditer(text):
-        found += 1
+    hits = [m for pat in PATS for m in pat.finditer(text)]
+    per_file[rel] = len(hits)
+    for hit in hits:
         got = " ".join(hit.group(1).split())
         if got != want:
             problems.append(f"{rel}: documents '{got}' but DOC_DIRS_DEFAULT is '{want}'")
 
-# ANTI-VACUITY. Rename the variable or reflow the prose and every regex misses; the loop then finds
-# nothing and the check passes while asserting nothing — the exact class this guard exists to stop.
-# A floor, not an equality, so adding a doc that states the default does not break the build.
-if found < MIN_SITES:
-    problems.append(f"only {found} documented default(s) matched — the check has gone BLIND, not clean")
+# ANTI-VACUITY, PER FILE. An aggregate floor is not enough: with four listed docs and a global
+# minimum, any ONE of them — including the .agents protocol copy this issue was specifically
+# about — can be rephrased out of every pattern while the total still clears the bar and the check
+# stays green. Requiring each listed doc to match at least once makes going blind impossible to
+# hide behind its neighbours. A per-file MINIMUM, not an equality, so adding a statement is fine.
+for rel, n in per_file.items():
+    if n == 0 and f"{rel}: MISSING FILE" not in problems:
+        problems.append(f"{rel}: 0 documented default(s) matched — this site has gone BLIND, not clean")
 
 if problems:
     print("multi-review-docs-check: doc/code drift:", file=sys.stderr)
     for b in problems:
         print("  " + b, file=sys.stderr)
     sys.exit(1)
-print(f"multi-review-docs-check: {found} documented default(s) agree with DOC_DIRS_DEFAULT")
+print("multi-review-docs-check: " + str(sum(per_file.values())) + " documented default(s) across " + str(len(DOCS)) + " file(s) agree with DOC_DIRS_DEFAULT")
 PY

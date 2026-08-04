@@ -315,13 +315,38 @@ msg="$(bash "$DOCCHK" "$FX2" 2>&1 >/dev/null)"
 
 # (d) prose the pattern cannot see -> BLIND, not clean. Without this the guard silently degrades
 # to asserting nothing the moment someone reflows a sentence or renames the variable.
+# Assert exit 1 EXACTLY, not merely nonzero: exit 2 means "cannot run" (missing python3, bad root),
+# which would credit this assertion without the floor ever executing — passing for the wrong reason.
 FX3="${WORK}/fx-blind"; mkroot "$FX3" "docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans"
 for f in README.md docs/multi-review.md \
          .agents/skills/multi-review/protocol/multi-review.md commands/multi-review.md; do
   echo 'the default is documented in prose the regex cannot match' > "$FX3/$f"
 done
 bash "$DOCCHK" "$FX3" >/dev/null 2>&1
-[[ $? -ne 0 ]] && ok "docs-check: matching nothing is a FAILURE (blind, not clean)" \
-  || bad "docs-check passed while matching zero sites — it can no longer fail"
+[[ $? -eq 1 ]] && ok "docs-check: matching nothing is a drift FAILURE (exit 1, blind not clean)" \
+  || bad "docs-check did not exit 1 on a fully blind tree"
+
+# (e) ONE site blind while the others still match. An aggregate floor passes this — the total
+# clears the bar and the rephrased file hides behind its neighbours. The per-file floor must not.
+FX4="${WORK}/fx-blind-one"; mkroot "$FX4" "docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans"
+echo 'this copy describes the default only in prose no pattern matches' \
+  > "$FX4/.agents/skills/multi-review/protocol/multi-review.md"
+bash "$DOCCHK" "$FX4" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "docs-check: a SINGLE blind site fails (per-file floor, not aggregate)" \
+  || bad "one site went blind and the aggregate total hid it — #44 recurs in the guard itself"
+msg="$(bash "$DOCCHK" "$FX4" 2>&1 >/dev/null)"
+[[ "$msg" == *".agents/skills/multi-review/protocol/multi-review.md"* && "$msg" == *"BLIND"* ]] \
+  && ok "docs-check: names WHICH site went blind" || bad "blind site not named ('$msg')"
+
+# (f) a listed doc that does not exist. Silently skipping it would let deleting a doc disable its
+# coverage — the guard would report clean while one of the four sites stopped being checked at all.
+FX5="${WORK}/fx-missing"; mkroot "$FX5" "docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans"
+rm -f "$FX5/docs/multi-review.md"
+bash "$DOCCHK" "$FX5" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "docs-check: a MISSING listed doc fails" \
+  || bad "docs-check passed with a listed doc absent — deleting a doc silently drops its coverage"
+msg="$(bash "$DOCCHK" "$FX5" 2>&1 >/dev/null)"
+[[ "$msg" == *"MISSING FILE"* ]] && ok "docs-check: names the missing file" \
+  || bad "missing-file failure not named ('$msg')"
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
