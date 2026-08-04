@@ -72,7 +72,8 @@ the §2 write-back instead.
 Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh parse "<positional>"`.
 
 - **Exit non-zero** (not a PR ref) → this is a local doc. Continue at "Resolve the doc" below.
-- **Exit 0** → it printed `owner|repo|number` (owner/repo empty for the bare `#n` form). This
+- **Exit 0** → it printed `owner|repo|number` (owner/repo empty for the bare-number forms:
+  `#123`, `123`, `PR 123`, `pr#123`). This
   is **PR flavor**:
   1. If owner/repo are empty, fill them: `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh resolve-repo` →
      `owner|repo`. If it fails, report and STOP.
