@@ -463,7 +463,7 @@ mutations() {
   # README carrying both forms, losing either pattern still leaves the file non-blind and the other
   # form keeps the run green while the lost one stops being checked entirely.
   mutate 'docs/default-pattern-prose' 'scripts/multi-review-docs-check.sh' replace \
-    'docs-check passed a doc that contradicts the code' 'multi-review-packaging.test.sh' \
+    'docs-check false-positived on an aligned tree' 'multi-review-packaging.test.sh' \
     '    re.compile(r"MULTI_REVIEW_DOC_DIRS`?\s*\(default\s*`([^`]*)`"),' \
     '    re.compile(r"NEVER_MATCHES_PROSE`([^`]*)`"),'
 

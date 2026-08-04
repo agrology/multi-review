@@ -306,7 +306,7 @@ bash "$DOCCHK" "$FX" >/dev/null 2>&1 \
 # (c) drifted fixture -> fail, and NAME the offending site (this is #44's exact shape)
 FX2="${WORK}/fx-drift"; mkroot "$FX2" "docs/specs docs/plans"
 bash "$DOCCHK" "$FX2" >/dev/null 2>&1
-[[ $? -ne 0 ]] && ok "docs-check: a stale documented default FAILS" \
+[[ $? -eq 1 ]] && ok "docs-check: a stale documented default FAILS" \
   || bad "docs-check passed a doc that contradicts the code (#44 would recur)"
 msg="$(bash "$DOCCHK" "$FX2" 2>&1 >/dev/null)"
 [[ "$msg" == *"docs/multi-review.md"* && "$msg" == *"documents"* ]] \
