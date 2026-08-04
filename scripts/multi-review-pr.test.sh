@@ -51,8 +51,32 @@ out="$(bash "$SUT" parse 'octo-cat/hello.world#13' 2>/dev/null)"
 out="$(bash "$SUT" parse '#99' 2>/dev/null)"
 [[ "$out" == "||99" ]] && ok "parse: bare #n leaves owner/repo empty" || bad "parse #n (got '$out')"
 
+# --- parse: the forms a human actually types (issue #45) ---
+# A non-zero exit is NOT an error path — the command spec reads it as "not a PR ref, so it must be
+# a local doc". So rejecting `PR 123` did not produce "unrecognised PR reference"; it fell through
+# to doc resolution and failed with a message about MULTI_REVIEW_DOC_DIRS. The misdiagnosis is the
+# real cost: the user asked for a PR review and was told something about spec directories.
+for form in '123' 'PR 123' 'pr 123' 'PR#123' 'pr#123' 'PR123' '#123' ' 123 ' 'Pr 123'; do
+  out="$(bash "$SUT" parse "$form" 2>/dev/null)"; code=$?
+  [[ $code == 0 && "$out" == "||123" ]] \
+    && ok "parse: '$form' -> ||123" \
+    || bad "parse rejected the human form '$form' (got '$out' code $code)"
+done
+
+# The already-supported forms are unaffected — a widened matcher must not swallow them.
+out="$(bash "$SUT" parse 'octo-cat/hello.world#13' 2>/dev/null)"
+[[ "$out" == "octo-cat|hello.world|13" ]] && ok "parse: owner/repo#n still wins over the bare form" \
+  || bad "widening broke owner/repo#n (got '$out')"
+out="$(bash "$SUT" parse 'https://github.com/o/r/pull/7' 2>/dev/null)"
+[[ "$out" == "o|r|7" ]] && ok "parse: full URL still wins" || bad "widening broke the URL form (got '$out')"
+
 # --- parse: non-PR inputs fall through (exit 1, no output) ---
-for nope in 'docs/specs/2026-06-16-foo.md' 'https://github.com/o/r' 'https://github.com/o/r/pull/abc' 'just-a-string' ''; do
+# A bare integer is unambiguous ONLY because the alternative reading is a local doc path, and the
+# resolver matches just YYYY-MM-DD-*.md — a path that is exactly an integer cannot be a valid doc.
+# Anything that could plausibly BE a path must still fall through, or widening the matcher would
+# hijack real doc arguments.
+for nope in 'docs/specs/2026-06-16-foo.md' 'https://github.com/o/r' 'https://github.com/o/r/pull/abc' \
+            'just-a-string' '' '12.3' '1/2' 'PR' 'pr' 'PRoposal' '123abc' 'abc123' '-5' '#' '#abc'; do
   bash "$SUT" parse "$nope" >/dev/null 2>&1 && bad "parse should reject '$nope'" || ok "parse rejects '$nope'"
 done
 

@@ -24,8 +24,20 @@ cmd_parse() { # <arg> -> "owner|repo|number"; exit 1 if not a PR ref
     o="${BASH_REMATCH[1]}"; r="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"
   elif [[ "$arg" =~ ^([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)#([0-9]+)$ ]]; then
     o="${BASH_REMATCH[1]}"; r="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"
-  elif [[ "$arg" =~ ^#([0-9]+)$ ]]; then
-    o=""; r=""; n="${BASH_REMATCH[1]}"
+  # Bare-number forms in the shapes a human types (#45): `#123`, `123`, `PR 123`, `pr#123`.
+  # Matched LAST, so owner/repo#n and the full URL keep priority.
+  #
+  # A non-zero exit here is NOT an error path — the command spec reads it as "not a PR ref, so it
+  # must be a local doc". Rejecting `PR 123` therefore produced no "unrecognised PR reference";
+  # it fell through to doc resolution and failed talking about MULTI_REVIEW_DOC_DIRS, pointing the
+  # user at entirely the wrong thing. That misdiagnosis was the real cost, not the rejection.
+  #
+  # A BARE integer is safe to claim because the only competing reading is a local doc path, and
+  # resolve-doc matches only YYYY-MM-DD-*.md — a path that is exactly an integer cannot be a valid
+  # doc. Anything path-shaped (`12.3`, `1/2`, `123abc`) still falls through, and `PR` alone is not
+  # a reference. Character classes, not \s/\d: bash 3.2 ERE has no perl shorthands.
+  elif [[ "$arg" =~ ^[[:space:]]*([Pp][Rr])?[[:space:]]*#?([0-9]+)[[:space:]]*$ ]]; then
+    o=""; r=""; n="${BASH_REMATCH[2]}"
   else
     return 1
   fi

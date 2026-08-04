@@ -472,6 +472,21 @@ mutations() {
     '    re.compile(r"\|\s*`MULTI_REVIEW_DOC_DIRS`\s*\|\s*`([^`]*)`\s*\|"),' \
     '    re.compile(r"NEVER_MATCHES_TABLE`([^`]*)`"),'
 
+  # --- PR-ref parsing (#45) ---
+  # The bare-number branch is ANCHORED on purpose. Its non-zero exit is not an error path — the
+  # command spec reads it as "this is a local doc" — so a matcher loosened to find a number
+  # ANYWHERE would silently claim real doc paths and route them to GitHub ingest instead. The
+  # widening that fixes the human forms is the same edit that could swallow `docs/specs/…-foo.md`,
+  # which is why the anchors get an entry rather than trusting the happy-path assertions.
+  # Dropping ONLY the trailing anchor, so the capture groups are untouched and the accept cases
+  # still pass — this isolates the anchoring rather than breaking the match wholesale. Without the
+  # `$`, `123abc` parses as PR 123 and gets routed to GitHub ingest instead of falling through to
+  # local-doc resolution.
+  mutate 'pr/bare-number-anchored' 'scripts/multi-review-pr.sh' replace \
+    "parse should reject '123abc'" 'multi-review-pr.test.sh' \
+    '  elif [[ "$arg" =~ ^[[:space:]]*([Pp][Rr])?[[:space:]]*#?([0-9]+)[[:space:]]*$ ]]; then' \
+    '  elif [[ "$arg" =~ ^[[:space:]]*([Pp][Rr])?[[:space:]]*#?([0-9]+) ]]; then'
+
 }
 
 if (( list )); then mutations; exit 0; fi

@@ -84,7 +84,9 @@ unless a named test catches it — because a green suite is not by itself eviden
   isn't set up is dropped for that run with a notice, not an error). Say "forget the reviewers"
   to reset to fable-only (which, under `MULTI_REVIEW_FABLE=off`, leaves nothing — the next run
   refuses to arm rather than self-reviewing).
-- PR refs also accept `owner/repo#n` and, in the current repo, `#n`.
+- PR refs also accept `owner/repo#n` and, in the current repo, `#n` — plus the forms people
+  actually type: a bare `123`, or `PR 123` / `pr#123` (case-insensitive). Anything path-shaped
+  still resolves as a local doc.
 - The set is **`(--reviewers) ∪ {fable}`** by default. `MULTI_REVIEW_FABLE=off` drops the
   `∪ {fable}` union, leaving just what you named; naming `fable` explicitly still includes it.
   With the union off and nothing else usable, the run refuses to arm rather than self-reviewing.
