@@ -1704,6 +1704,29 @@ bash "$SUT" blind-check "${WORK}/does-not-exist.md" >/dev/null 2>&1
 bash "$SUT" blind-check >/dev/null 2>&1
 [[ $? -eq 2 ]] && ok "blind-check: no argument exits 2" || bad "blind-check with no argument did not exit 2"
 
+# --- issue #50: a carried-over `[no-findings]` is a record too ---
+# The signal says "a reviewer already read this and reported it clean". A copy carrying it is not
+# blind: the secondary would see that verdict before forming its own.
+BC_NF="$(mkcc bc-nf.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5')"
+bash "$SUT" blind-check "$BC_NF" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "blind-check: a carried-over no-findings signal fails" \
+  || bad "a copy carrying a previous round's [no-findings] passed as blind (issue #50)"
+
+# the reason must NAME it, since the primary acts on the message
+msg="$(bash "$SUT" blind-check "$BC_NF" 2>&1 >/dev/null)"
+[[ "$msg" == *"no-findings"* ]] && ok "blind-check: names the carried-over signal" \
+  || bad "blind-check reason did not name the no-findings line ('$msg')"
+
+# a FENCED signal is documentation, not a record — this repo's own docs show the grammar
+BC_NFF="$(mkcc bc-nf-fence.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 2/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## Grammar' '```' \
+  '> [no-findings] an EXAMPLE in the docs' '```' '' '## Review')"
+bash "$SUT" blind-check "$BC_NFF" >/dev/null 2>&1 \
+  && ok "blind-check: a fenced no-findings example is not a record" \
+  || bad "blind-check rejected a doc whose FENCED example shows the no-findings grammar"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

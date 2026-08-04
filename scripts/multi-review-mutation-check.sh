@@ -494,7 +494,7 @@ mutations() {
   # still pass while the gate reports N INDEPENDENT secondaries.
   mutate 'star/blind-check-records' 'scripts/multi-review-star.sh' replace \
     "a copy carrying round 1's findings passed as blind" 'multi-review-star.test.sh' \
-    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\"" \
     '  records=""'
 
   # The footer is an independent tell: it mirrors the merged manifest, so its presence alone proves
@@ -503,6 +503,14 @@ mutations() {
     'a copy carrying the findings footer passed as blind' 'multi-review-star.test.sh' \
     "  footer=\"\$(printf '%s\\n' \"\$live\" | grep '<!-- star-findings:' || true)\"" \
     '  footer=""'
+
+  # A carried-over `[no-findings]` is a record: it tells the next secondary that someone already
+  # read this document and called it clean. Dropping the tag from the alternation restores the
+  # exact blind spot #50 exists to close, and every other guard still passes.
+  mutate 'star/blind-check-no-findings' 'scripts/multi-review-star.sh' replace \
+    "a copy carrying a previous round's [no-findings] passed as blind (issue #50)" 'multi-review-star.test.sh' \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation)[]:]' || true)\""
 
 }
 

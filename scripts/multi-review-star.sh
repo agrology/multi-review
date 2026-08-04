@@ -684,7 +684,7 @@ cmd_blind_check() { # <copy> -> 0 blind, 1 carries a prior round (offenders on s
   live="$(strip_fences "$copy")"
   # Every control line a previous round leaves behind: a secondary's findings, and the primary's
   # responses/observations. Any one of them means this copy is not blind.
-  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation)[]:]' || true)"
+  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|no-findings)[]:]' || true)"
   # The footer mirrors the merged manifest, so its presence alone proves the copy was merged into.
   footer="$(printf '%s\n' "$live" | grep '<!-- star-findings:' || true)"
 
