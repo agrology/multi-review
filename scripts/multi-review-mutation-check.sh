@@ -512,6 +512,13 @@ mutations() {
     "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\"" \
     "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation)[]:]' || true)\""
 
+  # Without the die, a copy that claims it found nothing while appending findings merges those
+  # findings AND reports the turn as clean — the gate reads a contradiction as a clean turn.
+  mutate 'star/channel-check-contradiction' 'scripts/multi-review-star.sh' replace \
+    "a copy claiming no-findings while raising findings was accepted (issue #50)" 'multi-review-star.test.sh' \
+    '  if (( signalled > 0 && added_total > 0 )); then' \
+    '  if false; then'
+
 }
 
 if (( list )); then mutations; exit 0; fi

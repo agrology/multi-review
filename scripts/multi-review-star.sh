@@ -623,6 +623,18 @@ cmd_channel_check() {
   added_visible="$(LC_ALL=C comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
   rm -f "$sa" "$sv" "$ca" "$cv"
 
+  # Issue #50. The signal and real findings are mutually exclusive: a reviewer cannot have
+  # nothing to raise while raising things. A copy carrying both is self-contradictory, and the
+  # ambiguity is not harmless — merge would ingest the findings while the signal tells the gate
+  # the turn was clean. Checked here rather than at merge so the copy is still attributable to
+  # ONE provider and the natural remedy (quarantine that secondary) is still available.
+  # Fence-stripped: a doc quoting the grammar as evidence must not trip this.
+  local signalled
+  signalled="$(review_section "$copy" | strip_fences /dev/stdin | grep -c '^> \[no-findings[]:]' || true)"
+  if (( signalled > 0 && added_total > 0 )); then
+    die "the copy claims '[no-findings]' while adding ${added_total} finding(s) — a turn cannot be both clean and raising concerns. Merging would ingest the findings while the gate reports the turn as clean." 1
+  fi
+
   # Issue #42. Zero RECOGNISED additions makes the comparison above vacuous: a copy whose
   # findings are indented (` > [finding:`) matches neither grep, so added_total and
   # added_visible are both 0 and the turn scores as clean while merge ingests nothing. Before

@@ -1727,6 +1727,40 @@ bash "$SUT" blind-check "$BC_NFF" >/dev/null 2>&1 \
   && ok "blind-check: a fenced no-findings example is not a record" \
   || bad "blind-check rejected a doc whose FENCED example shows the no-findings grammar"
 
+# --- issue #50: the signal and real findings are mutually exclusive ---
+# A reviewer cannot have nothing to raise while raising things. Caught in channel-check rather
+# than merge so the copy is still per-provider and the natural remedy (quarantine) is available.
+NFSEED="$(mkcc nfseed.md '# Doc' '' '## B' '' 'b' '' '## Review')"
+
+# (a) the signal ALONE is a clean turn — this is the whole point of #50, and must keep passing
+NFOK="$(mkcc nfok.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFOK" >/dev/null 2>&1 \
+  && ok "channel-check: a signal-only turn passes" \
+  || bad "channel-check rejected an honest signalled-clean turn (issue #50)"
+
+# (b) the signal PLUS a real finding contradicts itself
+NFBAD="$(mkcc nfbad.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5' \
+  '> [finding:r1|high] but here is a defect' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFBAD" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: signal plus findings is a contradiction" \
+  || bad "a copy claiming no-findings while raising findings was accepted (issue #50)"
+
+# the reason names the contradiction, since it becomes a quarantine reason
+msg="$(bash "$SUT" channel-check --seed "$NFSEED" "$NFBAD" 2>&1 >/dev/null)"
+[[ "$msg" == *"no-findings"* && "$msg" == *"finding"* ]] \
+  && ok "channel-check: contradiction reason names both sides" \
+  || bad "contradiction reason is not actionable ('$msg')"
+
+# (c) a FENCED signal beside real findings is documentation, not a contradiction
+NFFENCE="$(mkcc nffence.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [finding:r1|med] a real finding' '> — via gpt-5' '> — risk: r' \
+  '> — evidence: the grammar is' '```' '> [no-findings] a quoted example' '```')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFFENCE" >/dev/null 2>&1 \
+  && ok "channel-check: a fenced signal beside findings is not a contradiction" \
+  || bad "a quoted no-findings example quarantined a legitimate turn"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
