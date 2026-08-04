@@ -1761,6 +1761,19 @@ bash "$SUT" channel-check --seed "$NFSEED" "$NFFENCE" >/dev/null 2>&1 \
   && ok "channel-check: a fenced signal beside findings is not a contradiction" \
   || bad "a quoted no-findings example quarantined a legitimate turn"
 
+# (d) an INHERITED signal is not the reviewer's own claim — the design (§3 rule 3) says "adds"
+# means additions relative to the seed, not presence anywhere in the copy. A seed whose
+# `## Review` already carries `[no-findings]` (e.g. a stale prior round), with the reviewer
+# adding only its own honest finding, must NOT be quarantined for a line it inherited.
+NFISEED="$(mkcc nfiseed.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5')"
+NFINHERITED="$(mkcc nfinherited.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5' \
+  '> [finding:r1|med] a real finding the reviewer actually added' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --seed "$NFISEED" "$NFINHERITED" >/dev/null 2>&1 \
+  && ok "channel-check: an inherited no-findings signal is not blamed on the reviewer that adds a finding" \
+  || bad "channel-check quarantined a reviewer for a [no-findings] line it inherited from the seed, not added itself"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

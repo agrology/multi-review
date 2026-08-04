@@ -59,14 +59,23 @@ model — star — no mode detection, no back-and-forth with other secondaries.
        > — at <path>:<line>
 
    using RIGHT-side new-file line numbers.
-7. You raise findings only. Do not respond to a finding (yours or anyone else's — that verb set
+7. If you read the document in full and have **nothing to raise**, say so explicitly instead of
+   leaving the `## Review` section untouched — a flipped marker with nothing written is
+   byte-identical to a turn that never opened the document:
+
+       > [no-findings] reviewed in full; nothing to raise
+       > — via <your-model-id>
+
+   This is mutually exclusive with findings — never emit it alongside a `[finding:]` in the
+   same turn.
+8. You raise findings only. Do not respond to a finding (yours or anyone else's — that verb set
    is `[agree:]`/`[dispute:]`, and it belongs to the primary), and do not decide convergence.
-8. Flip the marker **last**, as your FINAL edit of this turn: change this copy's
+9. Flip the marker **last**, as your FINAL edit of this turn: change this copy's
    `awaiting-reviewer` to `awaiting-author` (the flip is the handoff). Never set any other
    state, and never edit the primary's doc or any other provider's copy.
-9. Stop. Do not implement, commit, or open a PR — stop at the human gate. Do one turn per
-   invocation; you are not re-invoked within this session for a later round — a fresh round
-   dispatches a fresh copy.
+10. Stop. Do not implement, commit, or open a PR — stop at the human gate. Do one turn per
+    invocation; you are not re-invoked within this session for a later round — a fresh round
+    dispatches a fresh copy.
 
 ## Review Standard
 
@@ -86,6 +95,7 @@ content without explicit authorization.
 
 After your turn, report:
 
-- Whether findings were added, and their ids.
+- Whether findings were added, and their ids — or that you emitted `[no-findings]` because
+  there was nothing to raise.
 - That the marker was flipped to `awaiting-author` as the final edit.
 - That you are done — the primary picks the review back up; you do not wait for it.

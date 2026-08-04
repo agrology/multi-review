@@ -83,9 +83,10 @@ A secondary that read the document in full and has **nothing to raise** must say
 - This is a **MUST**, not a courtesy. A turn that flips the marker and writes nothing is
   byte-identical to one from a reviewer that never opened the document — the signal is the only
   thing that distinguishes a careful empty review from a no-op.
-- The `> — via <model>` disclosure is **required**, exactly as on a finding, and is enforced:
-  a signal without it fails `verify-vendor`. Without a disclosure there is no model id to check,
-  so an empty turn would satisfy the identity guard vacuously.
+- The `> — via <model>` disclosure is **required**, exactly as on a finding. `verify-vendor`
+  checks new protocol content only when the turn added no new `> — via` id anywhere in the doc,
+  so a signal that is the turn's *only* new content fails there if it lacks its own disclosure —
+  otherwise an empty turn would satisfy the identity guard vacuously.
 - Trailing text after the tag is optional and free-form.
 - It is **not a finding**: it never merges as one, never needs an `agree`/`dispute`, and never
   affects convergence.

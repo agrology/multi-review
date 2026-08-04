@@ -317,10 +317,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    **Then prove the copy is BLIND, before dispatching it** (issue #39):
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh blind-check "<doc>.<id>"`.
-   **Exit 1** — the copy still carries a previous round's findings or your responses. Do NOT
-   dispatch it: the secondary would read what everyone else already said, and independence is the
-   whole point of the star. Re-seed from the baseline (truncating after the LAST `## Review`
-   outside any fence) and re-run the check. **Exit 2** — a usage error on your side; fix the path.
+   **Exit 1** — the copy still carries a previous round's findings, your responses, or a
+   carried-over `[no-findings]` signal. Do NOT dispatch it: the secondary would read what
+   everyone else already said, and independence is the whole point of the star. Re-seed from
+   the baseline (truncating after the LAST `## Review` outside any fence) and re-run the check.
+   **Exit 2** — a usage error on your side; fix the path.
    Seeding is the one step you perform by hand, so it is the one step with no other check on it:
    get the truncation wrong and nothing downstream notices — `merge` accepts the copy, `verify`
    passes, `check-converged` passes, and the gate reports N *independent* secondaries.

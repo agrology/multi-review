@@ -954,6 +954,16 @@ k2="$(bash "$SUT" _protocol_lines_for_test "$NFT2" 2>/dev/null || true)"
   && ok "protocol_lines: the normalised key is exactly 'no-findings:'" \
   || bad "normalised key is '$k1', expected 'no-findings:'"
 
+# _protocol_lines_for_test with no argument must fail via this file's `die` convention (a
+# named, prefixed message on stderr and exit 2), not a raw `set -u` "unbound variable" trap.
+pl_err="$(bash "$SUT" _protocol_lines_for_test 2>&1 >/dev/null)"; pl_rc=$?
+[[ "$pl_rc" -eq 2 ]] \
+  && ok "_protocol_lines_for_test: missing argument exits 2" \
+  || bad "_protocol_lines_for_test with no argument exited $pl_rc, expected 2"
+[[ "$pl_err" == "multi-review-reviewer: "*"file"* ]] \
+  && ok "_protocol_lines_for_test: missing argument reports via die(), not an unbound-variable trap" \
+  || bad "_protocol_lines_for_test error was not a die()-style message: '$pl_err'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

@@ -716,6 +716,8 @@ case "$sub" in
   # Test-only accessor. protocol_lines has no CLI surface, but its normalised KEY is a contract
   # (codex-rd2-r1): two copies whose free text differs must produce the same key, or a reworded
   # line reads as new protocol content. Underscore-prefixed and undocumented on purpose.
-  _protocol_lines_for_test) protocol_lines "$@" ;;
+  _protocol_lines_for_test)
+    [[ $# -ge 1 ]] || die "_protocol_lines_for_test requires a file argument" 2
+    protocol_lines "$@" ;;
   *)       die "unknown subcommand: $sub" 2 ;;
 esac
