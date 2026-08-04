@@ -83,6 +83,10 @@ A secondary that read the document in full and has **nothing to raise** must say
 - This is a **MUST**, not a courtesy. A turn that flips the marker and writes nothing is
   byte-identical to one from a reviewer that never opened the document — the signal is the only
   thing that distinguishes a careful empty review from a no-op.
+- It is **enforced**, not merely expected. A turn that flips the marker and writes nothing — no
+  findings and no signal — fails `channel-check` as a non-response, and the primary quarantines
+  that provider for the round. Before the signal existed this was unenforceable, because a
+  careful empty review and a no-op were the same bytes.
 - The `> — via <model>` disclosure is **required**, exactly as on a finding. `verify-vendor`
   checks new protocol content only when the turn added no new `> — via` id anywhere in the doc,
   so a signal that is the turn's *only* new content fails there if it lacks its own disclosure —
