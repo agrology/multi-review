@@ -539,6 +539,15 @@ mutations() {
     "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true" \
     "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true"
 
+  # Issue #46. Without this die, a copy that adds no findings and no signal — the artifact of a
+  # secondary that flipped its marker without reading anything — merges as a clean review, and
+  # gate-summary reports that provider as an admitted independent secondary. Every other guard in
+  # the fan-out passes it, which is exactly why it needed its own.
+  mutate 'star/channel-check-noop' 'scripts/multi-review-star.sh' replace \
+    "a marker-only turn merged as a clean review (issue #46)" 'multi-review-star.test.sh' \
+    '    if (( signalled == 0 )); then' \
+    '    if false; then'
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as
