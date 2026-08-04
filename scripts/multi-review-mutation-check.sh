@@ -519,6 +519,26 @@ mutations() {
     '  if (( signalled > 0 && added_total > 0 )); then' \
     '  if false; then'
 
+  # codex-rd1-r1 (PR #58). The signal takes no id, so `]` is its only valid terminator. Widening
+  # back to the shared `[]:]` class lets a malformed `[no-findings: …]` beside REAL findings read
+  # as a contradiction, quarantining the turn and destroying its good findings — fable-rd2-r4's
+  # harm inverted. The COPY's capture grep is the one that decides: widen it and the malformed
+  # line enters $cn, so comm reports an addition and the guard fires on a turn it must not.
+  mutate 'star/channel-check-signal-strict' 'scripts/multi-review-star.sh' replace \
+    "a malformed signal-shaped line quarantined a turn with real findings (codex-rd1-r1)" 'multi-review-star.test.sh' \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep '^> \\[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true"
+
+  # The SEED-side capture and the count grep are DELIBERATELY redundant behind the copy-side grep
+  # above. `comm -13 $sn $cn` reports what the COPY added, so a pattern only the seed side would
+  # match adds nothing to the result, and the count can never see a line the capture excluded.
+  # Recorded rather than omitted (§11) so the next person to notice the survival does not file it
+  # as a coverage gap, and so that losing the copy-side narrowing surfaces here.
+  mutate 'star/channel-check-signal-strict-seed' 'scripts/multi-review-star.sh' replace \
+    'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
+    "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true" \
+    "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true"
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as

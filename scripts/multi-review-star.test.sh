@@ -1761,6 +1761,20 @@ bash "$SUT" channel-check --seed "$NFSEED" "$NFFENCE" >/dev/null 2>&1 \
   && ok "channel-check: a fenced signal beside findings is not a contradiction" \
   || bad "a quoted no-findings example quarantined a legitimate turn"
 
+# (c2) codex-rd1-r1 (PR #58): the signal takes NO id, so `]` is its only valid terminator. The
+# shared `[]:]` class — right for `finding:`/`agree:`/`observation]` — also matched a malformed
+# `[no-findings: …]`, and a malformed signal-shaped line beside REAL findings then read as a
+# contradiction and quarantined the turn, destroying its good findings. That is fable-rd2-r4's
+# harm inverted. Deliberately scoped to channel-check: blind-check and protocol_lines are
+# permissive in the FAIL-CLOSED direction (more copies re-seeded, more lines needing a
+# disclosure), so narrowing those would loosen them.
+NFMAL="$(mkcc nfmal.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '> [no-findings: malformed] not the documented tag' \
+  '> [finding:r1|high] a real defect that must survive' '> — via gpt-5' '> — risk: r')"
+bash "$SUT" channel-check --seed "$NFSEED" "$NFMAL" >/dev/null 2>&1 \
+  && ok "channel-check: a malformed [no-findings:…] is not the clean-turn signal" \
+  || bad "a malformed signal-shaped line quarantined a turn with real findings (codex-rd1-r1)"
+
 # (d) an INHERITED signal is not the reviewer's own claim — the design (§3 rule 3) says "adds"
 # means additions relative to the seed, not presence anywhere in the copy. A seed whose
 # `## Review` already carries `[no-findings]` (e.g. a stale prior round), with the reviewer

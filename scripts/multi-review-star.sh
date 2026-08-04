@@ -617,8 +617,15 @@ cmd_channel_check() {
   review_section "$base" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | LC_ALL=C sort > "$sv" || true
   review_section "$copy" | strip_fences /dev/stdin | grep '^> \[finding:' 2>/dev/null | LC_ALL=C sort > "$cv" || true
   # ...and the no-findings signal itself, same fence-stripped review-section idiom as $sv/$cv.
-  review_section "$base" | strip_fences /dev/stdin | grep '^> \[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > "$sn" || true
-  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > "$cn" || true
+  # codex-rd1-r1 (PR #58): matched EXACTLY, `]` and nothing else. The signal carries no id, so
+  # unlike `finding:`/`agree:` the shared `[]:]` class is wrong for it — under that class a
+  # malformed `[no-findings: …]` beside REAL findings read as a contradiction and quarantined the
+  # turn, destroying its good findings (fable-rd2-r4's harm, inverted). Scoped to THIS guard on
+  # purpose: blind-check and protocol_lines are permissive in the fail-CLOSED direction (more
+  # copies re-seeded, more lines required to carry a disclosure), so narrowing them would loosen
+  # them instead.
+  review_section "$base" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$sn" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$cn" || true
 
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
@@ -627,7 +634,10 @@ cmd_channel_check() {
   # Issue #50 (design §3 rule 3). Judged the same way: additions relative to the SEED, not
   # presence anywhere in the copy — a reviewer is never blamed for a `[no-findings]` line it
   # inherited (e.g. a stale prior round) rather than claimed itself.
-  signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^> \[no-findings[]:]' || true)"
+  # Count the additions themselves. The captures above already restricted these files to signal
+  # lines, so re-matching the tag here would put the pattern in TWO places — and a mutation in
+  # either one would be masked by the other, leaving both individually untestable.
+  signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^' || true)"
   rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn"
 
   # Issue #50. The signal and real findings are mutually exclusive: a reviewer cannot have
