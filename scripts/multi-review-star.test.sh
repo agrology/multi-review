@@ -1897,6 +1897,101 @@ bash "$SUT" _roster_for_test "$RO_DUP" >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "_roster: two star hints in the header die rather than first-wins" \
   || bad "_roster took the first of two star hints (codex-rd1-r1)"
 
+# --- gate-summary: admitted providers come from the ROSTER, not from who raised a finding (#59) ---
+# "provider that raised a finding" was a proxy for "provider that reviewed". They diverge exactly
+# when a reviewer is clean, so a genuinely cross-vendor review was reported as an echo chamber.
+
+# (a) mixed: codex (openai, cross-vendor) reviewed and was clean; fable (anthropic) raised one.
+# The run HAD an independent perspective, so no warning.
+GA="$(mkcc ga-mixed.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' \
+  '<!-- multi-review-mode: star · reviewers: codex fable -->' '' '## Review' \
+  '> [finding:fable-rd1-r1|low] a same-vendor finding' '> — via claude-fable-5' '> — risk: none' '' \
+  '> [agree:fable-rd1-r1] fine' '> — via claude-opus-5[1m]' \
+  '<!-- star-findings: fable-rd1-r1=deadbeef; quarantined:  -->')"
+out="$(bash "$SUT" gate-summary "$GA" 'claude-opus-5[1m]' --flag-independence 2>&1)"
+[[ "$out" != *"no independent cross-vendor perspective"* ]] \
+  && ok "gate-summary: a clean cross-vendor secondary counts as independence" \
+  || bad "a clean cross-vendor reviewer was reported as no cross-vendor perspective (issue #59)"
+
+# (b) zero findings: the total must be 0, not 1 (an empty stream counted as one record)
+GZ="$(mkcc ga-zero.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' \
+  '<!-- multi-review-mode: star · reviewers: codex -->' '' '## Review' \
+  '<!-- star-findings: ; quarantined:  -->')"
+out="$(bash "$SUT" gate-summary "$GZ" 'claude-opus-5[1m]' 2>&1)"
+[[ "$out" == *"of 0 "* ]] && ok "gate-summary: zero findings reports a total of 0" \
+  || bad "empty findings stream counted as a record (got: $(printf '%s' "$out" | head -1))"
+
+# (c) ...and the secondary count comes from the roster, so it is 1 even with no findings
+[[ "$out" == *"across 1 secondaries"* ]] && ok "gate-summary: counts rostered secondaries at zero findings" \
+  || bad "secondary count wrong at zero findings (got: $(printf '%s' "$out" | head -1))"
+
+# (d) a GENUINELY same-vendor-only run must still warn — the fix must not neuter the guard
+GS="$(mkcc ga-same.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' \
+  '<!-- multi-review-mode: star · reviewers: fable -->' '' '## Review' \
+  '> [finding:fable-rd1-r1|low] a same-vendor finding' '> — via claude-fable-5' '> — risk: none' '' \
+  '> [agree:fable-rd1-r1] fine' '> — via claude-opus-5[1m]' \
+  '<!-- star-findings: fable-rd1-r1=deadbeef; quarantined:  -->')"
+out="$(bash "$SUT" gate-summary "$GS" 'claude-opus-5[1m]' --flag-independence 2>&1)"
+[[ "$out" == *"no independent cross-vendor perspective"* ]] \
+  && ok "gate-summary: a same-vendor-only run still warns" \
+  || bad "the independence warning was neutered — a same-vendor run reported as independent"
+
+# (e) a QUARANTINED cross-vendor provider must not satisfy independence, and gets the specific
+# "attempted but quarantined" message rather than the generic one
+GQ="$(mkcc ga-quar.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' \
+  '<!-- multi-review-mode: star · reviewers: codex fable -->' '' '## Review' \
+  '> [finding:fable-rd1-r1|low] a same-vendor finding' '> — via claude-fable-5' '> — risk: none' '' \
+  '> [agree:fable-rd1-r1] fine' '> — via claude-opus-5[1m]' \
+  '<!-- star-quarantined: codex · timeout · round 1 -->' \
+  '<!-- star-findings: fable-rd1-r1=deadbeef; quarantined: codex -->')"
+out="$(bash "$SUT" gate-summary "$GQ" 'claude-opus-5[1m]' --flag-independence 2>&1)"
+[[ "$out" == *"attempted but quarantined"* ]] \
+  && ok "gate-summary: a quarantined cross-vendor provider does not satisfy independence" \
+  || bad "a quarantined provider counted as an independent perspective (issue #59)"
+
+# (f) codex-rd1-r1: quarantine is ROUND-SCOPED. A provider whose findings were admitted in round 1
+# and which was quarantined in round 2 is STILL admitted — its findings are in the merged doc.
+# Subtracting every quarantine record from the whole union would drop it, hiding a real
+# cross-vendor perspective.
+GR="$(mkcc ga-roundq.md '# Doc' '<!-- multi-review: converged · round 2/5 -->' \
+  '<!-- multi-review-mode: star · reviewers: codex fable -->' '' '## Review' \
+  '> [finding:codex-rd1-r1|low] a cross-vendor finding from round 1' '> — via gpt-5' '> — risk: none' '' \
+  '> [agree:codex-rd1-r1] fine' '> — via claude-opus-5[1m]' \
+  '<!-- star-quarantined: codex · timeout · round 2 -->' \
+  '<!-- star-findings: codex-rd1-r1=deadbeef; quarantined: codex -->')"
+out="$(bash "$SUT" gate-summary "$GR" 'claude-opus-5[1m]' --flag-independence 2>&1)"
+[[ "$out" != *"cross-vendor perspective"* ]] \
+  && ok "gate-summary: a round-1 raiser quarantined in round 2 stays admitted" \
+  || bad "a later-round quarantine erased an earlier round's admitted findings (codex-rd1-r1)"
+
+# (g) a doc with NO reviewers hint must not regress: the count falls back to the raisers
+GN="$(mkcc ga-nohint.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' '' '## Review' \
+  '> [finding:fable-rd1-r1|low] a finding' '> — via claude-fable-5' '> — risk: none' '' \
+  '> [agree:fable-rd1-r1] fine' '> — via claude-opus-5[1m]' \
+  '<!-- star-findings: fable-rd1-r1=deadbeef; quarantined:  -->')"
+out="$(bash "$SUT" gate-summary "$GN" 'claude-opus-5[1m]' 2>&1)"
+[[ "$out" == *"across 1 secondaries"* ]] \
+  && ok "gate-summary: a doc with no roster hint still counts its raisers" \
+  || bad "hint-less doc regressed (got: $(printf '%s' "$out" | head -1))"
+
+# --- _roster's die must actually REACH its callers ---
+# Assigned through a pipe, a pipeline's exit status is its LAST command's, so a malformed hint
+# would degrade to a stderr message while round-stats and gate-summary carried on with an empty
+# roster — a wrong secondary count and a wrong independence verdict, reported as success. The
+# validation would then be advisory on exactly the two paths whose "nothing else validates this"
+# rationale justified adding it, and the _roster mutation entries would be credited by
+# _roster_for_test alone, a path production never takes.
+RO_CALLER="$(mkcc ro-caller.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' \
+  '<!-- multi-review-mode: star · reviewers: CODEX! -->' '' '## Review' \
+  '<!-- star-findings: ; quarantined:  -->')"
+bash "$SUT" round-stats "$RO_CALLER" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "round-stats: a malformed roster aborts rather than reporting an empty one" \
+  || bad "round-stats swallowed _roster's die and carried on with an empty roster"
+
+bash "$SUT" gate-summary "$RO_CALLER" 'claude-opus-5[1m]' --flag-independence >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "gate-summary: a malformed roster aborts rather than reporting an empty one" \
+  || bad "gate-summary swallowed _roster's die and carried on with an empty roster"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

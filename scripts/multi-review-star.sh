@@ -1021,22 +1021,45 @@ cmd_gate_summary() {
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   t="$(_table "$doc")" || die "gate-summary: contract violation in $doc" 1
 
+  # Issue #59. Who REVIEWED, not who raised a finding — those diverge exactly when a reviewer is
+  # clean, and using the latter as a proxy reported a genuinely cross-vendor review as an echo
+  # chamber. Derived here, once, and used for BOTH the secondary count and the independence check
+  # below, so there is one notion of "admitted" rather than two.
+  #
+  #   admitted = finding-raisers ∪ (roster − quarantined)
+  #
+  # The bracketing is load-bearing (codex-rd1-r1). Quarantine is ROUND-SCOPED — a later round does
+  # not shrink the set (commands/multi-review.md:232) and _quarantines emits one record per
+  # provider per round — so subtracting from the whole union would drop a provider whose round-1
+  # findings are sitting in this very document. A provider that raised an admitted finding is
+  # admitted by observation; only the roster term is filtered.
+  #
+  # _roster is assigned WITHOUT a pipe so its die reaches here (a pipeline's status is its LAST
+  # command's); the normalising filter is a second step, after the status has been checked.
+  local ga_roster ga_raisers ga_quar ga_rmq admitted nsec
+  ga_roster="$(_roster "$doc")" || die "gate-summary: malformed roster in ${doc}" 1
+  ga_roster="$(printf '%s\n' "$ga_roster" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u || true)"
+  ga_raisers="$(printf '%s\n' "$t" | awk -F'\t' 'NF{p=$1; sub(/-rd.*/,"",p); print p}' | LC_ALL=C sort -u)"
+  ga_quar="$(_quarantines "$doc" | awk -F'\t' 'NF{print $1}' | LC_ALL=C sort -u)"
+  ga_rmq="$(LC_ALL=C comm -23 <(printf '%s\n' "$ga_roster" | grep -v '^$' || true) \
+                              <(printf '%s\n' "$ga_quar"   | grep -v '^$' || true))"
+  admitted="$(printf '%s\n%s\n' "$ga_raisers" "$ga_rmq" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u || true)"
+  nsec="$(printf '%s\n' "$admitted" | grep -c . || true)"
+
   # ratio + disputes + agreed, from the table
-  printf '%s\n' "$t" | awk -F'\t' '
+  printf '%s\n' "$t" | awk -F'\t' -v nsec="$nsec" '
     function emit(want,   lvl,i,levels){ split("high med low",levels," ");
       for(lvl=1;lvl<=3;lvl++) for(i=1;i<=n;i++) if(st[i]==want && sv[i]==levels[lvl]) print txt[i] }
-    { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8
+    NF { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8
       if($3=="agreed")a++; else if($3=="dissent")d++
       emoji=(sv[n]=="high")?"🔴":(sv[n]=="med")?"🟠":"🟡"
       if($3=="dissent") txt[n]=emoji " " sv[n] " — " concern[n] " (via " raiser[n] ") — primary disputes: " why[n]
       else txt[n]=emoji " " sv[n] " — " concern[n] " (via " raiser[n] ")"
-      # count SECONDARIES (providers), not model strings (r10): the provider is the ns-id prefix
-      # before "-rd" (ids are <provider>-rd<N>-<rawid>). raiser is the model, which can collide.
-      split($1, pp, "-rd"); secs[pp[1]]=1
     }
     END {
-      ns=0; for(s in secs)ns++
-      printf "Primary agreed with %d findings, DISPUTED %d (of %d across %d secondaries).\n\n", a+0, d+0, n+0, ns
+      # nsec is the ADMITTED count computed in shell (issue #59) — not a count of finding
+      # prefixes, which is blind to a reviewer that reviewed and raised nothing.
+      printf "Primary agreed with %d findings, DISPUTED %d (of %d across %d secondaries).\n\n", a+0, d+0, n+0, nsec+0
       if(d>0){ print "Disputes (high→low):"; emit("dissent"); print "" }
     }'
 
@@ -1077,13 +1100,13 @@ cmd_gate_summary() {
   echo "🤖 Star review gate summary — primary ${primary}. Human gate decides; nothing auto-merges."
 
   if (( flag_independence )); then
-    # Admitted providers come from the DOCUMENT's finding ns-id prefixes (same
-    # <provider>-rd<N>-<id> split the awk summary above already uses for secs[]) — not a
-    # manifest sidecar — so gate-summary stays standalone over just <doc> <primary-model-id>.
-    local admitted_providers pvendor admitted_xvendor=0 p v q_xvendor qp qv
-    admitted_providers="$(printf '%s\n' "$t" | awk -F'\t' 'NF{p=$1; sub(/-rd.*/,"",p); print p}' | sort -u)"
+    # Admitted providers are derived above from the document's own roster and quarantine records —
+    # still no manifest sidecar, so gate-summary stays standalone over just <doc>
+    # <primary-model-id>. Reusing `admitted` rather than re-deriving keeps one notion of who
+    # counted (issue #59).
+    local pvendor admitted_xvendor=0 p v q_xvendor qp qv
     pvendor="$("$REVIEWER_SH" vendor-of-model "$primary" 2>/dev/null || echo unknown)"
-    for p in $admitted_providers; do
+    for p in $admitted; do
       v="$("$REVIEWER_SH" resolve --reviewer "$p" 2>/dev/null | cut -d'|' -f2)"
       [[ -n "$v" && "$v" != "$pvendor" ]] && admitted_xvendor=1
     done
@@ -1143,7 +1166,13 @@ cmd_round_stats() {
   # `reviewers:` list off the mode hint, via the shared helper — same roster gate-summary reads,
   # so the two functions cannot disagree about who reviewed (issue #59). The helper also validates
   # the hint, which the old inline `grep -o` did not.
-  hintp="$(_roster "$doc" | tr '\n' ' ')"
+  #
+  # Assigned WITHOUT a pipe so the helper's die actually reaches here: a pipeline's exit status is
+  # its LAST command's, which would reduce the validation to a stderr message while this function
+  # carried on with an empty roster and printed a wrong verdict. The newline->space join the awk
+  # below expects is a SECOND step, after the status has been checked.
+  hintp="$(_roster "$doc")" || die "round-stats: malformed roster in ${doc}" 1
+  hintp="$(printf '%s' "$hintp" | tr '\n' ' ')"
 
   # quar/hintp go through the ENVIRONMENT, not `awk -v`: -v values cannot contain a literal
   # newline (two quarantine records in one doc made awk die "newline in string"), and -v also

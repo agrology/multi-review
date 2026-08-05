@@ -589,6 +589,49 @@ mutations() {
     '  (( n == 1 )) || die "multiple star mode hints in header: ${doc}" 1' \
     '  :'
 
+  # The helper's die must REACH its callers. Restoring the pipe makes the pipeline's status that of
+  # its last command, so a malformed hint degrades to a stderr message while the caller carries on
+  # with an empty roster — and the two entries above would then be credited by _roster_for_test
+  # alone, a path production never takes.
+  mutate 'star/round-stats-roster-propagates' 'scripts/multi-review-star.sh' replace \
+    "round-stats swallowed _roster's die and carried on with an empty roster" 'multi-review-star.test.sh' \
+    '  hintp="$(_roster "$doc")" || die "round-stats: malformed roster in ${doc}" 1' \
+    '  hintp="$(_roster "$doc" | cat)"'
+
+  mutate 'star/gate-roster-propagates' 'scripts/multi-review-star.sh' replace \
+    "gate-summary swallowed _roster's die and carried on with an empty roster" 'multi-review-star.test.sh' \
+    '  ga_roster="$(_roster "$doc")" || die "gate-summary: malformed roster in ${doc}" 1' \
+    '  ga_roster="$(_roster "$doc" | cat)"'
+
+  # --- gate-summary: admitted = raisers ∪ (roster − quarantined) (#59) ---
+  # Issue #59. Without the roster term, a provider that reviewed and raised nothing is invisible,
+  # and a genuinely cross-vendor run is reported as an echo chamber.
+  mutate 'star/gate-independence-roster' 'scripts/multi-review-star.sh' replace \
+    "a clean cross-vendor reviewer was reported as no cross-vendor perspective (issue #59)" 'multi-review-star.test.sh' \
+    '  ga_roster="$(printf '"'"'%s\n'"'"' "$ga_roster" | grep -v '"'"'^[[:space:]]*$'"'"' | LC_ALL=C sort -u || true)"' \
+    '  ga_roster=""'
+
+  # The bracketing, specifically (codex-rd1-r1). Subtracting from the whole union instead of from
+  # the roster term drops a provider whose earlier-round findings are in this very document.
+  mutate 'star/gate-admitted-raisers-survive' 'scripts/multi-review-star.sh' replace \
+    "a later-round quarantine erased an earlier round's admitted findings (codex-rd1-r1)" 'multi-review-star.test.sh' \
+    '  admitted="$(printf '"'"'%s\n%s\n'"'"' "$ga_raisers" "$ga_rmq" | grep -v '"'"'^[[:space:]]*$'"'"' | LC_ALL=C sort -u || true)"' \
+    '  admitted="$(LC_ALL=C comm -23 <(printf '"'"'%s\n%s\n'"'"' "$ga_raisers" "$ga_roster" | grep -v '"'"'^$'"'"' | LC_ALL=C sort -u) <(printf '"'"'%s\n'"'"' "$ga_quar" | grep -v '"'"'^$'"'"'))"'
+
+  # Dropping the quarantine subtraction lets a QUARANTINED cross-vendor provider satisfy
+  # independence — the guard goes quiet exactly when it should speak, which is worse than wrong.
+  mutate 'star/gate-admitted-minus-quarantined' 'scripts/multi-review-star.sh' replace \
+    "a quarantined provider counted as an independent perspective (issue #59)" 'multi-review-star.test.sh' \
+    '  ga_quar="$(_quarantines "$doc" | awk -F'"'"'\t'"'"' '"'"'NF{print $1}'"'"' | LC_ALL=C sort -u)"' \
+    '  ga_quar=""'
+
+  # Without the NF guard, printf on an empty table emits one blank line that awk counts as a
+  # record, so a document with no findings reports a total of 1.
+  mutate 'star/gate-count-nf-guard' 'scripts/multi-review-star.sh' replace \
+    "empty findings stream counted as a record" 'multi-review-star.test.sh' \
+    '    NF { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8' \
+    '    { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8'
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as
