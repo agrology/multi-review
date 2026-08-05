@@ -663,6 +663,24 @@ cmd_channel_check() {
     if (( seed_h != copy_h )) || ! grep -q '^## Review[[:space:]]*$' "$copy"; then
       die "the copy's heading structure changed (seed has ${seed_h} '## ' heading(s), copy has ${copy_h}); a reformatted copy loses its whole turn silently. Merging would record this turn as clean." 1
     fi
+
+    # Issue #46. Everything above has established that this copy is SHAPED right and simply
+    # contributed no findings. That is legitimate only if the reviewer positively said so: since
+    # #50, a conforming secondary with nothing to raise emits `> [no-findings]`. A turn that adds
+    # neither findings nor that signal is a NON-RESPONSE — the marker was flipped without the
+    # document being reviewed — and merging it would record the turn as clean while gate-summary
+    # counted this provider as an independent secondary.
+    #
+    # Judged on ADDITIONS (`signalled`, computed above), never presence: a signal inherited from a
+    # stale seed is not this reviewer's claim. Ordered AFTER the structural check on purpose, but
+    # that check (#42) only catches a heading-STRUCTURE change (a '## ' count mismatch, or a
+    # missing '## Review'). A copy that indents only its own appended finding lines, leaving
+    # headings untouched, passes #42 and lands here instead — where it reads identically to a turn
+    # that never opened the document, even though the better remedy for THAT shape is a re-dispatch
+    # with formatting guidance, not a quarantine.
+    if (( signalled == 0 )); then
+      die "the copy adds no findings and no '> [no-findings]' signal — this turn is a non-response, not a reviewed-and-clean turn. Merging would record it as clean and the gate would count this provider as an independent secondary." 1
+    fi
     return 0
   fi
 

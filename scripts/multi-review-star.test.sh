@@ -1537,11 +1537,70 @@ bash "$SUT" channel-check --seed "$CCB" "$CCX" >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "channel-check: findings outside the channel fail loud" \
   || bad "a whole reviewer turn outside the channel was accepted (issue #32)"
 
-# (c) a silent turn (no findings at all) is NOT an error — a reviewer may genuinely find nothing
+# (c) issue #46: a silent turn is a NON-RESPONSE, not a reviewed-and-clean turn.
+# This assertion is DELIBERATELY inverted from what it pinned before v1.15.0. Until #50 shipped
+# the `> [no-findings]` signal, a conforming reviewer that genuinely found nothing produced a copy
+# byte-identical to one from a reviewer that never opened the document, so accepting it was the
+# only safe option — rejecting it would have quarantined good reviewers, and on 2026-08-04 it
+# demonstrably would have, twice. Now that silence is distinguishable from a signalled empty
+# review, silence can only mean non-response. The same fixture PLUS the signal is case (c2), so
+# this is a contract change, not a lost assertion.
 CCN="$(mkcc ccn.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
   '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review')"
-bash "$SUT" channel-check --seed "$CCB" "$CCN" >/dev/null 2>&1 \
-  && ok "channel-check: a genuinely empty turn passes" || bad "empty turn rejected"
+bash "$SUT" channel-check --seed "$CCB" "$CCN" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: a silent turn is a non-response" \
+  || bad "a marker-only turn merged as a clean review (issue #46)"
+
+# the reason becomes a quarantine reason, so it must name what was missing
+msg="$(bash "$SUT" channel-check --seed "$CCB" "$CCN" 2>&1 >/dev/null)"
+[[ "$msg" == *"no-findings"* && "$msg" == *"non-response"* ]] \
+  && ok "channel-check: the non-response reason is actionable" \
+  || bad "non-response reason does not name the missing signal ('$msg')"
+
+# (c2) ...and the SAME fixture plus a conforming signal is the new passing case
+CCS="$(mkcc ccs.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review' \
+  '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5')"
+bash "$SUT" channel-check --seed "$CCB" "$CCS" >/dev/null 2>&1 \
+  && ok "channel-check: a signalled empty turn passes" \
+  || bad "a conforming signalled-clean turn was rejected (issue #46 over-fired)"
+
+# (c3) a FENCED signal does not rescue a no-op — fence-stripping still applies
+CCSF="$(mkcc ccsf.md '# Doc' '<!-- multi-review-mode: star -->' '' '## 1. Grammar' '' '```' \
+  '> [finding:r1|med] an EXAMPLE in the docs' '## Review' '```' '' '## Review' \
+  '```' '> [no-findings] a quoted example' '```')"
+bash "$SUT" channel-check --seed "$CCB" "$CCSF" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: a fenced signal does not rescue a no-op" \
+  || bad "a fenced no-findings example passed a turn off as a real review"
+
+# (c4) an INHERITED signal does not rescue a no-op either — additions vs the seed, not presence
+CCIB="$(mkcc ccib.md '# Doc' '' '## Review' '> [no-findings] carried in from a stale seed')"
+CCI="$(mkcc cci.md '# Doc' '' '## Review' '> [no-findings] carried in from a stale seed')"
+bash "$SUT" channel-check --seed "$CCIB" "$CCI" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: an inherited signal does not rescue a no-op" \
+  || bad "a copy that added nothing passed because its SEED already carried a signal"
+
+# (c4b) final-review finding 1: indenting only the APPENDED finding line, leaving the heading
+# itself intact, does not trip #42's heading-structure check (seed_h == copy_h and '## Review'
+# is still line-start) — so this shape falls through to the #46 guard instead. Deliberately NOT
+# asserting on the message here: today it reuses the non-response wording ("never opened the
+# document"), which finding 1 flags as an over-broad diagnosis for this specific shape. Pinning
+# that text would make a future, more precise message look like a regression.
+CC46B="$(mkcc cc46b.md '# Doc' '' '## B' '' 'b' '' '## Review')"
+CC46="$(mkcc cc46.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '  > [finding:r1|high] indented finding, heading left intact')"
+bash "$SUT" channel-check --seed "$CC46B" "$CC46" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: an indented-findings copy with an intact heading count still exits 1" \
+  || bad "an indented-findings copy with intact headings was accepted as clean (final-review finding 1)"
+
+# (c5) the #42 structural check keeps precedence — a reformatted copy gets its OWN reason,
+# not the no-op reason, because a wrong diagnosis sends the primary to the wrong remedy
+CCRB="$(mkcc ccrb.md '# Doc' '' '## B' '' 'b' '' '## Review')"
+CCR="$(mkcc ccr.md '# Doc' '' '## B' '' 'b' '' ' ## Review' ' > [finding:r1|high] indented')"
+msg="$(bash "$SUT" channel-check --seed "$CCRB" "$CCR" 2>&1 >/dev/null)"
+[[ "$msg" == *"heading structure"* ]] \
+  && ok "channel-check: a reformatted copy still reports the structural reason" \
+  || bad "a reformatted copy was mislabelled ('$msg')"
 
 # (d) the message names the counts, so the quarantine reason is actionable
 msg="$(bash "$SUT" channel-check --seed "$CCB" "$CCX" 2>&1 >/dev/null)"

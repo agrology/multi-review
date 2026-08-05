@@ -398,8 +398,15 @@ mutations() {
   # NOTHING — a copy whose findings are indented matches neither grep, so both counts are 0 and a
   # lost turn scores identically to a clean one. This guard is the only thing standing between that
   # and a silent merge, so it must be shown to be able to fail.
+  #
+  # Credited assertion moved off "an indented copy passed": #46 added a later die in the same
+  # added_total==0 branch (star/channel-check-noop, no signal -> non-response) that now also catches
+  # an indented copy, since it lacks `> [no-findings]` too. So with THIS (#42) check deleted the gate
+  # still goes red — just via #46's die, with a "non-response" reason instead of #42's own. The exit
+  # code no longer distinguishes the two guards; only the REASON does, so the reason assertion is
+  # what actually proves #42 (as opposed to #46) is still doing its job.
   mutate 'star/channel-zero-structure' 'scripts/multi-review-star.sh' replace \
-    'an indented copy passed' 'multi-review-star.test.sh' \
+    'indented copy reported with a misleading reason' 'multi-review-star.test.sh' \
     '    if (( seed_h != copy_h )) || ! grep -q '"'"'^## Review[[:space:]]*$'"'"' "$copy"; then' \
     '    if false; then'
 
@@ -538,6 +545,32 @@ mutations() {
     'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
     "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true" \
     "  review_section \"\$base\" | strip_fences /dev/stdin | grep '^> \\[no-findings[]:]' 2>/dev/null | LC_ALL=C sort > \"\$sn\" || true"
+
+  # Issue #46. Without this die, a copy that adds no findings and no signal — the artifact of a
+  # secondary that flipped its marker without reading anything — merges as a clean review, and
+  # gate-summary reports that provider as an admitted independent secondary. Every other guard in
+  # the fan-out passes it, which is exactly why it needed its own.
+  mutate 'star/channel-check-noop' 'scripts/multi-review-star.sh' replace \
+    "a marker-only turn merged as a clean review (issue #46)" 'multi-review-star.test.sh' \
+    '    if (( signalled == 0 )); then' \
+    '    if false; then'
+
+  # Final review (finding 2, #46). The COPY-side signal capture reuses the same fence-aware idiom
+  # as $sv/$cv on purpose: without strip_fences, a `[no-findings]` line quoted inside a fenced
+  # example (a doc explaining the grammar) reads as a real signal. (c3) exists to catch exactly
+  # that — a fenced example rescuing a genuine no-op turn.
+  mutate 'star/channel-check-noop-signal-fences' 'scripts/multi-review-star.sh' replace \
+    "a fenced no-findings example passed a turn off as a real review" 'multi-review-star.test.sh' \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true" \
+    "  review_section \"\$copy\" | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true"
+
+  # The signal count is judged on ADDITIONS (comm -13 against the seed), never on presence in the
+  # copy alone — same rationale as added_total above: a reviewer is never blamed for a
+  # `[no-findings]` line it inherited rather than claimed itself. (c4) pins the inherited case.
+  mutate 'star/channel-check-noop-signal-additions' 'scripts/multi-review-star.sh' replace \
+    "a copy that added nothing passed because its SEED already carried a signal" 'multi-review-star.test.sh' \
+    "  signalled=\"\$(LC_ALL=C comm -13 \"\$sn\" \"\$cn\" | grep -c '^' || true)\"" \
+    "  signalled=\"\$(LC_ALL=C grep -c '^' \"\$cn\" || true)\""
 
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor

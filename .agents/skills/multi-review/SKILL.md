@@ -67,7 +67,9 @@ model — star — no mode detection, no back-and-forth with other secondaries.
        > — via <your-model-id>
 
    This is mutually exclusive with findings — never emit it alongside a `[finding:]` in the
-   same turn.
+   same turn. Emitting neither is a **non-response**: a turn that flips the marker with nothing
+   written fails `channel-check` and your whole turn is quarantined for the round, because it is
+   indistinguishable from never having opened the document.
 8. You raise findings only. Do not respond to a finding (yours or anyone else's — that verb set
    is `[agree:]`/`[dispute:]`, and it belongs to the primary), and do not decide convergence.
 9. Flip the marker **last**, as your FINAL edit of this turn: change this copy's
