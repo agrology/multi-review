@@ -100,6 +100,37 @@ STAR_GREP='<!--[[:space:]]*multi-review-mode:[[:space:]]*star'
 # — suffix split, awk matching — injection-free at the root).
 STAR_RE='^[[:space:]]*<!--[[:space:]]*multi-review-mode:[[:space:]]*star([[:space:]]*·[[:space:]]*reviewers:[[:space:]]*[a-z0-9 ]+)?[[:space:]]*-->[[:space:]]*$'
 
+# The reviewer ROSTER, off the star mode hint: who was dispatched, independent of who raised a
+# finding. gate-summary needs this because "provider that raised a finding" is not "provider that
+# reviewed" — they diverge exactly when a reviewer is clean (issue #59).
+#
+# Four cases, deliberately distinct (codex-rd2-r1, codex-rd1-r1). Returning empty for a MALFORMED
+# hint would trade garbage output for silently-missing output, and nothing else would catch it:
+# cmd_mode is the only caller that validates the hint, and neither cmd_round_stats nor the gate
+# path calls it.
+#   no STAR_GREP line at all -> empty  (legitimate: a doc armed before the suffix existed)
+#   more than one STAR_GREP line -> die (ambiguous; cmd_mode rejects it too)
+#   STAR_GREP line failing STAR_RE -> die (malformed)
+#   STAR_RE match -> the reviewers suffix, one id per line (itself possibly empty)
+#
+# The count guard mirrors cmd_mode below on purpose: this helper is the ONLY validation the
+# round-stats and gate paths get, so anything cmd_mode rejects it must reject too. Taking the
+# first of two hints would also silently pick one of two rosters (codex-rd1-r1).
+_roster() { # <doc> -> provider ids, one per line
+  local doc="${1:?doc}" hdr n line sfx
+  hdr="$(header_region "$doc")"
+  n="$(printf '%s\n' "$hdr" | grep -cE "$STAR_GREP" || true)"
+  (( n == 0 )) && return 0
+  (( n == 1 )) || die "multiple star mode hints in header: ${doc}" 1
+  line="$(printf '%s\n' "$hdr" | grep -E "$STAR_GREP" | head -1)"
+  [[ "$line" =~ $STAR_RE ]] || die "malformed star mode hint in ${doc}: ${line}" 1
+  sfx="${BASH_REMATCH[1]}"
+  [[ -n "$sfx" ]] || return 0
+  # STAR_RE pins the suffix to [a-z0-9 ]+, so word-splitting it cannot glob or inject.
+  # shellcheck disable=SC2086
+  printf '%s\n' ${sfx#*reviewers:}
+}
+
 cmd_mode() { # <doc> -> "star" or defer (empty, exit 1)
   local doc="${1:?doc}" hdr n line
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
@@ -1109,8 +1140,10 @@ cmd_round_stats() {
 
   # Shared parser (fence-aware) -> the "provider round" pairs this awk expects.
   quar="$(_quarantines "$doc" | awk -F'\t' 'NF{print $1, $3}')"
-  # `reviewers:` list off the mode hint; `[^-]*` stops at the `-->` (provider ids are [a-z0-9]).
-  hintp="$(header_region "$doc" | grep -o 'reviewers:[^-]*' | head -1 | sed 's/reviewers://' || true)"
+  # `reviewers:` list off the mode hint, via the shared helper — same roster gate-summary reads,
+  # so the two functions cannot disagree about who reviewed (issue #59). The helper also validates
+  # the hint, which the old inline `grep -o` did not.
+  hintp="$(_roster "$doc" | tr '\n' ' ')"
 
   # quar/hintp go through the ENVIRONMENT, not `awk -v`: -v values cannot contain a literal
   # newline (two quarantine records in one doc made awk die "newline in string"), and -v also
@@ -1336,6 +1369,10 @@ main() {
     blind-check) cmd_blind_check "$@" ;;
     compose-review) cmd_compose_review "$@" ;;
     compose-inline) cmd_compose_inline "$@" ;;
+    # Test-only accessor. _roster has no CLI surface, but its empty-vs-die split (issue #59,
+    # codex-rd2-r1) is a contract: asserting it only through gate-summary's output cannot tell an
+    # empty roster from an ignored one. Underscore-prefixed and undocumented on purpose.
+    _roster_for_test) _roster "$@" ;;
     *)    die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }

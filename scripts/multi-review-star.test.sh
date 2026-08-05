@@ -1847,6 +1847,56 @@ bash "$SUT" channel-check --seed "$NFISEED" "$NFINHERITED" >/dev/null 2>&1 \
   && ok "channel-check: an inherited no-findings signal is not blamed on the reviewer that adds a finding" \
   || bad "channel-check quarantined a reviewer for a [no-findings] line it inherited from the seed, not added itself"
 
+# --- _roster: the reviewer roster off the VALIDATED star mode hint (issue #59) ---
+# gate-summary needs to know who reviewed, not just who raised a finding. The roster lives in the
+# mode hint. Three cases must stay distinct (codex-rd2-r1): absent is legitimate, malformed is an
+# error, valid extracts. Collapsing malformed into "empty" trades garbage output for silently
+# missing output — neither is loud, and NOTHING else validates this hint on the round-stats or
+# gate paths (cmd_round_stats never calls cmd_mode).
+
+RO_OK="$(mkcc ro-ok.md '# Doc' '<!-- multi-review-mode: star · reviewers: codex fable -->' '' '## Review')"
+got="$(bash "$SUT" _roster_for_test "$RO_OK" 2>/dev/null | tr '\n' ' ')"
+[[ "$got" == "codex fable " ]] && ok "_roster: extracts the reviewers list, one per line" \
+  || bad "_roster returned '$got', expected 'codex fable '"
+
+# a star hint with NO reviewers suffix is well-formed and simply has no roster
+RO_NOSFX="$(mkcc ro-nosfx.md '# Doc' '<!-- multi-review-mode: star -->' '' '## Review')"
+got="$(bash "$SUT" _roster_for_test "$RO_NOSFX" 2>/dev/null)"
+[[ -z "$got" ]] && ok "_roster: a star hint with no reviewers suffix yields an empty roster" \
+  || bad "_roster invented a roster from a suffix-less hint ('$got')"
+
+# NO star hint at all is a legitimate absence (a doc armed before the suffix existed)
+RO_NONE="$(mkcc ro-none.md '# Doc' '' '## Review')"
+bash "$SUT" _roster_for_test "$RO_NONE" >/dev/null 2>&1
+[[ $? -eq 0 ]] && ok "_roster: no star hint exits 0 with an empty roster" \
+  || bad "_roster failed on a doc with no star hint at all"
+
+# a hint that LOOKS like a star hint but fails STAR_RE is malformed -> die, never a fragment
+RO_BAD="$(mkcc ro-bad.md '# Doc' '<!-- multi-review-mode: star · reviewers: CODEX! -->' '' '## Review')"
+bash "$SUT" _roster_for_test "$RO_BAD" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "_roster: a malformed star hint dies rather than half-parsing" \
+  || bad "_roster silently accepted a malformed hint (issue #59, codex-rd2-r1)"
+
+# the reason must name the problem — it surfaces at the gate
+msg="$(bash "$SUT" _roster_for_test "$RO_BAD" 2>&1 >/dev/null)"
+[[ "$msg" == *"malformed"* ]] && ok "_roster: the malformed-hint reason is actionable" \
+  || bad "_roster's malformed-hint message is not actionable ('$msg')"
+
+# the hint is read from the HEADER only — a `reviewers:` string in the body is not a roster
+RO_BODY="$(mkcc ro-body.md '# Doc' '' '## Body' 'reviewers: gemini' '' '## Review')"
+got="$(bash "$SUT" _roster_for_test "$RO_BODY" 2>/dev/null)"
+[[ -z "$got" ]] && ok "_roster: a reviewers: string in the body is not a roster" \
+  || bad "_roster read a roster out of the document body ('$got')"
+
+# TWO star hints is malformed by the protocol's OWN validator — cmd_mode dies on it (:108) — and
+# the gate and round-stats paths never call cmd_mode, so first-wins here would accept a header the
+# rest of the protocol rejects, and pick a roster out of an ambiguous one (codex-rd1-r1).
+RO_DUP="$(mkcc ro-dup.md '# Doc' '<!-- multi-review-mode: star · reviewers: codex -->' \
+  '<!-- multi-review-mode: star · reviewers: gemini -->' '' '## Review')"
+bash "$SUT" _roster_for_test "$RO_DUP" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "_roster: two star hints in the header die rather than first-wins" \
+  || bad "_roster took the first of two star hints (codex-rd1-r1)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

@@ -572,6 +572,23 @@ mutations() {
     "  signalled=\"\$(LC_ALL=C comm -13 \"\$sn\" \"\$cn\" | grep -c '^' || true)\"" \
     "  signalled=\"\$(LC_ALL=C grep -c '^' \"\$cn\" || true)\""
 
+  # --- _roster: the roster off the VALIDATED mode hint (#59) ---
+  # Issue #59 (codex-rd2-r1). Relaxing _roster back to parsing arbitrary header text lets a
+  # malformed hint yield a FRAGMENT instead of an error — and nothing else validates it on the
+  # round-stats or gate paths, so a wrong roster silently changes the admitted count and the
+  # independence verdict.
+  mutate 'star/roster-star-re' 'scripts/multi-review-star.sh' replace \
+    "_roster silently accepted a malformed hint (issue #59, codex-rd2-r1)" 'multi-review-star.test.sh' \
+    '  [[ "$line" =~ $STAR_RE ]] || die "malformed star mode hint in ${doc}: ${line}" 1' \
+    '  [[ "$line" =~ $STAR_RE ]] || return 0'
+
+  # codex-rd1-r1. Without the count guard the helper is first-wins on a header cmd_mode itself
+  # rejects — and the round-stats and gate paths never call cmd_mode, so nothing else would.
+  mutate 'star/roster-single-hint' 'scripts/multi-review-star.sh' replace \
+    "_roster took the first of two star hints (codex-rd1-r1)" 'multi-review-star.test.sh' \
+    '  (( n == 1 )) || die "multiple star mode hints in header: ${doc}" 1' \
+    '  :'
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as
