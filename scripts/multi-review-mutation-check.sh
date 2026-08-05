@@ -398,8 +398,15 @@ mutations() {
   # NOTHING — a copy whose findings are indented matches neither grep, so both counts are 0 and a
   # lost turn scores identically to a clean one. This guard is the only thing standing between that
   # and a silent merge, so it must be shown to be able to fail.
+  #
+  # Credited assertion moved off "an indented copy passed": #46 added a later die in the same
+  # added_total==0 branch (star/channel-check-noop, no signal -> non-response) that now also catches
+  # an indented copy, since it lacks `> [no-findings]` too. So with THIS (#42) check deleted the gate
+  # still goes red — just via #46's die, with a "non-response" reason instead of #42's own. The exit
+  # code no longer distinguishes the two guards; only the REASON does, so the reason assertion is
+  # what actually proves #42 (as opposed to #46) is still doing its job.
   mutate 'star/channel-zero-structure' 'scripts/multi-review-star.sh' replace \
-    'an indented copy passed' 'multi-review-star.test.sh' \
+    'indented copy reported with a misleading reason' 'multi-review-star.test.sh' \
     '    if (( seed_h != copy_h )) || ! grep -q '"'"'^## Review[[:space:]]*$'"'"' "$copy"; then' \
     '    if false; then'
 
