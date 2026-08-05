@@ -394,9 +394,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    the turn was clean. Quarantine that provider with the message as the reason.
    **Exit 1, non-response** — the copy adds no findings AND no `> [no-findings]` signal. The
    secondary flipped the marker without contributing anything the protocol can read, which is
-   what a turn that never read the document looks like. Quarantine that provider. If this
-   empties the admitted set, the existing all-quarantined anomaly stop applies: surface every
-   reason and STOP.
+   what a turn that never read the document looks like. Quarantine that provider. If a re-dispatch
+   is cheap, prefer re-running that secondary once with explicit formatting guidance first — a copy
+   that indented only its own appended lines reaches this same exit and is indistinguishable from
+   one that never read the document. If this empties the admitted set, the existing
+   all-quarantined anomaly stop applies: surface every reason and STOP.
    **Exit 0 with a `note —` line on stderr** — some findings landed and some did not (usually a
    quoted example inside a fence). The turn is admitted; relay the note at the gate.
    **Exit 2** — a usage/infra error on YOUR side (bad path, missing value). Fix the invocation.

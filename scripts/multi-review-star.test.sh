@@ -1580,6 +1580,19 @@ bash "$SUT" channel-check --seed "$CCIB" "$CCI" >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "channel-check: an inherited signal does not rescue a no-op" \
   || bad "a copy that added nothing passed because its SEED already carried a signal"
 
+# (c4b) final-review finding 1: indenting only the APPENDED finding line, leaving the heading
+# itself intact, does not trip #42's heading-structure check (seed_h == copy_h and '## Review'
+# is still line-start) — so this shape falls through to the #46 guard instead. Deliberately NOT
+# asserting on the message here: today it reuses the non-response wording ("never opened the
+# document"), which finding 1 flags as an over-broad diagnosis for this specific shape. Pinning
+# that text would make a future, more precise message look like a regression.
+CC46B="$(mkcc cc46b.md '# Doc' '' '## B' '' 'b' '' '## Review')"
+CC46="$(mkcc cc46.md '# Doc' '' '## B' '' 'b' '' '## Review' \
+  '  > [finding:r1|high] indented finding, heading left intact')"
+bash "$SUT" channel-check --seed "$CC46B" "$CC46" >/dev/null 2>&1
+[[ $? -eq 1 ]] && ok "channel-check: an indented-findings copy with an intact heading count still exits 1" \
+  || bad "an indented-findings copy with intact headings was accepted as clean (final-review finding 1)"
+
 # (c5) the #42 structural check keeps precedence — a reformatted copy gets its OWN reason,
 # not the no-op reason, because a wrong diagnosis sends the primary to the wrong remedy
 CCRB="$(mkcc ccrb.md '# Doc' '' '## B' '' 'b' '' '## Review')"

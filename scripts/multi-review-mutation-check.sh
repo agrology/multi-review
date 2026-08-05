@@ -555,6 +555,23 @@ mutations() {
     '    if (( signalled == 0 )); then' \
     '    if false; then'
 
+  # Final review (finding 2, #46). The COPY-side signal capture reuses the same fence-aware idiom
+  # as $sv/$cv on purpose: without strip_fences, a `[no-findings]` line quoted inside a fenced
+  # example (a doc explaining the grammar) reads as a real signal. (c3) exists to catch exactly
+  # that — a fenced example rescuing a genuine no-op turn.
+  mutate 'star/channel-check-noop-signal-fences' 'scripts/multi-review-star.sh' replace \
+    "a fenced no-findings example passed a turn off as a real review" 'multi-review-star.test.sh' \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true" \
+    "  review_section \"\$copy\" | grep '^> \\[no-findings]' 2>/dev/null | LC_ALL=C sort > \"\$cn\" || true"
+
+  # The signal count is judged on ADDITIONS (comm -13 against the seed), never on presence in the
+  # copy alone — same rationale as added_total above: a reviewer is never blamed for a
+  # `[no-findings]` line it inherited rather than claimed itself. (c4) pins the inherited case.
+  mutate 'star/channel-check-noop-signal-additions' 'scripts/multi-review-star.sh' replace \
+    "a copy that added nothing passed because its SEED already carried a signal" 'multi-review-star.test.sh' \
+    "  signalled=\"\$(LC_ALL=C comm -13 \"\$sn\" \"\$cn\" | grep -c '^' || true)\"" \
+    "  signalled=\"\$(LC_ALL=C grep -c '^' \"\$cn\" || true)\""
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as

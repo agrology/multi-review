@@ -672,9 +672,12 @@ cmd_channel_check() {
     # counted this provider as an independent secondary.
     #
     # Judged on ADDITIONS (`signalled`, computed above), never presence: a signal inherited from a
-    # stale seed is not this reviewer's claim. Ordered AFTER the structural check on purpose — a
-    # reformatted copy keeps its own, more specific reason, because the two have different
-    # remedies (re-dispatch with formatting guidance vs. quarantine the provider).
+    # stale seed is not this reviewer's claim. Ordered AFTER the structural check on purpose, but
+    # that check (#42) only catches a heading-STRUCTURE change (a '## ' count mismatch, or a
+    # missing '## Review'). A copy that indents only its own appended finding lines, leaving
+    # headings untouched, passes #42 and lands here instead — where it reads identically to a turn
+    # that never opened the document, even though the better remedy for THAT shape is a re-dispatch
+    # with formatting guidance, not a quarantine.
     if (( signalled == 0 )); then
       die "the copy adds no findings and no '> [no-findings]' signal — this turn is a non-response, not a reviewed-and-clean turn. Merging would record it as clean and the gate would count this provider as an independent secondary." 1
     fi
