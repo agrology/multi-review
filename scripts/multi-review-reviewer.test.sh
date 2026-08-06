@@ -1070,6 +1070,105 @@ got="$(HOME="${CWS}/home" FAKE_WS="${CWS}/ws" PATH="$JQLESS" \
 [[ -z "$got" && $rc -eq 0 ]] && ok "codex_workspace_root: no jq yields empty, exit 0" \
   || bad "codex_workspace_root without jq gave '$got' rc=$rc"
 
+# --- check --doc: the out-of-root preflight hint (issue #60) ---
+# The copy must live inside the reviewer's sandbox root. For codex that root is the companion's
+# workspaceRoot, which does NOT follow a shell `cd` — the pair the issue originally proposed
+# (doc dir vs git toplevel) agrees with itself in the cwd-drift case and would stay silent
+# exactly when the hint is needed (spec §2).
+
+CD_="${WORK}/cd"
+CD_COMP="${CD_}/home/.claude/plugins/cache/openai-codex/codex/1.0.0/scripts"
+mkdir -p "$CD_COMP" "${CD_}/bin" "${CD_}/ws/docs" "${CD_}/elsewhere/docs"
+: > "${CD_COMP}/codex-companion.mjs"
+printf '#!/bin/bash\nprintf '"'"'{"workspaceRoot":"%%s"}\\n'"'"' "$FAKE_WS"\n' > "${CD_}/bin/node"
+chmod +x "${CD_}/bin/node"
+printf '#!/bin/bash\n:\n' > "${CD_}/bin/codex"; chmod +x "${CD_}/bin/codex"
+printf '#!/bin/bash\necho OK\n' > "${CD_}/bin/gemini"; chmod +x "${CD_}/bin/gemini"
+: > "${CD_}/ws/docs/d.md"; : > "${CD_}/elsewhere/docs/d.md"
+
+# (1) doc OUTSIDE the stubbed workspaceRoot -> hint, naming both paths
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/ws" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/elsewhere/docs/d.md" 2>&1 >/dev/null)"; rc=$?
+[[ "$out" == *"hint (codex)"* && "$out" == *"outside"* ]] \
+  && ok "check --doc: a copy outside codex's sandbox root is hinted" \
+  || bad "no out-of-root hint for codex (got: '$out')"
+[[ $rc -eq 0 ]] && ok "check --doc: the out-of-root hint does not change the exit status" \
+  || bad "check exited $rc on the out-of-root hint — it must stay advisory"
+
+# (2) doc INSIDE the stubbed root -> silence. Success criterion 2: a normal review adds no output.
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/ws" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/ws/docs/d.md" 2>&1 >/dev/null)"
+[[ "$out" != *"outside"* ]] && ok "check --doc: a copy inside the sandbox root is not hinted" \
+  || bad "a same-root copy produced a false out-of-root hint (got: '$out')"
+
+# (3) no companion under HOME -> unknown root -> silence, exit 0
+mkdir -p "${CD_}/nohome"
+out="$(HOME="${CD_}/nohome" FAKE_WS="${CD_}/ws" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/elsewhere/docs/d.md" 2>&1 >/dev/null)"; rc=$?
+[[ "$out" != *"outside"* && $rc -eq 0 ]] \
+  && ok "check --doc: an unknown codex root stays silent" \
+  || bad "check hinted with no companion installed (out='$out' rc=$rc)"
+
+# (4) companion present, runtime fails -> unknown root -> silence, exit 0
+printf '#!/bin/bash\nexit 1\n' > "${CD_}/bin/node"; chmod +x "${CD_}/bin/node"
+out="$(HOME="${CD_}/home" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/elsewhere/docs/d.md" 2>&1 >/dev/null)"; rc=$?
+[[ "$out" != *"outside"* && $rc -eq 0 ]] \
+  && ok "check --doc: a failing companion stays silent" \
+  || bad "check hinted when the companion failed (out='$out' rc=$rc)"
+printf '#!/bin/bash\nprintf '"'"'{"workspaceRoot":"%%s"}\\n'"'"' "$FAKE_WS"\n' > "${CD_}/bin/node"
+chmod +x "${CD_}/bin/node"
+
+# (5) --doc omitted -> no out-of-root hint at all. This pins the `doctor` path, which has no doc.
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/ws" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex 2>&1 >/dev/null)"; rc=$?
+[[ "$out" != *"outside"* && $rc -eq 0 ]] \
+  && ok "check: without --doc there is no out-of-root hint" \
+  || bad "check emitted an out-of-root hint with no --doc (out='$out' rc=$rc)"
+
+# (6) root reported but NON-EXISTENT -> unresolvable -> silence (not a hint on everything)
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/no-such-dir" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/ws/docs/d.md" 2>&1 >/dev/null)"; rc=$?
+[[ "$out" != *"outside"* && $rc -eq 0 ]] \
+  && ok "check --doc: a root that does not resolve stays silent" \
+  || bad "check hinted on an unresolvable root (out='$out' rc=$rc)"
+
+# (7) SYMLINKED root, doc physically inside it -> silence (issue #60, codex-rd1-r1)
+ln -sfn "${CD_}/ws" "${CD_}/wslink"
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/wslink" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/ws/docs/d.md" 2>&1 >/dev/null)"
+[[ "$out" != *"outside"* ]] \
+  && ok "check --doc: a symlinked sandbox root does not produce a false hint" \
+  || bad "a symlinked root produced a false out-of-root hint (issue #60, codex-rd1-r1)"
+
+# (8) gemini uses repo_root(), NOT the codex companion: a doc outside the cwd repo is hinted
+GD="${CD_}/grepo"; mkdir -p "$GD"; ( cd "$GD" && git init -q . )
+out="$(cd "$GD" && HOME="${CD_}/home" FAKE_WS="${CD_}/ws" GEMINI_CLI_TRUST_WORKSPACE=true \
+  PATH="${CD_}/bin:$PATH" bash "$SUT" check --reviewer gemini --doc "${CD_}/elsewhere/docs/d.md" 2>&1 >/dev/null)"; rc=$?
+[[ "$out" == *"hint (gemini)"* && "$out" == *"outside"* && $rc -eq 0 ]] \
+  && ok "check --doc: gemini hints on a doc outside its workspace" \
+  || bad "no out-of-root hint for gemini (out='$out' rc=$rc)"
+
+# (9) ...and gemini does NOT consult the codex root: a doc inside the CWD repo is silent even
+# though it sits outside the stubbed codex workspaceRoot.
+mkdir -p "$GD/docs"; : > "$GD/docs/d.md"
+out="$(cd "$GD" && HOME="${CD_}/home" FAKE_WS="${CD_}/ws" GEMINI_CLI_TRUST_WORKSPACE=true \
+  PATH="${CD_}/bin:$PATH" bash "$SUT" check --reviewer gemini --doc "$GD/docs/d.md" 2>&1 >/dev/null)"
+[[ "$out" != *"outside"* ]] \
+  && ok "check --doc: gemini judges against the repo root, not codex's sandbox" \
+  || bad "gemini consulted the codex workspace root (got: '$out')"
+
+# (10) fable never hints, whatever the doc
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/ws" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer fable --doc "${CD_}/elsewhere/docs/d.md" 2>&1 >/dev/null)"; rc=$?
+[[ -z "$out" && $rc -eq 0 ]] && ok "check --doc: fable is in-harness and never hints" \
+  || bad "fable produced output (out='$out' rc=$rc)"
+
+# (11) --doc with no value is a usage error, matching --reviewer's arity contract
+HOME="${CD_}/home" PATH="${CD_}/bin:$PATH" bash "$SUT" check --reviewer codex --doc >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "check: --doc with no value exits 2" \
+  || bad "--doc with no value did not exit 2"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

@@ -198,8 +198,16 @@ gemini_has_key() { # <repo-root> -> 0 if a key source exists (never reads the va
   return 1
 }
 
-cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
-  local row id
+cmd_check() { # --reviewer <id> [--doc <path>] -> 0 dispatchable, 1 with reason
+  local row id doc="" i args=("$@")
+  # Same explicit-arity loop as cmd_ensure_skill's --repo: `shift 2` with one arg left does not
+  # shift in bash, so a flag with no value must be caught here rather than looping forever.
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "--doc" ]]; then
+      [[ $((i+1)) -lt ${#args[@]} ]] || die "--doc requires a value" 2
+      doc="${args[i+1]}"
+    fi
+  done
   row="$(resolve_row "$@")" || exit 2
   id="$(field "$row" 1)"
   case "$id" in
@@ -225,6 +233,23 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
           hint codex "untracked files at ${skill_dir} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning"
         fi
       fi
+      # Issue #60. codex is bound to ONE root for the session and does not follow a shell `cd`,
+      # so the copy's location is compared against the companion's workspaceRoot — not against
+      # `git rev-parse --show-toplevel`, which moves with the shell and therefore agrees with
+      # itself in exactly the cwd-drift case this exists to catch.
+      #
+      # An unknown or unresolvable root means SILENCE, not a hint: without the guard below an
+      # empty root makes the containment test fail for every doc, so every arm-time check on a
+      # machine with no codex plugin would print a warning.
+      if [[ -n "$doc" ]]; then
+        local cws cws_c ddir
+        cws="$(codex_workspace_root)"
+        cws_c="$(canon "$cws")"
+        ddir="$(dirname "$doc")"
+        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then
+          hint codex "the review copy is outside codex's sandbox root ($(canon "$ddir") vs ${cws_c}) — codex is bound to that root for this session and will likely be unable to write the copy. Run the review from the repo that contains the copy."
+        fi
+      fi
       ;;
     gemini)
       command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
@@ -236,6 +261,18 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
       local unreadable; unreadable="$(gemini_unreadable_paths "$rr")"
       [[ -z "$unreadable" ]] \
         || hint gemini "gemini will refuse to read a review doc under $(fmt_paths "$unreadable") — git-ignored in this repo, and gemini-cli honors gitignore. Set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
+      # Issue #60. gemini runs as a shell command in the CURRENT cwd, so unlike codex its
+      # workspace genuinely follows the shell and repo_root() is the right basis. The wording
+      # deliberately does not claim codex's per-session binding — gemini's sandbox constraint is
+      # reasoned by symmetry, not reproduced.
+      if [[ -n "$doc" ]]; then
+        local grr_c gddir
+        grr_c="$(canon "$rr")"
+        gddir="$(dirname "$doc")"
+        if [[ -n "$grr_c" ]] && ! path_contains "$grr_c" "$gddir"; then
+          hint gemini "the review copy is outside this workspace ($(canon "$gddir") vs ${grr_c}) — gemini reads and writes within the workspace it is launched in, so it may be unable to write the copy. Run the review from the repo that contains it."
+        fi
+      fi
       ;;
     *)
       die "no availability check defined for reviewer provider '${id}'" 2 ;;
