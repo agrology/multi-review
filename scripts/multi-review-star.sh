@@ -497,7 +497,7 @@ anchor_of() { # <doc> <ns-id> -> "path\tstart\tend" or empty; exit 2 on malforme
 }
 
 cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on stdout
-  local doc="${1:?doc}" primary="${2:?primary-model}" t qlist qprov
+  local doc="${1:?doc}" primary="${2:?primary-model}" t qlist qprov obs
   t="$(_table "$doc")" || die "cannot compose: contract violation in $doc" 1
   # Quarantines belong in the POSTED review, not just the local gate (issue #26). A review
   # degraded by provider failure otherwise reads as a clean one, and the disclosure line — built
@@ -513,9 +513,23 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
   local contributed; contributed="$(printf '%s\n' "$t" | awk -F'\t' 'NF{p=$1; sub(/-rd.*/,"",p); print p}' | sort -u)"
   qprov="$(printf '%s' "$qlist" | awk -F'\t' 'NF{print $1}' | sort -u \
            | grep -vxF -f <(printf '%s\n' "$contributed") 2>/dev/null | tr '\n' ' ')"
+  # Primary observations belong in the POSTED review, not just the local gate (issue #63) — the
+  # same defect #26 fixed one signal over. In PR mode the primary never edits the diff, so an
+  # observation is its only channel for a defect it found itself, and publishing is how that
+  # reaches the author who has to fix it.
+  #
+  # The `|| die` is the guard, and it is the whole guard (codex-rd1-r1). This script sets
+  # `set -uo pipefail`, so a pipeline propagates the first non-zero status rather than its last
+  # command's — piping through `tr`/`cat` would NOT swallow the refusal here. What swallows it is
+  # having no status check at all, which is exactly what shipped in #59: that line was
+  # `hintp="$(_roster "$doc" | tr '\n' ' ')"` with nothing testing `$?`, so the die printed to
+  # stderr and the caller carried on. Without `|| die` the same happens here and the review posts
+  # silently missing an observation.
+  obs="$(cmd_observations "$doc")" || die "cannot compose: contract violation in $doc" 1
+
   # _table columns (tab-separated): id, raiser, state, responder, concern, dwhy, sev, risk.
   # Use awk -F'\t' to avoid bash IFS-whitespace collapsing of adjacent empty tab fields.
-  printf '%s\n' "$t" | QLIST="$qlist" QPROV="$qprov" awk -F'\t' -v primary="$primary" '
+  printf '%s\n' "$t" | OBS="$obs" QLIST="$qlist" QPROV="$qprov" awk -F'\t' -v primary="$primary" '
     function emit(want,   lvl, i, levels) {
       split("high med low", levels, " ")
       for (lvl = 1; lvl <= 3; lvl++)
@@ -546,6 +560,25 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
         if (dissent_n > 0) { printf "**Disagreements (%d)**\n",   dissent_n; emit("dissent") }
         if (open_n    > 0) { printf "**Open / unresolved (%d)**\n", open_n;  emit("open") }
       }
+      # Primary observations (issue #63). Each line carries its OWN via (codex-rd1-r1): nothing
+      # restricts [observation] to the primary — cmd_observations requires a via line and never
+      # compares it to anyone — so a heading asserting authorship could publish a note written by
+      # a secondary as though the primary had raised it. Per-line attribution is true whoever
+      # wrote it, and CLAUDE.md section 8 wants agent-authored content posted to a human to name
+      # its model anyway.
+      #
+      # NB: no apostrophes in this block. The whole awk program is a single-quoted shell string,
+      # so one apostrophe here terminates it and the script stops parsing.
+      no = split(ENVIRON["OBS"], orec, "\n")
+      oshown = 0
+      for (i = 1; i <= no; i++) {
+        if (orec[i] == "") continue
+        if (!oshown) { printf "**Primary observations (raised directly by an agent, not adjudicated as findings)**\n"; oshown = 1 }
+        split(orec[i], of, "\t")
+        printf "- %s — via %s\n", of[1], of[2]
+      }
+      if (oshown) printf "\n"
+
       # Quarantined secondaries, from the shared parser (ENVIRON, not -v: reasons contain spaces
       # and the list is newline-separated, which -v cannot carry).
       nq = split(ENVIRON["QLIST"], qrec, "\n")

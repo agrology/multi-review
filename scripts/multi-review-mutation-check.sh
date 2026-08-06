@@ -641,6 +641,22 @@ mutations() {
     '        if (line ~ /^> — via /) { via = line; sub(/^> — via /, "", via); print ptxt "\t" via; pend = 0; next }' \
     '        if (line ~ /^> — via /) { print ptxt; pend = 0; next }'
 
+  # Without the split there is nothing to iterate, the section never renders, and the posted
+  # review silently omits the primary's own findings — issue #63 exactly.
+  mutate 'star/compose-observations-emitted' 'scripts/multi-review-star.sh' replace \
+    "compose-review dropped the observation" 'multi-review-star.test.sh' \
+    '      no = split(ENVIRON["OBS"], orec, "\n")' \
+    '      no = 0'
+
+  # Dropping the status check lets an undisclosed observation post a silently incomplete review.
+  # The mutation removes ONLY the `|| die` (codex-rd1-r1) — deliberately not "add a pipe", which
+  # under this script's `set -o pipefail` would still propagate the non-zero status and so would
+  # not disable the guard at all. The check is the guard; the pipe is a red herring.
+  mutate 'star/compose-observations-checked' 'scripts/multi-review-star.sh' replace \
+    "compose-review composed a review despite an undisclosed observation" 'multi-review-star.test.sh' \
+    '  obs="$(cmd_observations "$doc")" || die "cannot compose: contract violation in $doc" 1' \
+    '  obs="$(cmd_observations "$doc")"'
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as

@@ -705,6 +705,90 @@ bash "$SUT" gate-summary "$D" claude-opus-4-8 >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "gate-summary: malformed observation fails loud (not silently dropped)" \
   || bad "gate-summary malformed observation swallowed"
 
+## --- compose-review publishes the primary's own observations (issue #63) ---
+# The primary never edits the diff in PR mode, so an observation is its ONLY channel for a defect
+# it found itself — and publishing is how a finding reaches the author who has to fix it. Posting
+# the panel's findings while dropping the primary's own inverts the protocol's logic: a finding a
+# secondary raised and the primary merely agreed with goes out; one the primary raised does not.
+
+# (a) an observation is published, with the model that disclosed it
+CO="$(mkstar co-obs.md \
+  '> [finding:codex-rd1-a|med] a concern' '> — via gpt-5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [observation] the primary caught this itself' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-review "$CO" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" == *"the primary caught this itself"* && $rc -eq 0 ]] \
+  && ok "compose-review: publishes a primary observation" \
+  || bad "compose-review dropped the observation (rc=$rc)"
+[[ "$out" == *"— via claude-opus-4-8"* ]] \
+  && ok "compose-review: the published observation names its model" \
+  || bad "compose-review published an observation with no via"
+
+# (b) the section is DORMANT with no observations — a review without one composes as it did
+# before this change. This is the regression lock against emitting an empty heading.
+CN="$(mkstar co-noobs.md \
+  '> [finding:codex-rd1-a|med] a concern' '> — via gpt-5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-review "$CN" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" != *"Primary observations"* && $rc -eq 0 ]] \
+  && ok "compose-review: no observations heading when there are none" \
+  || bad "compose-review emitted an empty observations heading (rc=$rc)"
+
+# (c) an UNDISCLOSED observation must refuse to compose, not post a review missing it. This is
+# the case an UNCHECKED assignment would lose: without `|| die` the exit 2 is simply ignored and
+# the review posts silently incomplete. (Not a pipe problem — this script sets `pipefail`, so a
+# pipe would still propagate the status. The missing status CHECK is the defect; see #59.)
+CB="$(mkstar co-badobs.md \
+  '> [observation] a note with no disclosure line' \
+  '> not a via line at all')"
+out="$(bash "$SUT" compose-review "$CB" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && ok "compose-review: an undisclosed observation refuses to compose" \
+  || bad "compose-review composed a review despite an undisclosed observation (rc=$rc)"
+
+# (d) ordering: observations are review CONTENT and precede the quarantine block, which is a
+# signal about the review's own quality and belongs beside the disclosure footer.
+CQ="$(mkstar co-order.md \
+  '> [finding:codex-rd1-a|med] a concern' '> — via gpt-5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [observation] ordering probe' '> — via claude-opus-4-8' \
+  '<!-- star-quarantined: gemini · timeout · round 1 -->')"
+out="$(bash "$SUT" compose-review "$CQ" claude-opus-4-8 2>/dev/null)"
+obs_ln="$(printf '%s\n' "$out" | grep -n 'ordering probe' | head -1 | cut -d: -f1)"
+q_ln="$(printf '%s\n' "$out" | grep -n 'Quarantine events' | head -1 | cut -d: -f1)"
+[[ -n "$obs_ln" && -n "$q_ln" && "$obs_ln" -lt "$q_ln" ]] \
+  && ok "compose-review: observations precede quarantine events" \
+  || bad "compose-review ordering wrong (obs=$obs_ln quarantine=$q_ln)"
+
+# (e) zero findings + an observation: "No findings." is accurate about FINDINGS, and the
+# observations section still follows, so the review does not read as empty.
+CZ="$(mkstar co-zero.md '> [observation] the only thing anyone noticed' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-review "$CZ" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" == *"No findings."* && "$out" == *"the only thing anyone noticed"* && $rc -eq 0 ]] \
+  && ok "compose-review: zero findings still publishes the observation" \
+  || bad "compose-review lost the observation on a zero-finding doc (rc=$rc)"
+
+# (f) two observations both publish, in document order
+CT="$(mkstar co-two.md \
+  '> [observation] first note' '> — via claude-opus-4-8' \
+  '> [observation] second note' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-review "$CT" claude-opus-4-8 2>/dev/null)"
+f_ln="$(printf '%s\n' "$out" | grep -n 'first note' | head -1 | cut -d: -f1)"
+s_ln="$(printf '%s\n' "$out" | grep -n 'second note' | head -1 | cut -d: -f1)"
+[[ -n "$f_ln" && -n "$s_ln" && "$f_ln" -lt "$s_ln" ]] \
+  && ok "compose-review: multiple observations publish in document order" \
+  || bad "compose-review observation order wrong (first=$f_ln second=$s_ln)"
+
+# (g) a FENCED observation in the body is documentation, not a live one — cmd_observations is
+# fence-aware via strip_fences, and compose-review inherits that.
+CF="$(mkstar co-fenced.md \
+  '> [finding:codex-rd1-a|med] a concern' '> — via gpt-5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '```' '> [observation] a fenced EXAMPLE, not a real observation' '> — via claude-opus-4-8' '```')"
+out="$(bash "$SUT" compose-review "$CF" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" != *"a fenced EXAMPLE"* && $rc -eq 0 ]] \
+  && ok "compose-review: a fenced observation is not published" \
+  || bad "compose-review published a fenced example observation (rc=$rc)"
+
 ## --- compose-review / compose-inline (Task A4, dormant PR-publish composers) ---
 # one agreed ANCHORED finding + one agreed UN-anchored finding
 ANCHORED_DOC="$(mkstar anchored.md \
