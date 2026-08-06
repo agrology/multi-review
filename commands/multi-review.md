@@ -194,12 +194,17 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     and `unavailable in this repo — dropping` (registered but not set up). So a self-healed, quietly
     narrowed combo is visible, mirroring a dispatch quarantine.
   - **Relay preflight hints.** For each resolved secondary, run
-    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh check --reviewer <id>` and surface any
+    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh check --reviewer <id> --doc "<doc>"` and surface any
     `hint (<id>): …` line it prints on stderr in the armed message (e.g. "gemini: workspace may be
     untrusted — export GEMINI_CLI_TRUST_WORKSPACE=true"). This is **advisory** — `check` exits 0 and
     the secondary is still dispatched; the hint just puts the likely fix in front of the engineer
     *before* a misconfigured reviewer would otherwise fail mid-review and quarantine. Never a gate,
     never blocks dispatch. (Run `/multi-review --check-reviewers` for the full doctor report.)
+    One of these fires when the working copy is outside the reviewer's sandbox root (issue #60) —
+    the case that otherwise surfaces only as a wait-bound timeout ~20 minutes later, with a
+    quarantine reason that describes the symptom. It is still advisory: dispatch proceeds, and you
+    decide whether to move the review. `--doc` is what enables it, which is why the standalone
+    `--check-reviewers` doctor (no doc in hand) does not report it.
   - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)"
     — and append any dropped-reviewer relay, e.g. "`gemini` dropped: unavailable in this repo".
 

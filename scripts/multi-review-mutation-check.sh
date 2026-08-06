@@ -649,6 +649,36 @@ mutations() {
     "             -e 's/^> \\[(no-findings)[]:].*/\\1:/' \\" \
     "             -e 's/^__never_matches__//' \\"
 
+  # --- the out-of-root preflight hint (#60) ---
+  # Issue #60, codex-rd1-r1. Canonicalizing only the child makes a symlinked parent report an
+  # inside path as OUTSIDE — a false hint on an ordinary same-root review, and the common case
+  # rather than an exotic one (/tmp -> /private/tmp on macOS).
+  mutate 'reviewer/path-contains-parent-canon' 'scripts/multi-review-reviewer.sh' replace \
+    "path_contains failed to canonicalize the parent (issue #60, codex-rd1-r1)" 'multi-review-reviewer.test.sh' \
+    '  p="$(canon "${1:?parent}")"' \
+    '  p="${1:?parent}"'
+
+  # Without the containment test the codex arm hints on every doc, including same-root ones —
+  # noise on the normal path, which is the failure direction that actually costs the engineer.
+  mutate 'reviewer/check-doc-codex-containment' 'scripts/multi-review-reviewer.sh' replace \
+    "a same-root copy produced a false out-of-root hint" 'multi-review-reviewer.test.sh' \
+    '        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then' \
+    '        if [[ -n "$cws_c" ]]; then'
+
+  # Dropping the non-empty root guard makes an UNKNOWN root hint on everything — every machine
+  # without the codex plugin would print a warning at every arm.
+  mutate 'reviewer/check-doc-unknown-root-silent' 'scripts/multi-review-reviewer.sh' replace \
+    "check hinted with no companion installed" 'multi-review-reviewer.test.sh' \
+    '        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then' \
+    '        if ! path_contains "$cws_c" "$ddir"; then'
+
+  # The gemini arm must judge against the CWD repo, not codex's sandbox — swapping the basis
+  # makes it hint on a doc that is legitimately inside its own workspace.
+  mutate 'reviewer/check-doc-gemini-basis' 'scripts/multi-review-reviewer.sh' replace \
+    "gemini consulted the codex workspace root" 'multi-review-reviewer.test.sh' \
+    '        grr_c="$(canon "$rr")"' \
+    '        grr_c="$(canon "$(codex_workspace_root)")"'
+
 }
 
 if (( list )); then mutations; exit 0; fi

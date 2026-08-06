@@ -198,8 +198,16 @@ gemini_has_key() { # <repo-root> -> 0 if a key source exists (never reads the va
   return 1
 }
 
-cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
-  local row id
+cmd_check() { # --reviewer <id> [--doc <path>] -> 0 dispatchable, 1 with reason
+  local row id doc="" i args=("$@")
+  # Same explicit-arity loop as cmd_ensure_skill's --repo: `shift 2` with one arg left does not
+  # shift in bash, so a flag with no value must be caught here rather than looping forever.
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "--doc" ]]; then
+      [[ $((i+1)) -lt ${#args[@]} ]] || die "--doc requires a value" 2
+      doc="${args[i+1]}"
+    fi
+  done
   row="$(resolve_row "$@")" || exit 2
   id="$(field "$row" 1)"
   case "$id" in
@@ -225,6 +233,23 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
           hint codex "untracked files at ${skill_dir} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning"
         fi
       fi
+      # Issue #60. codex is bound to ONE root for the session and does not follow a shell `cd`,
+      # so the copy's location is compared against the companion's workspaceRoot — not against
+      # `git rev-parse --show-toplevel`, which moves with the shell and therefore agrees with
+      # itself in exactly the cwd-drift case this exists to catch.
+      #
+      # An unknown or unresolvable root means SILENCE, not a hint: without the guard below an
+      # empty root makes the containment test fail for every doc, so every arm-time check on a
+      # machine with no codex plugin would print a warning.
+      if [[ -n "$doc" ]]; then
+        local cws cws_c ddir
+        cws="$(codex_workspace_root)"
+        cws_c="$(canon "$cws")"
+        ddir="$(dirname "$doc")"
+        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then
+          hint codex "the review copy is outside codex's sandbox root ($(canon "$ddir") vs ${cws_c}) — codex is bound to that root for this session and will likely be unable to write the copy. Run the review from the repo that contains the copy."
+        fi
+      fi
       ;;
     gemini)
       command -v gemini >/dev/null 2>&1 || die "gemini CLI not on PATH" 1
@@ -236,6 +261,18 @@ cmd_check() { # --reviewer <id> -> 0 dispatchable, 1 with reason
       local unreadable; unreadable="$(gemini_unreadable_paths "$rr")"
       [[ -z "$unreadable" ]] \
         || hint gemini "gemini will refuse to read a review doc under $(fmt_paths "$unreadable") — git-ignored in this repo, and gemini-cli honors gitignore. Set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
+      # Issue #60. gemini runs as a shell command in the CURRENT cwd, so unlike codex its
+      # workspace genuinely follows the shell and repo_root() is the right basis. The wording
+      # deliberately does not claim codex's per-session binding — gemini's sandbox constraint is
+      # reasoned by symmetry, not reproduced.
+      if [[ -n "$doc" ]]; then
+        local grr_c gddir
+        grr_c="$(canon "$rr")"
+        gddir="$(dirname "$doc")"
+        if [[ -n "$grr_c" ]] && ! path_contains "$grr_c" "$gddir"; then
+          hint gemini "the review copy is outside this workspace ($(canon "$gddir") vs ${grr_c}) — gemini reads and writes within the workspace it is launched in, so it may be unable to write the copy. Run the review from the repo that contains it."
+        fi
+      fi
       ;;
     *)
       die "no availability check defined for reviewer provider '${id}'" 2 ;;
@@ -627,7 +664,58 @@ gemini_live_probe() {
 # --- provisioning: materialize a has-skill reviewer's bundle into the repo ----------
 SKILL_REL=".agents/skills/multi-review"
 SKILL_MARKER=".multi-review-materialized"
-canon() { cd "$1" 2>/dev/null && pwd -P; }   # canonical physical path, or empty (no die)
+# canonical physical path, or empty (no die). The empty-argument guard is NOT redundant: bash 3.2
+# treats `cd ""` as a successful no-op, so `canon ""` returned the CURRENT DIRECTORY there while
+# returning empty on bash 5 — and every caller reads empty as "unresolvable". That divergence made
+# an unknown codex sandbox root (issue #60) canonicalize to the repo root on the macOS 3.2 leg,
+# passing the non-empty guard and hinting on every doc outside the repo. Caught by the 3.2 leg of
+# the gate, not by bash 5.
+canon() { [[ -n "$1" ]] || return 0; cd "$1" 2>/dev/null && pwd -P; }
+
+# Canonical prefix containment: is <child> inside <parent> (or the same directory)?
+#
+# BOTH sides are canonicalized (issue #60, codex-rd1-r1). Canonicalizing only the child compares a
+# physical path against a logical one, so a symlinked PARENT reports an inside path as outside —
+# a FALSE hint on an ordinary same-root review, which is the failure direction that actually costs
+# the engineer something. It is also the common case, not an exotic one: /tmp -> /private/tmp on
+# macOS makes it the default for anything under a temp dir.
+#
+# Exit 1 when either side cannot be canonicalized, so an unresolvable path is never reported as
+# contained. Callers that must stay silent on an unknown root check that root separately — see
+# cmd_check, where "unresolvable" and "outside" have to be distinguished.
+#
+# The trailing-slash comparison is ensure_skill's existing idiom, and is what stops /root matching
+# /rootstuff: containment is by path COMPONENT, not string prefix.
+path_contains() { # <parent> <child> -> 0 contained, 1 outside or unresolvable
+  local p c
+  p="$(canon "${1:?parent}")"
+  c="$(canon "${2:?child}")"
+  [[ -n "$p" && -n "$c" ]] || return 1
+  case "${c}/" in "${p%/}/"*) return 0 ;; *) return 1 ;; esac
+}
+
+# The codex sandbox root for THIS session, or empty. codex is bound to one root per session and
+# does not follow a shell `cd`, so this — not `git rev-parse --show-toplevel` — is the pair to
+# compare a working copy against (issue #60).
+#
+# Empty on EVERY failure path: no companion installed, no node, no jq, a non-zero run, or an
+# absent field. Empty means "unknown", and cmd_check stays silent on unknown rather than hinting
+# on every doc. Never dies, never writes, no side effects.
+#
+# Any single glob match will do. Deliberately NOT "the newest": a lexical sort of version dirs is
+# wrong across a component rollover (1.9.0 sorts above 1.10.0), and the choice does not matter —
+# workspaceRoot is a property of the session, not of the companion build.
+codex_workspace_root() { # -> path, or empty
+  local comp="" g
+  for g in "${HOME:-}"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do
+    if [[ -f "$g" ]]; then comp="$g"; break; fi
+  done
+  [[ -n "$comp" ]] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  command -v jq   >/dev/null 2>&1 || return 0
+  node "$comp" status --json 2>/dev/null | jq -r '.workspaceRoot // empty' 2>/dev/null || true
+  return 0
+}
 
 cmd_ensure_skill() { # --reviewer <id> [--repo <dir>]
   local row id has_skill repo_override="" i args=("$@")
@@ -719,5 +807,11 @@ case "$sub" in
   _protocol_lines_for_test)
     [[ $# -ge 1 ]] || die "_protocol_lines_for_test requires a file argument" 2
     protocol_lines "$@" ;;
+  # Test-only accessors. Neither helper has a CLI surface, but path_contains' both-sides
+  # canonicalization (issue #60, codex-rd1-r1) and codex_workspace_root's empty-on-failure
+  # contract are what cmd_check relies on, and check's output cannot distinguish an
+  # unresolvable root from an ignored one. Underscore-prefixed and undocumented on purpose.
+  _path_contains_for_test) path_contains "$@" ;;
+  _codex_workspace_root_for_test) codex_workspace_root "$@" ;;
   *)       die "unknown subcommand: $sub" 2 ;;
 esac
