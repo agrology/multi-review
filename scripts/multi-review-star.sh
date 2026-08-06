@@ -1073,8 +1073,10 @@ cmd_gate_summary() {
   # findings are sitting in this very document. A provider that raised an admitted finding is
   # admitted by observation; only the roster term is filtered.
   #
-  # _roster is assigned WITHOUT a pipe so its die reaches here (a pipeline's status is its LAST
-  # command's); the normalising filter is a second step, after the status has been checked.
+  # The `|| die` is what makes _roster's refusal reach here. NOT the absence of a pipe: this
+  # script sets `pipefail` (:23), so a pipeline propagates the first non-zero status and piping
+  # would not have swallowed it. The original defect was that nothing tested `$?` at all. The
+  # normalising filter runs as a second step so the status is checked before it is reshaped.
   local ga_roster ga_raisers ga_quar ga_rmq admitted nsec
   ga_roster="$(_roster "$doc")" || die "gate-summary: malformed roster in ${doc}" 1
   ga_roster="$(printf '%s\n' "$ga_roster" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u || true)"
@@ -1206,10 +1208,13 @@ cmd_round_stats() {
   # so the two functions cannot disagree about who reviewed (issue #59). The helper also validates
   # the hint, which the old inline `grep -o` did not.
   #
-  # Assigned WITHOUT a pipe so the helper's die actually reaches here: a pipeline's exit status is
-  # its LAST command's, which would reduce the validation to a stderr message while this function
-  # carried on with an empty roster and printed a wrong verdict. The newline->space join the awk
-  # below expects is a SECOND step, after the status has been checked.
+  # The `|| die` is what makes the helper's refusal reach here, and it is the whole guard. NOT the
+  # absence of a pipe: this script sets `pipefail` (:23), so a pipeline propagates the first
+  # non-zero status — piping through `tr` would not have swallowed it. What swallowed it before
+  # #59 was having no status check at all: the line read `hintp="$(_roster "$doc" | tr …)"` with
+  # nothing testing `$?`, so the die printed to stderr while this function carried on with an
+  # empty roster and printed a wrong verdict. The newline->space join the awk below expects is a
+  # SECOND step, after the status has been checked.
   hintp="$(_roster "$doc")" || die "round-stats: malformed roster in ${doc}" 1
   hintp="$(printf '%s' "$hintp" | tr '\n' ' ')"
 
