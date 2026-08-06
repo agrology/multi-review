@@ -629,6 +629,51 @@ SKILL_REL=".agents/skills/multi-review"
 SKILL_MARKER=".multi-review-materialized"
 canon() { cd "$1" 2>/dev/null && pwd -P; }   # canonical physical path, or empty (no die)
 
+# Canonical prefix containment: is <child> inside <parent> (or the same directory)?
+#
+# BOTH sides are canonicalized (issue #60, codex-rd1-r1). Canonicalizing only the child compares a
+# physical path against a logical one, so a symlinked PARENT reports an inside path as outside —
+# a FALSE hint on an ordinary same-root review, which is the failure direction that actually costs
+# the engineer something. It is also the common case, not an exotic one: /tmp -> /private/tmp on
+# macOS makes it the default for anything under a temp dir.
+#
+# Exit 1 when either side cannot be canonicalized, so an unresolvable path is never reported as
+# contained. Callers that must stay silent on an unknown root check that root separately — see
+# cmd_check, where "unresolvable" and "outside" have to be distinguished.
+#
+# The trailing-slash comparison is ensure_skill's existing idiom, and is what stops /root matching
+# /rootstuff: containment is by path COMPONENT, not string prefix.
+path_contains() { # <parent> <child> -> 0 contained, 1 outside or unresolvable
+  local p c
+  p="$(canon "${1:?parent}")"
+  c="$(canon "${2:?child}")"
+  [[ -n "$p" && -n "$c" ]] || return 1
+  case "${c}/" in "${p%/}/"*) return 0 ;; *) return 1 ;; esac
+}
+
+# The codex sandbox root for THIS session, or empty. codex is bound to one root per session and
+# does not follow a shell `cd`, so this — not `git rev-parse --show-toplevel` — is the pair to
+# compare a working copy against (issue #60).
+#
+# Empty on EVERY failure path: no companion installed, no node, no jq, a non-zero run, or an
+# absent field. Empty means "unknown", and cmd_check stays silent on unknown rather than hinting
+# on every doc. Never dies, never writes, no side effects.
+#
+# Any single glob match will do. Deliberately NOT "the newest": a lexical sort of version dirs is
+# wrong across a component rollover (1.9.0 sorts above 1.10.0), and the choice does not matter —
+# workspaceRoot is a property of the session, not of the companion build.
+codex_workspace_root() { # -> path, or empty
+  local comp="" g
+  for g in "${HOME:-}"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do
+    if [[ -f "$g" ]]; then comp="$g"; break; fi
+  done
+  [[ -n "$comp" ]] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+  command -v jq   >/dev/null 2>&1 || return 0
+  node "$comp" status --json 2>/dev/null | jq -r '.workspaceRoot // empty' 2>/dev/null || true
+  return 0
+}
+
 cmd_ensure_skill() { # --reviewer <id> [--repo <dir>]
   local row id has_skill repo_override="" i args=("$@")
   for ((i=0; i<${#args[@]}; i++)); do
@@ -719,5 +764,11 @@ case "$sub" in
   _protocol_lines_for_test)
     [[ $# -ge 1 ]] || die "_protocol_lines_for_test requires a file argument" 2
     protocol_lines "$@" ;;
+  # Test-only accessors. Neither helper has a CLI surface, but path_contains' both-sides
+  # canonicalization (issue #60, codex-rd1-r1) and codex_workspace_root's empty-on-failure
+  # contract are what cmd_check relies on, and check's output cannot distinguish an
+  # unresolvable root from an ignored one. Underscore-prefixed and undocumented on purpose.
+  _path_contains_for_test) path_contains "$@" ;;
+  _codex_workspace_root_for_test) codex_workspace_root "$@" ;;
   *)       die "unknown subcommand: $sub" 2 ;;
 esac

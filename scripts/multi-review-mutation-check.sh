@@ -649,6 +649,15 @@ mutations() {
     "             -e 's/^> \\[(no-findings)[]:].*/\\1:/' \\" \
     "             -e 's/^__never_matches__//' \\"
 
+  # --- the out-of-root preflight hint (#60) ---
+  # Issue #60, codex-rd1-r1. Canonicalizing only the child makes a symlinked parent report an
+  # inside path as OUTSIDE — a false hint on an ordinary same-root review, and the common case
+  # rather than an exotic one (/tmp -> /private/tmp on macOS).
+  mutate 'reviewer/path-contains-parent-canon' 'scripts/multi-review-reviewer.sh' replace \
+    "path_contains failed to canonicalize the parent (issue #60, codex-rd1-r1)" 'multi-review-reviewer.test.sh' \
+    '  p="$(canon "${1:?parent}")"' \
+    '  p="${1:?parent}"'
+
 }
 
 if (( list )); then mutations; exit 0; fi

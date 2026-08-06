@@ -964,6 +964,112 @@ pl_err="$(bash "$SUT" _protocol_lines_for_test 2>&1 >/dev/null)"; pl_rc=$?
   && ok "_protocol_lines_for_test: missing argument reports via die(), not an unbound-variable trap" \
   || bad "_protocol_lines_for_test error was not a die()-style message: '$pl_err'"
 
+# --- path_contains: canonical prefix containment, BOTH sides canonicalized (issue #60) ---
+# The one finding from this spec's review (codex-rd1-r1): canonicalizing only the child compares a
+# physical path against a logical one, so a symlinked PARENT reports an inside path as outside —
+# a false hint on an ordinary same-root review. On macOS /tmp -> /private/tmp makes that the
+# default for anything under a temp dir, not an exotic case.
+
+PC="${WORK}/pc"; mkdir -p "$PC/root/sub" "$PC/outside"
+ln -sfn "$PC/root" "$PC/rootlink"
+
+bash "$SUT" _path_contains_for_test "$PC/root" "$PC/root/sub"
+[[ $? -eq 0 ]] && ok "path_contains: a child inside the parent is contained" \
+  || bad "path_contains rejected a genuine child"
+
+bash "$SUT" _path_contains_for_test "$PC/root" "$PC/outside"
+[[ $? -ne 0 ]] && ok "path_contains: a sibling directory is not contained" \
+  || bad "path_contains accepted a path outside the parent"
+
+bash "$SUT" _path_contains_for_test "$PC/root" "$PC/root"
+[[ $? -eq 0 ]] && ok "path_contains: a parent contains itself" \
+  || bad "path_contains rejected the parent as its own child"
+
+# the finding, directly: parent given through a SYMLINK, child given physically
+bash "$SUT" _path_contains_for_test "$PC/rootlink" "$PC/root/sub"
+[[ $? -eq 0 ]] && ok "path_contains: a symlinked parent still contains a physical child" \
+  || bad "path_contains failed to canonicalize the parent (issue #60, codex-rd1-r1)"
+
+# and the mirror: child given through a symlink, parent physically
+ln -sfn "$PC/root/sub" "$PC/sublink"
+bash "$SUT" _path_contains_for_test "$PC/root" "$PC/sublink"
+[[ $? -eq 0 ]] && ok "path_contains: a symlinked child still resolves inside the parent" \
+  || bad "path_contains failed to canonicalize the child"
+
+# a non-existent side cannot be canonicalized -> NOT contained, so the caller stays silent
+bash "$SUT" _path_contains_for_test "$PC/root" "$PC/does-not-exist"
+[[ $? -ne 0 ]] && ok "path_contains: an unresolvable child is not contained" \
+  || bad "path_contains accepted an unresolvable child"
+
+bash "$SUT" _path_contains_for_test "$PC/does-not-exist" "$PC/root/sub"
+[[ $? -ne 0 ]] && ok "path_contains: an unresolvable parent is not contained" \
+  || bad "path_contains accepted an unresolvable parent"
+
+# a name-prefix that is NOT a path component must not match (/root vs /rootstuff)
+mkdir -p "$PC/rootstuff"
+bash "$SUT" _path_contains_for_test "$PC/root" "$PC/rootstuff"
+[[ $? -ne 0 ]] && ok "path_contains: a sibling sharing a name prefix is not contained" \
+  || bad "path_contains matched on a string prefix rather than a path component"
+
+# --- codex_workspace_root: the companion's workspaceRoot, or empty (issue #60) ---
+# Stubbed through HOME + a fake `node` on PATH, the same way the gemini checks stub HOME above.
+# This needs neither the real codex plugin nor a real node — CI's tool inventory has no node.
+
+CWS="${WORK}/cws"
+CWS_COMP="${CWS}/home/.claude/plugins/cache/openai-codex/codex/1.0.0/scripts"
+mkdir -p "$CWS_COMP" "${CWS}/bin" "${CWS}/ws"
+: > "${CWS_COMP}/codex-companion.mjs"
+# fake node: prints whatever workspaceRoot the test asks for
+printf '#!/bin/bash\nprintf '"'"'{"workspaceRoot":"%%s"}\\n'"'"' "$FAKE_WS"\n' > "${CWS}/bin/node"
+chmod +x "${CWS}/bin/node"
+
+got="$(HOME="${CWS}/home" FAKE_WS="${CWS}/ws" PATH="${CWS}/bin:$PATH" \
+  bash "$SUT" _codex_workspace_root_for_test 2>/dev/null)"
+[[ "$got" == "${CWS}/ws" ]] && ok "codex_workspace_root: reads workspaceRoot from the companion" \
+  || bad "codex_workspace_root returned '$got', expected '${CWS}/ws'"
+
+# no companion under HOME -> empty, exit 0 (the machine has no codex plugin)
+mkdir -p "${CWS}/emptyhome"
+got="$(HOME="${CWS}/emptyhome" FAKE_WS="${CWS}/ws" PATH="${CWS}/bin:$PATH" \
+  bash "$SUT" _codex_workspace_root_for_test 2>/dev/null)"; rc=$?
+[[ -z "$got" && $rc -eq 0 ]] && ok "codex_workspace_root: no companion yields empty, exit 0" \
+  || bad "codex_workspace_root with no companion gave '$got' rc=$rc"
+
+# companion present but the runtime fails -> empty, exit 0
+printf '#!/bin/bash\nexit 1\n' > "${CWS}/bin/node"; chmod +x "${CWS}/bin/node"
+got="$(HOME="${CWS}/home" PATH="${CWS}/bin:$PATH" \
+  bash "$SUT" _codex_workspace_root_for_test 2>/dev/null)"; rc=$?
+[[ -z "$got" && $rc -eq 0 ]] && ok "codex_workspace_root: a failing companion yields empty, exit 0" \
+  || bad "codex_workspace_root with a failing runtime gave '$got' rc=$rc"
+# restore the working stub
+printf '#!/bin/bash\nprintf '"'"'{"workspaceRoot":"%%s"}\\n'"'"' "$FAKE_WS"\n' > "${CWS}/bin/node"
+chmod +x "${CWS}/bin/node"
+
+# no node on PATH at all -> empty, exit 0.
+#
+# HERMETIC ON PURPOSE (codex-rd1-r1). PATH is a dedicated directory holding ONLY a jq symlink, so
+# node is definitively absent and jq definitively present, and the branch exercised is the one the
+# assertion names. `PATH=/usr/bin:/bin` would NOT do: GitHub's ubuntu runners ship node in
+# /usr/bin, where the real node runs the EMPTY stub companion, prints nothing, jq turns that into
+# nothing, and the assertion passes without ever reaching the no-node branch — green for the wrong
+# reason, which no later mutation would catch.
+#
+# `bash` is invoked by absolute path because PATH no longer contains it.
+NODELESS="${CWS}/nodeless"; mkdir -p "$NODELESS"
+ln -sf "$(command -v jq)" "${NODELESS}/jq"
+got="$(HOME="${CWS}/home" PATH="$NODELESS" \
+  /bin/bash "$SUT" _codex_workspace_root_for_test 2>/dev/null)"; rc=$?
+[[ -z "$got" && $rc -eq 0 ]] && ok "codex_workspace_root: no node yields empty, exit 0" \
+  || bad "codex_workspace_root without node gave '$got' rc=$rc"
+
+# the mirror: node present, jq absent -> empty, exit 0. Same hermetic construction.
+JQLESS="${CWS}/jqless"; mkdir -p "$JQLESS"
+cp "${CWS}/bin/node" "${JQLESS}/node"
+got="$(HOME="${CWS}/home" FAKE_WS="${CWS}/ws" PATH="$JQLESS" \
+  /bin/bash "$SUT" _codex_workspace_root_for_test 2>/dev/null)"; rc=$?
+[[ -z "$got" && $rc -eq 0 ]] && ok "codex_workspace_root: no jq yields empty, exit 0" \
+  || bad "codex_workspace_root without jq gave '$got' rc=$rc"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
