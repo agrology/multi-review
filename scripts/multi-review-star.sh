@@ -395,7 +395,7 @@ cmd_open_findings() { # <doc> -> ids with state==open
 # A `> [observation]` line NOT immediately followed by its `> — via <model>` line — including at
 # end-of-input — fails loud (stderr message, exit 2), mirroring _table's fail() for findings.
 # An undisclosed observation must not silently vanish from the gate summary (Codex peer review).
-cmd_observations() { # <doc> -> observation text per line; exit 2 on an undisclosed observation
+cmd_observations() { # <doc> -> "text<TAB>model" per observation; exit 2 on an undisclosed observation
   local doc="${1:?doc}"
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   review_section "$doc" | strip_fences /dev/stdin | awk '
@@ -403,7 +403,7 @@ cmd_observations() { # <doc> -> observation text per line; exit 2 on an undisclo
     {
       line = $0
       if (pend) {
-        if (line ~ /^> — via /) { print ptxt; pend = 0; next }
+        if (line ~ /^> — via /) { via = line; sub(/^> — via /, "", via); print ptxt "\t" via; pend = 0; next }
         else { fail("observation not followed by a \"> — via <model>\" line") }
       }
       if (line ~ /^> \[observation] /) { ptxt = line; sub(/^> \[observation] /, "", ptxt); pend = 1 }
@@ -1092,7 +1092,7 @@ cmd_gate_summary() {
   obs="$(cmd_observations "$doc")" || die "gate-summary: contract violation in $doc" 1
   if [[ -n "$obs" ]]; then
     echo "Primary observations (human-gate only):"
-    printf '%s\n' "$obs" | while IFS= read -r line; do echo "  - $line"; done
+    printf '%s\n' "$obs" | while IFS=$'\t' read -r otext ovia; do echo "  - ${otext} (via ${ovia})"; done
     echo
   fi
 

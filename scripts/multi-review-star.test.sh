@@ -624,7 +624,21 @@ D="$(mkstar obs.md \
 [[ -z "$(bash "$SUT" open-findings "$D" 2>/dev/null)" ]] && ok "observations: not counted as a finding" || bad "observation leaked as finding"
 # observations lists it
 out="$(bash "$SUT" observations "$D" 2>/dev/null)"; rc=$?
-[[ "$out" == "secondaries all missed the retry cap" && $rc -eq 0 ]] && ok "observations: listed" || bad "observations list (got '$out' rc=$rc)"
+[[ "$out" == "secondaries all missed the retry cap"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
+  && ok "observations: listed with its disclosed model" \
+  || bad "observations list (got '$out' rc=$rc)"
+
+# The disclosed model must survive to the caller, and it must be the model in the DOCUMENT — not
+# the primary assumed by convention (issue #63, codex-rd1-r1). Nothing restricts [observation] to
+# the primary: cmd_observations requires *a* via line and never compares it to anyone. This
+# fixture discloses gpt-5 while the primary is claude-opus-4-8, so an implementation that printed
+# the primary everywhere would still fail here.
+OBSVIA="$(mkstar obs-via.md \
+  '> [observation] a note disclosed by a non-primary model' '> — via gpt-5')"
+out="$(bash "$SUT" observations "$OBSVIA" 2>/dev/null)"; rc=$?
+[[ "$out" == "a note disclosed by a non-primary model"$'\t'"gpt-5" && $rc -eq 0 ]] \
+  && ok "observations: the second field is the model the DOCUMENT disclosed" \
+  || bad "observations dropped or substituted the via model (got '$out' rc=$rc)"
 # gate-summary shows it under the observations heading
 # (capture first, then grep the captured string — piping bash "$SUT" ... | grep -q directly
 # races under `set -o pipefail`: grep -q exits the instant it matches this early-ish line,
@@ -677,7 +691,7 @@ printf '%s' "$err" | grep -qi 'not followed by' && ok "observations: end-of-doc 
 D="$(mkstar obs-good2.md \
   '> [observation] a properly disclosed note' '> — via claude-opus-4-8')"
 out="$(bash "$SUT" observations "$D" 2>/dev/null)"; rc=$?
-[[ "$out" == "a properly disclosed note" && $rc -eq 0 ]] \
+[[ "$out" == "a properly disclosed note"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
   && ok "observations: well-formed still passes after fail-loud fix" \
   || bad "observations well-formed regressed (out='$out' rc=$rc)"
 

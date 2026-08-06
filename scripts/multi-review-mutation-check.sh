@@ -632,6 +632,15 @@ mutations() {
     '    NF { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8' \
     '    { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8'
 
+  # --- publishing the primary's own observations (#63) ---
+  # Issue #63, codex-rd1-r1. Dropping the via field makes every published observation
+  # unattributed, and the section heading cannot honestly name an author — nothing restricts
+  # [observation] to the primary, so a secondary's note would post as the primary's.
+  mutate 'star/observations-emit-via' 'scripts/multi-review-star.sh' replace \
+    "observations dropped or substituted the via model" 'multi-review-star.test.sh' \
+    '        if (line ~ /^> — via /) { via = line; sub(/^> — via /, "", via); print ptxt "\t" via; pend = 0; next }' \
+    '        if (line ~ /^> — via /) { print ptxt; pend = 0; next }'
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as
