@@ -403,7 +403,13 @@ cmd_observations() { # <doc> -> "text<TAB>model" per observation; exit 2 on an u
     {
       line = $0
       if (pend) {
-        if (line ~ /^> — via /) { via = line; sub(/^> — via /, "", via); print ptxt "\t" via; pend = 0; next }
+        # The match requires a NON-SPACE after "via " (PR #65, codex-rd1-r1). A bare "> — via "
+        # used to match, strip to an empty model, and publish "— via " with nothing after it:
+        # agent-authored content reaching a human with no model named, which is the one thing
+        # CLAUDE.md section 8 requires. A model-less disclosure is no disclosure, so it takes the
+        # same fail() path as a missing via line. The trailing sub() keeps stray spaces after a
+        # real model out of the published line.
+        if (line ~ /^> — via [^[:space:]]/) { via = line; sub(/^> — via[[:space:]]+/, "", via); sub(/[[:space:]]+$/, "", via); print ptxt "\t" via; pend = 0; next }
         else { fail("observation not followed by a \"> — via <model>\" line") }
       }
       if (line ~ /^> \[observation] /) { ptxt = line; sub(/^> \[observation] /, "", ptxt); pend = 1 }

@@ -705,6 +705,34 @@ bash "$SUT" gate-summary "$D" claude-opus-4-8 >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "gate-summary: malformed observation fails loud (not silently dropped)" \
   || bad "gate-summary malformed observation swallowed"
 
+# A bare "> — via" naming NO model is not a disclosure (PR #65, codex-rd1-r1). It used to match,
+# strip to an empty model, and publish "— via " with nothing after it — agent-authored content
+# posted to a human with no model named, which is the one thing CLAUDE.md §8 requires. Treated as
+# an undisclosed observation, the same as having no via line at all.
+OBSBARE="$(mkstar obs-bare-via.md \
+  '> [observation] a note whose disclosure names no model' \
+  '> — via ')"
+out="$(bash "$SUT" observations "$OBSBARE" 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 && -z "$out" ]] && ok "observations: a bare via naming no model fails loud" \
+  || bad "observations accepted an empty model (out='$out' rc=$rc)"
+
+# ...and a whitespace-only model is the same case, not a different one
+OBSWS="$(mkstar obs-ws-via.md \
+  '> [observation] a note whose disclosure is only whitespace' \
+  '> — via    ')"
+out="$(bash "$SUT" observations "$OBSWS" 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 && -z "$out" ]] && ok "observations: a whitespace-only model fails loud" \
+  || bad "observations accepted a whitespace-only model (out='$out' rc=$rc)"
+
+# a trailing space after a real model must not survive into the published line
+OBSTRAIL="$(mkstar obs-trail-via.md \
+  '> [observation] a note with trailing space after its model' \
+  '> — via gpt-5   ')"
+out="$(bash "$SUT" observations "$OBSTRAIL" 2>/dev/null)"; rc=$?
+[[ "$out" == "a note with trailing space after its model"$'\t'"gpt-5" && $rc -eq 0 ]] \
+  && ok "observations: the model is trimmed of trailing whitespace" \
+  || bad "observations left whitespace in the model (out='$out' rc=$rc)"
+
 ## --- compose-review publishes the primary's own observations (issue #63) ---
 # The primary never edits the diff in PR mode, so an observation is its ONLY channel for a defect
 # it found itself — and publishing is how a finding reaches the author who has to fix it. Posting
