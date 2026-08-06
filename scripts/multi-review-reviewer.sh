@@ -664,7 +664,13 @@ gemini_live_probe() {
 # --- provisioning: materialize a has-skill reviewer's bundle into the repo ----------
 SKILL_REL=".agents/skills/multi-review"
 SKILL_MARKER=".multi-review-materialized"
-canon() { cd "$1" 2>/dev/null && pwd -P; }   # canonical physical path, or empty (no die)
+# canonical physical path, or empty (no die). The empty-argument guard is NOT redundant: bash 3.2
+# treats `cd ""` as a successful no-op, so `canon ""` returned the CURRENT DIRECTORY there while
+# returning empty on bash 5 — and every caller reads empty as "unresolvable". That divergence made
+# an unknown codex sandbox root (issue #60) canonicalize to the repo root on the macOS 3.2 leg,
+# passing the non-empty guard and hinting on every doc outside the repo. Caught by the 3.2 leg of
+# the gate, not by bash 5.
+canon() { [[ -n "$1" ]] || return 0; cd "$1" 2>/dev/null && pwd -P; }
 
 # Canonical prefix containment: is <child> inside <parent> (or the same directory)?
 #
