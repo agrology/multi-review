@@ -632,6 +632,39 @@ mutations() {
     '    NF { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8' \
     '    { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8'
 
+  # --- publishing the primary's own observations (#63) ---
+  # Issue #63, codex-rd1-r1. Dropping the via field makes every published observation
+  # unattributed, and the section heading cannot honestly name an author — nothing restricts
+  # [observation] to the primary, so a secondary's note would post as the primary's.
+  mutate 'star/observations-emit-via' 'scripts/multi-review-star.sh' replace \
+    "observations dropped or substituted the via model" 'multi-review-star.test.sh' \
+    '        if (line ~ /^> — via [^[:space:]]/) { via = line; sub(/^> — via[[:space:]]+/, "", via); sub(/[[:space:]]+$/, "", via); print ptxt "\t" via; pend = 0; next }' \
+    '        if (line ~ /^> — via [^[:space:]]/) { print ptxt; pend = 0; next }'
+
+  # PR #65, codex-rd1-r1. Relaxing the match back to a bare "> — via " lets a model-less
+  # disclosure through, and compose-review then publishes "— via " with nothing after it —
+  # agent-authored content reaching a human without naming its model (CLAUDE.md section 8).
+  mutate 'star/observations-via-nonempty' 'scripts/multi-review-star.sh' replace \
+    "observations accepted an empty model" 'multi-review-star.test.sh' \
+    '        if (line ~ /^> — via [^[:space:]]/) { via = line; sub(/^> — via[[:space:]]+/, "", via); sub(/[[:space:]]+$/, "", via); print ptxt "\t" via; pend = 0; next }' \
+    '        if (line ~ /^> — via /) { via = line; sub(/^> — via[[:space:]]*/, "", via); print ptxt "\t" via; pend = 0; next }'
+
+  # Without the split there is nothing to iterate, the section never renders, and the posted
+  # review silently omits the primary's own findings — issue #63 exactly.
+  mutate 'star/compose-observations-emitted' 'scripts/multi-review-star.sh' replace \
+    "compose-review dropped the observation" 'multi-review-star.test.sh' \
+    '      no = split(ENVIRON["OBS"], orec, "\n")' \
+    '      no = 0'
+
+  # Dropping the status check lets an undisclosed observation post a silently incomplete review.
+  # The mutation removes ONLY the `|| die` (codex-rd1-r1) — deliberately not "add a pipe", which
+  # under this script's `set -o pipefail` would still propagate the non-zero status and so would
+  # not disable the guard at all. The check is the guard; the pipe is a red herring.
+  mutate 'star/compose-observations-checked' 'scripts/multi-review-star.sh' replace \
+    "compose-review composed a review despite an undisclosed observation" 'multi-review-star.test.sh' \
+    '  obs="$(cmd_observations "$doc")" || die "cannot compose: contract violation in $doc" 1' \
+    '  obs="$(cmd_observations "$doc")"'
+
   # --- the no-findings signal's disclosure (#50) ---
   # Without the tag in the alternation, a bare `> [no-findings]` contributes no key, verify-vendor
   # sees no "added protocol content", and a no-op reviewer emitting the signal alone is exactly as

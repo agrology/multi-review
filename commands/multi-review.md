@@ -462,8 +462,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    — the self-response guard fails a response whose model equals the finding's raiser model, so
    colliding with a Claude-family secondary like `fable` would make convergence impossible.
 3. **Optionally** record a primary observation the secondaries all missed:
-   `> [observation] <text>` + `> — via <primary-model-id>`. It is human-gate-only — never a
-   finding, never counted toward convergence — so a missing `> — via` line is a contract error.
+   `> [observation] <text>` + `> — via <primary-model-id>`. It is never a finding and never
+   counted toward convergence — but in PR mode it IS published with the review (issue #63),
+   naming the model that raised it, so a defect you found yourself reaches the author. A
+   missing `> — via` line is a contract error, and now a publishing one: `compose-review`
+   refuses to compose without it.
 4. Decide: **converge**, or re-enter `awaiting-secondaries` for another round.
 
    First run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh round-stats "<doc>"`. It prints

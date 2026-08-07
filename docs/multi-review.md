@@ -107,8 +107,9 @@ finding with exactly one of:
 - `> [dispute:<ns-id>] <one-line reason>` + `> — via <primary-model-id>` — reject it, tersely.
   A dispute never forces another round.
 
-The primary may also leave a human-gate-only note that is NOT a finding and never affects
-convergence: `> [observation] <text>` + `> — via <primary-model-id>`.
+The primary may also leave a note that is NOT a finding and never affects convergence:
+`> [observation] <text>` + `> — via <primary-model-id>`. In PR mode it is published with the
+review, carrying the model that raised it.
 
 Convergence is **coverage, not consensus**: every merged finding needs exactly one
 `agree`/`dispute`; disputes are expected and do not block. The human gate settles disputes.
