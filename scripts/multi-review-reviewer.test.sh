@@ -495,15 +495,48 @@ done
 bash "$SUT" command "$D" --reviewer gemini > "${WORK}/argv-approval.bin" 2>/dev/null
 appr=(); while IFS= read -r -d '' a; do appr+=("$a"); done < "${WORK}/argv-approval.bin"
 
-# issue #52 capture. These three assertions have failed twice on macos/bash-3.2, a DIFFERENT one
-# each time, passing on re-run — and one of those failures printed an argv that visibly contained
-# the token it claimed was missing. Two hypotheses (SIGPIPE under pipefail; gemini CLI absent)
-# were tested and refuted, so the open question is whether the ARGV itself differs or only the
-# assertion's view of it.
+# ISSUE #52 — SOLVED. The intermittent macos/bash-3.2 failures here were never about the argv.
+# The capture below caught a run where BOTH the reconstructed array and the raw NUL-delimited bytes
+# were correct — argv[4] was literally `auto_edit` — while the assertion still failed. So the fault
+# was in the assertion, which was written as:
 #
-# The dump must be armed IN ADVANCE, not gathered after a red run: ${WORK} is a mktemp dir removed
-# by the EXIT trap, so by the time CI reports the failure the bytes are already gone. Re-running is
-# worse than useless here — it overwrites the run conclusion and destroys the only evidence.
+#     printf '%s\n' "${appr[@]}" | grep -qx -- 'auto_edit'
+#
+# `grep -q` exits at the first match; `printf` still has argv[6] — the whole inlined protocol
+# prompt — left to write, takes SIGPIPE, and `pipefail` turns that into 141. A SUCCESSFUL match is
+# reported as a failure.
+#
+# It is buffer-sized, which is the entire reason it looked like a flake. The writer only takes
+# SIGPIPE if it still has data pending when the reader exits, so the pipe buffer is the threshold:
+# 16 KB on macOS, 64 KB on Linux. Measured on /bin/bash 3.2 — <=16 KB: 0/20 failures; 20 KB: 1/20;
+# 40 KB: 3/20; 64 KB: 19/20; 100 KB: 20/20. The real gemini prompt is ~15.4 KB, sitting ON the macOS
+# boundary, so it flipped on scheduling alone and would have hardened into a permanent failure as
+# the inlined protocol text grew.
+#
+# NOTE FOR THE FUTURE: this hypothesis was recorded as "tested and refuted" and cost five days.
+# A small fixture CANNOT refute it — under the buffer size it never reproduces. Reproduce at 100 KB.
+#
+# argv_has replaces the pipe entirely: no subshell, no reader, nothing to receive SIGPIPE. Exact
+# whole-string equality, the same semantics `grep -qx` had.
+argv_has() { # <want> <argv...> -> 0 if some element equals <want>
+  local want="$1" a; shift
+  for a in "$@"; do [[ "$a" == "$want" ]] && return 0; done
+  return 1
+}
+
+# Pins the property, not the incident: a membership check must not depend on how much data follows
+# the match. With the old `printf | grep -q` idiom this fails outright at 100 KB (measured 20/20).
+big_pad="$(head -c 100000 /dev/zero | tr '\0' 'x')"
+pad_argv=(gemini -m gemini-pro-latest --approval-mode auto_edit -p "$big_pad")
+argv_has 'auto_edit' "${pad_argv[@]}" \
+  && ok "argv membership is independent of payload size (issue #52)" \
+  || bad "argv membership failed with a large trailing element — SIGPIPE/pipefail regression (#52)"
+argv_has 'no_such_token' "${pad_argv[@]}" \
+  && bad "argv membership matched a token that is not present" \
+  || ok "argv membership still rejects an absent token"
+
+# The dump stays armed: it is what solved this, and it is the evidence for any future recurrence.
+# ${WORK} is a mktemp dir removed by the EXIT trap, so it must be gathered IN ADVANCE of a red run.
 argv52_capture() {
   echo "  [#52] parsed elements: ${#appr[@]}"
   local i=0 a
@@ -512,15 +545,15 @@ argv52_capture() {
   od -c "${WORK}/argv-approval.bin" 2>&1 | sed 's/^/  [#52] /'
 }
 
-printf '%s\n' "${appr[@]}" | grep -qx -- '--approval-mode' \
+argv_has '--approval-mode' "${appr[@]}" \
   && ok "gemini argv carries --approval-mode" \
   || { bad "gemini argv lacks --approval-mode"; argv52_capture; }
-printf '%s\n' "${appr[@]}" | grep -qx -- 'auto_edit' \
+argv_has 'auto_edit' "${appr[@]}" \
   && ok "gemini approval mode is auto_edit (edit tools only, not yolo)" \
-  || { bad "gemini approval mode is not auto_edit: ${appr[*]}"; argv52_capture; }
-! printf '%s\n' "${appr[@]}" | grep -qx -- 'yolo' \
-  && ok "gemini argv does NOT use yolo (would auto-approve shell too)" \
-  || { bad "gemini argv uses yolo"; argv52_capture; }
+  || { bad "gemini approval mode is not auto_edit"; argv52_capture; }
+argv_has 'yolo' "${appr[@]}" \
+  && { bad "gemini argv uses yolo"; argv52_capture; } \
+  || ok "gemini argv does NOT use yolo (would auto-approve shell too)"
 
 # --- vendor mapping: bare OpenAI reasoning model ids (codex's own help uses `model="o3"`) ---
 for id in o1 o3 o1-preview o3-mini; do
