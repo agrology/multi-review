@@ -573,6 +573,32 @@ mutations() {
     "  signalled=\"\$(LC_ALL=C grep -c '^' \"\$cn\" || true)\""
 
   # --- _roster: the roster off the VALIDATED mode hint (#59) ---
+  # --- merge's missing-manifest pre-check (#57) ---
+  # Without the footer count, merge takes the round-1 path over a doc that already carries merged
+  # rounds: it appends, rebuilds the manifest from THAT ROUND ALONE, and only the post-merge
+  # self-check notices — after the doc is mutated. The gate is still red, so only the "doc left
+  # untouched" assertion distinguishes a refusal from a corrupting failure.
+  mutate 'star/merge-missing-manifest' 'scripts/multi-review-star.sh' replace \
+    'merge missing-manifest mutated the doc (partial merge)' 'multi-review-star.test.sh' \
+    "    nfoot=\"\$(review_section \"\$doc\" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->\$')\"" \
+    '    nfoot=0'
+
+  # The count must be taken on the FENCE-STRIPPED section. A raw grep sees the footer any doc about
+  # this protocol legitimately prints inside a code block — this repo's own docs do — and refuses a
+  # perfectly ordinary round 1 on it.
+  mutate 'star/merge-missing-manifest-fences' 'scripts/multi-review-star.sh' replace \
+    'merge false-failed on a FENCED star-findings footer' 'multi-review-star.test.sh' \
+    "    nfoot=\"\$(review_section \"\$doc\" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->\$')\"" \
+    "    nfoot=\"\$(review_section \"\$doc\" | grep -cE '^<!-- star-findings: .*-->\$')\""
+
+  # ...and fence-stripping is itself the guard's bypass if the fence never closes: strip_fences
+  # drops every line after it, so a real footer hidden behind one counts as zero and the corrupting
+  # merge proceeds. Refusing on an unterminated fence is what makes the count trustworthy.
+  mutate 'star/merge-missing-manifest-unterminated' 'scripts/multi-review-star.sh' replace \
+    'merge unterminated-fence bypass' 'multi-review-star.test.sh' \
+    '    ufl="$(review_section "$doc" | unterminated_fence_line /dev/stdin)"' \
+    '    ufl=""'
+
   # Issue #59 (codex-rd2-r1). Relaxing _roster back to parsing arbitrary header text lets a
   # malformed hint yield a FRAGMENT instead of an error — and nothing else validates it on the
   # round-stats or gate paths, so a wrong roster silently changes the admitted count and the
