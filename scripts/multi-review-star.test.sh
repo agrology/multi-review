@@ -1922,6 +1922,19 @@ bash "$SUT" blind-check "$BC_FOOT" >/dev/null 2>&1
 [[ $? -eq 1 ]] && ok "blind-check: a carried-over findings footer fails" \
   || bad "a copy carrying the findings footer passed as blind"
 
+# ...but PROSE that merely names the footer is not a footer (issue #68). A footer is a whole line:
+# it opens at column 1 and closes on the same line. A sentence mentioning it in inline backticks is
+# live text, so strip_fences cannot help — only anchoring can. Hit live seeding PR #67's copy, whose
+# description explains the guard that reads these footers; the instructed remedy ("re-seed it") is a
+# no-op there, so the only way forward was to override the guard by hand.
+BC_PROSE="$(mkcc bc-prose.md '# Doc' '<!-- multi-review: awaiting-reviewer · round 1/5 -->' \
+  '<!-- multi-review-mode: star -->' '' '## PR description' \
+  'It counts the doc'"'"'s own `<!-- star-findings: -->` footers on the stripped section.' \
+  'Trailing prose after the mention -->' '' '## Review')"
+bash "$SUT" blind-check "$BC_PROSE" >/dev/null 2>&1 \
+  && ok "blind-check: prose naming the footer is not a carried-over footer (issue #68)" \
+  || bad "blind-check false-failed on a PROSE mention of the star-findings footer"
+
 # the reason must NAME what it found, since it is what the primary acts on
 msg="$(bash "$SUT" blind-check "$BC_F" 2>&1 >/dev/null)"
 [[ "$msg" == *"finding:codex-rd1-r1"* ]] && ok "blind-check: names the offending line" \
