@@ -939,6 +939,28 @@ cmd_merge() {
   if [[ -f "${doc}.manifest" ]]; then
     _structural_consistency "$doc" \
       || die "merge: refusing to merge — '$doc' is inconsistent with its manifest (run: $(basename "$0") verify '$doc')" 1
+  else
+    # No manifest is normal for round 1 — and was a corrupting trap for any later round (#57).
+    # The terminal gate used to delete <doc>.manifest, so resuming a converged review to re-review
+    # a follow-up push skipped this pre-check entirely: merge appended the round, rebuilt the
+    # manifest from THAT ROUND ALONE, and only then failed the post-merge self-check — leaving the
+    # doc mutated and disagreeing with its manifest, the exact state that check exists to prevent.
+    # The doc's own footers say whether a round was ever merged here, so decide BEFORE the first
+    # write (the same rule the --quarantined validation above follows).
+    #
+    # Footers counted on the FENCE-STRIPPED review section: a doc about this protocol legitimately
+    # shows a footer inside a code block (this repo's own docs do), and that must not make round 1
+    # unmergeable. An UNTERMINATED fence hides every line after it from strip_fences, which would
+    # hide real footers and reduce this guard to a no-op — so refuse rather than guess, the same
+    # call _table makes for the same reason.
+    local ufl rstart nfoot
+    ufl="$(review_section "$doc" | unterminated_fence_line /dev/stdin)"
+    if [[ -n "$ufl" ]]; then
+      rstart="$(review_section_start "$doc")"
+      die "merge: unterminated code fence in ## Review (file line $((rstart + ufl))): cannot tell whether a round was already merged here — close the fence" 1
+    fi
+    nfoot="$(review_section "$doc" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->$')"
+    [[ "$nfoot" -eq 0 ]] || die "merge: '${doc}' carries ${nfoot} already-merged round(s) but '${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run" 1
   fi
 
   local block="" copy provider

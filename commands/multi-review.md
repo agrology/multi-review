@@ -267,10 +267,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      **Choosing `--fresh` also means clearing the PREVIOUS review's protocol artifacts** —
      `<scratch>.manifest`, `<scratch>.baseline`, and every `<scratch>.<id>` copy. `ingest` resets
      its own sidecar (`<scratch>.records`), but the manifest belongs to this protocol layer, and a
-     manifest left behind from an abandoned review **blocks every future merge on that path**:
+     manifest left behind from an earlier review **blocks every future merge on that path**:
      `merge` refuses to build on a doc inconsistent with its manifest, so the new review cannot
      proceed until the stale file is removed by hand. Observed live while reviewing PR #40, whose
-     earlier review had been abandoned without releasing its files at the gate.
+     earlier review had been abandoned without releasing its files at the gate. This applies to
+     **completed** reviews too, not just abandoned ones — the terminal gate deliberately keeps the
+     manifest (issue #57), so `--fresh` is the step that clears it.
 
      Then read both rounds' records and build each copy:
 
@@ -422,8 +424,9 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    <id>:<reason> ...] "<doc>" <admitted copies...>`.
 8. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
-   `<doc>.<id>.seed` for every provider, `<doc>.manifest`, `<doc>.baseline`, and every
-   `<doc>.baseline.rd<N>` — the terminal gate releases them.
+   `<doc>.<id>.seed` for every provider, `<doc>.baseline`, and every `<doc>.baseline.rd<N>` — the
+   terminal gate releases them. `<doc>.manifest` is retained too, but the gate does **not** release
+   it (see "Terminal gate").
 
 #### Primary turn (on `awaiting-primary`)
 
@@ -530,9 +533,18 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
 
   This is the **human gate**: never implement, commit, or open/merge a PR from this command. Only
   once the engineer confirms the review is done, remove the retained working files
-  (`<doc>.<id>` and `<doc>.<id>.seed` for every provider, `<doc>.manifest`, `<doc>.baseline`,
-  and every `<doc>.baseline.rd<N>`) — never before the gate,
+  (`<doc>.<id>` and `<doc>.<id>.seed` for every provider, `<doc>.baseline`, and every
+  `<doc>.baseline.rd<N>`) — never before the gate,
   since the gate is presented FROM them (`check-converged`/`gate-summary` read the manifest).
+
+  **Keep `<doc>.manifest`.** It is the one retained file that is not regenerable, and it is tiny
+  next to the copies/seeds/baselines this step releases — so releasing them without it gets the
+  cleanup benefit at no risk. Deleting it broke the most natural follow-up workflow (issue #57):
+  when the author pushes a fix and you resume this same scratch for round N+1 — rather than
+  `ingest --fresh`, which would discard round 1's findings and your responses, the very things you
+  need in order to judge the follow-up — `merge` has nothing to verify the earlier rounds against.
+  It now refuses that merge up front rather than corrupting the doc, so a deleted manifest costs
+  the review, not just the file.
 
 ## Guardrails
 
@@ -547,7 +559,10 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
 - **Doc↔manifest consistency is self-checked.** `merge` verifies the doc against its `.manifest`
   both before merging (it refuses to build on an already-inconsistent doc) and after writing —
   so a dropped/duplicated round, a finding split from its `> —` lines, or a mangled footer fails
-  loud at the handoff instead of accumulating silently to the gate. If a `merge` aborts with a
+  loud at the handoff instead of accumulating silently to the gate. A **missing** manifest is
+  checked too: if the doc carries `<!-- star-findings: -->` footers from an earlier round but the
+  manifest is gone, `merge` refuses before touching the doc rather than rebuilding a manifest that
+  covers only the current round (issue #57). If a `merge` aborts with a
   consistency error, **stop and diagnose** with `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh
   verify "<doc>"` — do not re-merge until it passes. After appending your primary
   `[agree]`/`[dispute]` responses each round, you may run `verify` yourself to catch an

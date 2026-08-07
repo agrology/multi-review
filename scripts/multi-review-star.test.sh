@@ -390,6 +390,59 @@ grep -q '^<!-- star-quarantined: gemini · identity-fail · round 1 -->$' "$BASE
 # in-doc human-readable mirror
 grep -q '<!-- star-findings: .*codex-rd1-r1=' "$BASE2" && ok "merge: in-doc manifest mirror" || bad "merge mirror"
 
+# --- merge: prior rounds merged but the manifest is gone (issue #57) --------------------------
+# The terminal gate used to delete <doc>.manifest, so resuming a converged review for a later
+# round hit this: merge saw no manifest, SKIPPED its pre-check, appended round N, rebuilt the
+# manifest from that round alone, and only then failed the post-merge self-check — leaving the
+# doc mutated and disagreeing with its manifest, the exact state the self-check exists to
+# prevent. The doc's own footers prove prior rounds were merged, so refuse BEFORE the first
+# write (same rule the --quarantined validation follows).
+BASE57="${WORK}/m57.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASE57"
+mkcopy "${BASE57}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+bash "$SUT" merge --round 1 "$BASE57" "${BASE57}.codex" >/dev/null 2>&1
+rm -f "${BASE57}.manifest"                      # what the gate cleanup did
+before="$(shasum "$BASE57" | cut -d' ' -f1)"
+mkcopy "${BASE57}.codex" '> [finding:r2|low] beta' '> — via gpt-5.5' '> — risk: rb'
+out="$(bash "$SUT" merge --round 2 "$BASE57" "${BASE57}.codex" 2>&1)"; rc=$?
+after="$(shasum "$BASE57" | cut -d' ' -f1)"
+[[ $rc -ne 0 ]] && ok "merge: missing manifest over merged rounds -> nonzero exit" || bad "merge missing-manifest exited 0"
+[[ "$before" == "$after" ]] && ok "merge: missing manifest -> doc left UNTOUCHED (no partial merge)" \
+  || bad "merge missing-manifest mutated the doc (partial merge)"
+[[ ! -f "${BASE57}.manifest" ]] && ok "merge: missing manifest -> no round-only manifest written" \
+  || bad "merge missing-manifest wrote a manifest covering only round 2"
+case "$out" in
+  *manifest*) ok "merge: missing-manifest message names the manifest" ;;
+  *) bad "merge missing-manifest message unhelpful: $out" ;;
+esac
+
+# The guard must key off LIVE footers only: a doc that documents this protocol legitimately shows
+# a star-findings footer inside a code block, and that must not make round 1 unmergeable.
+BASE57F="${WORK}/m57-fenced.md"
+{ echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo;
+  echo '```'; echo '<!-- star-findings: codex-rd1-r1=deadbeef; quarantined:  -->'; echo '```'; echo; } > "$BASE57F"
+mkcopy "${BASE57F}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+bash "$SUT" merge --round 1 "$BASE57F" "${BASE57F}.codex" >/dev/null 2>&1 \
+  && ok "merge: fenced star-findings example does not trip the missing-manifest guard" \
+  || bad "merge false-failed on a FENCED star-findings footer"
+
+# ...and an UNTERMINATED fence must not become the guard's bypass: strip_fences drops every line
+# after it, so a real footer hidden behind one would read as "never merged" and let the corrupting
+# merge through. Refuse instead of guessing (the call _table makes for the same reason).
+BASE57U="${WORK}/m57-unterm.md"
+{ echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo;
+  echo '```'; echo '<!-- star-findings: codex-rd1-r1=deadbeef; quarantined:  -->'; echo; } > "$BASE57U"
+mkcopy "${BASE57U}.codex" '> [finding:r2|low] beta' '> — via gpt-5.5' '> — risk: rb'
+before="$(shasum "$BASE57U" | cut -d' ' -f1)"
+out="$(bash "$SUT" merge --round 2 "$BASE57U" "${BASE57U}.codex" 2>&1)"; rc=$?
+after="$(shasum "$BASE57U" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$before" == "$after" ]] \
+  && ok "merge: unterminated fence + no manifest -> refuse, doc untouched" \
+  || bad "merge unterminated-fence bypass (rc=$rc, mutated=$([[ "$before" == "$after" ]] && echo no || echo yes))"
+case "$out" in
+  *"unterminated code fence"*) ok "merge: unterminated-fence message names the cause" ;;
+  *) bad "merge unterminated-fence message unhelpful: $out" ;;
+esac
+
 # --- check-converged ---
 mkconv() {  # -> a merged doc with primary responses + converged marker + manifest
   local base="${WORK}/$1"
