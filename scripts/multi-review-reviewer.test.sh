@@ -1174,6 +1174,62 @@ out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/wslink" PATH="${CD_}/bin:$PATH" \
   && ok "check --doc: a symlinked sandbox root does not produce a false hint" \
   || bad "a symlinked root produced a false out-of-root hint (issue #60, codex-rd1-r1)"
 
+# --- --session-root: the basis the DISPATCHED reviewer actually inherits (issue #66) ----------
+# #60 assumed the companion's workspaceRoot does not follow a shell `cd`. It does: queried from the
+# repo root it returns the repo root, from /tmp it returns /private/tmp — it reports wherever the
+# HELPER is standing. So the hint went silent in exactly the directory the egress guard forces the
+# primary into (the repo owning the doc), while the dispatched subagent inherits the SESSION cwd and
+# is rooted elsewhere. A cwd-sensitive query cannot learn the session root, so the skill passes it.
+
+# (S1) THE TRAP. The companion reports the doc's own repo — what it returns when the helper runs
+# there — so today's basis says "contained" and stays silent. --session-root names the root the
+# subagent will really get, which does NOT contain the doc, so the hint must fire.
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/elsewhere" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/elsewhere/docs/d.md" \
+  --session-root "${CD_}/ws" 2>&1 >/dev/null)"; rc=$?
+[[ "$out" == *"hint (codex)"* && "$out" == *"outside"* ]] \
+  && ok "check --session-root: hints when the SESSION root cannot reach the doc (issue #66)" \
+  || bad "check --session-root stayed silent on the #66 trap (out='$out' rc=$rc)"
+[[ $rc -eq 0 ]] && ok "check --session-root: the hint stays advisory" \
+  || bad "check --session-root exited $rc — the hint must not gate dispatch"
+
+# (S2) --session-root is AUTHORITATIVE, not merely additional: a doc inside it stays silent even
+# when the companion reports a root that excludes the doc. Without this the flag could only ever
+# add false positives to the very path #60 already covers.
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/elsewhere" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/ws/docs/d.md" \
+  --session-root "${CD_}/ws" 2>&1 >/dev/null)"
+[[ "$out" != *"outside"* ]] \
+  && ok "check --session-root: overrides the companion's cwd-derived root" \
+  || bad "check --session-root did not override the companion root (out='$out')"
+
+# (S3) the hint must name the SESSION root, since that is the value the primary can act on.
+# Compared in CANONICAL form: the hint canonicalises both sides (so a symlinked root does not read
+# as a mismatch), and on macOS the fixture's own /var/folders path resolves to /private/var/...
+CD_WS_C="$(cd "${CD_}/ws" && pwd -P)"
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/elsewhere" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/elsewhere/docs/d.md" \
+  --session-root "${CD_}/ws" 2>&1 >/dev/null)"
+[[ "$out" == *"${CD_WS_C}"* ]] \
+  && ok "check --session-root: the hint names the session root" \
+  || bad "the hint did not name the session root (want '${CD_WS_C}', out='$out')"
+
+# (S4) an UNRESOLVABLE --session-root is silence, not a hint on everything — same rule the
+# companion path already follows for an unknown root. Failing open here beats warning on every doc.
+out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/elsewhere" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/elsewhere/docs/d.md" \
+  --session-root "${CD_}/no-such-session-root" 2>&1 >/dev/null)"; rc=$?
+[[ "$out" != *"outside"* && $rc -eq 0 ]] \
+  && ok "check --session-root: an unresolvable session root stays silent" \
+  || bad "check hinted on an unresolvable --session-root (out='$out' rc=$rc)"
+
+# (S5) a flag with no value is a usage error, never a silent fallback to the old basis — the same
+# explicit-arity rule --doc and --repo follow.
+HOME="${CD_}/home" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/ws/docs/d.md" --session-root >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "check --session-root: a missing value exits 2" \
+  || bad "check --session-root with no value did not exit 2"
+
 # (8) gemini uses repo_root(), NOT the codex companion: a doc outside the cwd repo is hinted
 GD="${CD_}/grepo"; mkdir -p "$GD"; ( cd "$GD" && git init -q . )
 out="$(cd "$GD" && HOME="${CD_}/home" FAKE_WS="${CD_}/ws" GEMINI_CLI_TRUST_WORKSPACE=true \
