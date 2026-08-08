@@ -800,7 +800,14 @@ cmd_blind_check() { # <copy> -> 0 blind, 1 carries a prior round (offenders on s
   # responses/observations. Any one of them means this copy is not blind.
   records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|no-findings)[]:]' || true)"
   # The footer mirrors the merged manifest, so its presence alone proves the copy was merged into.
-  footer="$(printf '%s\n' "$live" | grep '<!-- star-findings:' || true)"
+  # ANCHORED to the footer's real shape — a whole line, opening at column 1 and closing on the same
+  # line — the way merge and _structural_consistency already count it. An unanchored substring also
+  # matched PROSE naming the footer in inline backticks, which strip_fences cannot help with because
+  # it is live text (#68). That false positive lands on exactly the reviews most likely to run this:
+  # a PR whose description documents the protocol. It is the worst failure for an independence
+  # guard, because the instructed remedy — re-seed from the baseline — reproduces the same bytes and
+  # fails again, leaving overriding the guard by hand as the only way forward.
+  footer="$(printf '%s\n' "$live" | grep -E '^<!-- star-findings: .*-->$' || true)"
 
   if [[ -n "$records" || -n "$footer" ]]; then
     echo "multi-review-star: NOT BLIND — ${copy} carries a previous round; a secondary handed this would see what others already said:" >&2
