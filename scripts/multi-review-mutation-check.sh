@@ -724,6 +724,15 @@ mutations() {
     '        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then' \
     '        if [[ -n "$cws_c" ]]; then'
 
+  # #66. Ignoring --session-root sends the basis back to the companion's report, which follows the
+  # shell — so the containment test compares the doc's repo against itself in exactly the cwd the
+  # egress guard forces the primary into, and the hint goes silent where it is needed. Every #60
+  # assertion still passes with this reverted, so only the #66 trap distinguishes them.
+  mutate 'reviewer/check-doc-session-root-basis' 'scripts/multi-review-reviewer.sh' replace \
+    'check --session-root stayed silent on the #66 trap' 'multi-review-reviewer.test.sh' \
+    '        if [[ -n "$session_root" ]]; then cws="$session_root"; else cws="$(codex_workspace_root)"; fi' \
+    '        cws="$(codex_workspace_root)"'
+
   # Dropping the non-empty root guard makes an UNKNOWN root hint on everything — every machine
   # without the codex plugin would print a warning at every arm.
   mutate 'reviewer/check-doc-unknown-root-silent' 'scripts/multi-review-reviewer.sh' replace \

@@ -194,7 +194,8 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     and `unavailable in this repo — dropping` (registered but not set up). So a self-healed, quietly
     narrowed combo is visible, mirroring a dispatch quarantine.
   - **Relay preflight hints.** For each resolved secondary, run
-    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh check --reviewer <id> --doc "<doc>"` and surface any
+    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh check --reviewer <id> --doc "<doc>"
+    --session-root "$(git rev-parse --show-toplevel)"` and surface any
     `hint (<id>): …` line it prints on stderr in the armed message (e.g. "gemini: workspace may be
     untrusted — export GEMINI_CLI_TRUST_WORKSPACE=true"). This is **advisory** — `check` exits 0 and
     the secondary is still dispatched; the hint just puts the likely fix in front of the engineer
@@ -205,6 +206,15 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     quarantine reason that describes the symptom. It is still advisory: dispatch proceeds, and you
     decide whether to move the review. `--doc` is what enables it, which is why the standalone
     `--check-reviewers` doctor (no doc in hand) does not report it.
+
+    **`--session-root` must be your own invocation root — the same value you pass to `ensure-skill
+    --repo` — and you must read it BEFORE changing directory.** It is the cwd a dispatched subagent
+    inherits, and therefore the root the reviewer is actually bound to. Without it the check falls
+    back to asking the codex companion, whose answer follows the shell: run from the repo owning the
+    doc and it reports that repo, so the containment test compares a directory against itself and
+    the hint falls silent exactly where it is needed (issue #66). Passing the session root is what
+    makes a silent check mean "the reviewer can reach this copy" rather than "you happen to be
+    standing next to it".
   - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)"
     — and append any dropped-reviewer relay, e.g. "`gemini` dropped: unavailable in this repo".
 
