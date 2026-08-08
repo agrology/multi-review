@@ -731,6 +731,17 @@ mutations() {
     '        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then' \
     '        if ! path_contains "$cws_c" "$ddir"; then'
 
+  # Issue #52. argv_has exists ONLY to keep the argv assertions off a pipe: `printf | grep -q`
+  # lets grep exit at the match while printf still holds the ~15 KB prompt, so printf takes SIGPIPE
+  # and pipefail reports a successful match as 141. That produced five days of "unidentified macos
+  # flake". Reverting the body to the pipe idiom must fail the payload-size assertion — the three
+  # real argv assertions do NOT catch it reliably, since at 15 KB it is a coin flip; the 100 KB
+  # fixture is what makes it deterministic.
+  mutate 'reviewer/argv-has-no-pipe' 'scripts/multi-review-reviewer.test.sh' replace \
+    'argv membership failed with a large trailing element' 'multi-review-reviewer.test.sh' \
+    '  for a in "$@"; do [[ "$a" == "$want" ]] && return 0; done' \
+    '  printf "%s\\n" "$@" | grep -qx -- "$want" && return 0'
+
   # The gemini arm must judge against the CWD repo, not codex's sandbox — swapping the basis
   # makes it hint on a doc that is legitimately inside its own workspace.
   mutate 'reviewer/check-doc-gemini-basis' 'scripts/multi-review-reviewer.sh' replace \
