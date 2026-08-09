@@ -224,10 +224,18 @@ mutate() {
   cp "$tmp" "$f"; rm -f "$tmp"
 
   # A mutation must not make the file unparseable — that would fail the gate for the wrong reason.
-  if ! bash -n "$f" 2>/dev/null; then
-    echo "  ERROR [$id]: the mutated file is not valid bash — the gate would fail for the wrong reason"
-    cp "${BK}/${safe}.bak" "$f"; fails=$((fails + 1)); return 0
-  fi
+  # SHELL TARGETS ONLY. Guards also live in documentation the command is driven from, and a doc
+  # regression can reintroduce a bug with every script-level test still green — so those need
+  # entries too. Running `bash -n` over markdown rejected such an entry as "not valid bash", which
+  # is the check firing for the wrong reason itself: the parse test is about not breaking the file
+  # it mutates, and markdown was never bash to break.
+  case "$rel" in
+    *.sh|*.bash|.githooks/*)
+      if ! bash -n "$f" 2>/dev/null; then
+        echo "  ERROR [$id]: the mutated file is not valid bash — the gate would fail for the wrong reason"
+        cp "${BK}/${safe}.bak" "$f"; fails=$((fails + 1)); return 0
+      fi ;;
+  esac
 
   GATE_WITNESS=""; GATE_RED_OUT=""; GATE_ANY_RED=0; GATE_WRONG_SUITE=""
   local caught=1
@@ -774,8 +782,14 @@ mutations() {
   # forces that to be the doc's own repo, collapsing the basis onto the doc and silencing the hint.
   # That reintroduces #66 through the documentation alone, with every script-level test still green,
   # which is why the guard lives on the doc rather than on the code.
+  #
+  # The expect names the PLACEHOLDER branch, not the substitution branch: swapping the runnable line
+  # for the inline form removes the placeholder too, so that assertion is the one that fires. The
+  # substitution clause beside it is defence in depth for a doc that grew a second --session-root
+  # occurrence — deliberately not given its own entry, since manufacturing that shape would test the
+  # fixture rather than the property.
   mutate 'command/session-root-placeholder' 'commands/multi-review.md' replace \
-    'multi-review.md inlines a command substitution into --session-root' 'multi-review-packaging.test.sh' \
+    'does not pass --session-root as the captured <session-root> placeholder' 'multi-review-packaging.test.sh' \
     '    --session-root "<session-root>"` and surface any' \
     '    --session-root "$(git rev-parse --show-toplevel)"` and surface any'
 

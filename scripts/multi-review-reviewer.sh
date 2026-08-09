@@ -243,10 +243,12 @@ cmd_check() { # --reviewer <id> [--doc <path>] [--session-root <dir>] -> 0 dispa
           hint codex "untracked files at ${skill_dir} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning"
         fi
       fi
-      # Issue #60. codex is bound to ONE root for the session and does not follow a shell `cd`,
-      # so the copy's location is compared against the companion's workspaceRoot — not against
-      # `git rev-parse --show-toplevel`, which moves with the shell and therefore agrees with
-      # itself in exactly the cwd-drift case this exists to catch.
+      # Issue #60 established WHY this check exists: a copy outside the reviewer's sandbox root
+      # otherwise surfaces only as a wait-bound timeout. Its stated mechanism — that codex is bound
+      # to one root per session and the companion's report "does not follow a shell `cd`" — was
+      # wrong, and is corrected in the BASIS note below (#66). Left as one sentence rather than
+      # restated here: two copies of this rationale in one function is what let the refuted version
+      # survive the first correction (fable-rd2-r1).
       #
       # An unknown or unresolvable root means SILENCE, not a hint: without the guard below an
       # empty root makes the containment test fail for every doc, so every arm-time check on a

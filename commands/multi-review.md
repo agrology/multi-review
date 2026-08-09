@@ -228,6 +228,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     An **empty** value is rejected with exit 2 rather than ignored — an ignored empty value would
     silently restore the wrong basis, and a failed capture is the one place an empty value comes
     from. That is why the capture step above tells you to stop instead of passing it on.
+
+    **Scope: only the codex arm consumes `--session-root` today.** The flag is accepted on every
+    `check` invocation so the command line stays uniform, but the gemini arm still judges against
+    its own cwd repo. So a silent `check` for gemini means "nothing else looked wrong", not "the
+    reviewer can reach this copy" — gemini remains exposed to the same check-cwd-vs-dispatch-cwd
+    drift this fixed for codex (fable-rd2-r2, tracked under #66).
   - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)"
     — and append any dropped-reviewer relay, e.g. "`gemini` dropped: unavailable in this repo".
 

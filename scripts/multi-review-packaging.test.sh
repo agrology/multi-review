@@ -100,9 +100,26 @@ if [[ -f "$DR" ]]; then
   # is precisely where the basis collapses back onto the doc's own root and the hint goes silent.
   # The prose says to capture the value BEFORE changing directory; an inline substitution in the
   # runnable line contradicts it, and an agent copies the runnable line.
-  grep -qF -- '--session-root "$(git rev-parse' "$DR" \
-    && bad "multi-review.md inlines a command substitution into --session-root (re-resolves per invocation; fable-rd1-r1)" \
-    || ok "--session-root is a captured placeholder, not an inline substitution (fable-rd1-r1)"
+  # Asserted POSITIVELY (fable-rd2-r3). Banning the one literal `--session-root "$(git rev-parse`
+  # let any other spelling through — `$(pwd)`, the same command unquoted — each reintroducing the
+  # identical per-invocation re-resolution with the guard still green. So: require the placeholder
+  # verbatim, and reject a substitution in the flag's VALUE position (optional quote, then `$(`).
+  #
+  # Anchored to the value position, NOT "a substitution anywhere on the line". The first attempt
+  # used `--session-root[^`]*(\$\(|`)`, which matched the CLOSING backtick of a markdown code span
+  # and failed two perfectly correct lines — including the placeholder line it was meant to bless.
+  # The backtick-substitution form is deliberately not covered: it cannot be told apart from a code
+  # span here, and it is not a spelling anyone reaches for.
+  sr_lines="$(grep -n -- '--session-root' "$DR" || true)"
+  if [[ -z "$sr_lines" ]]; then
+    bad "multi-review.md no longer documents --session-root at all (the #66 contract vanished)"
+  elif ! grep -qF -- '--session-root "<session-root>"' "$DR"; then
+    bad "multi-review.md does not pass --session-root as the captured <session-root> placeholder (fable-rd1-r1)"
+  elif printf '%s\n' "$sr_lines" | grep -qE -- '--session-root[[:space:]]*"?\$\('; then
+    bad "multi-review.md inlines a command substitution into --session-root — it re-resolves per invocation (fable-rd1-r1/rd2-r3)"
+  else
+    ok "--session-root is a captured placeholder, and no occurrence inlines a substitution (fable-rd2-r3)"
+  fi
   # Guards the PROPERTY (star never hands the loop back to a human mid-review), not the word.
   # A bare 'degrad' ban was a proxy for it, and it became wrong once diff-scoping landed: a
   # round that cannot be scoped degrades to the FULL DOCUMENT and keeps running autonomously,
