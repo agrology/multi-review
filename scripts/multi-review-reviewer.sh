@@ -208,6 +208,13 @@ cmd_check() { # --reviewer <id> [--doc <path>] [--session-root <dir>] -> 0 dispa
       doc="${args[i+1]}"
     elif [[ "${args[i]}" == "--session-root" ]]; then
       [[ $((i+1)) -lt ${#args[@]} ]] || die "--session-root requires a value" 2
+      # An EXPLICITLY EMPTY value is a usage error too, not "not supplied" (fable-rd1-r3). Letting
+      # "" fall through sends the basis silently back to the companion — the exact behaviour this
+      # flag replaces — and "" is precisely what a failed capture produces, since `git rev-parse
+      # --show-toplevel` prints nothing outside a repo. Failing loud keeps the one plausible
+      # resolution failure from degrading into the pre-fix silence.
+      [[ -n "${args[i+1]}" ]] \
+        || die "--session-root was given an empty value — capture it before changing directory, and stop if it is empty (a non-repo cwd); an empty root would silently restore the wrong basis" 2
       session_root="${args[i+1]}"
     fi
   done
@@ -711,9 +718,19 @@ path_contains() { # <parent> <child> -> 0 contained, 1 outside or unresolvable
   case "${c}/" in "${p%/}/"*) return 0 ;; *) return 1 ;; esac
 }
 
-# The codex sandbox root for THIS session, or empty. codex is bound to one root per session and
-# does not follow a shell `cd`, so this — not `git rev-parse --show-toplevel` — is the pair to
-# compare a working copy against (issue #60).
+# The codex sandbox root as reported FROM THIS PROCESS'S cwd, or empty.
+#
+# CORRECTION (issue #66) — this comment previously claimed the report "does not follow a shell
+# `cd`", and that `git rev-parse --show-toplevel` was therefore the WRONG pair to compare against.
+# Both halves are false, and the claim was load-bearing enough to justify reverting the fix, so it
+# is corrected rather than deleted. Measured: from a repo root the query returns that repo, from a
+# repo SUBDIRECTORY it returns the repo top level, and from a non-repo cwd (/tmp) it returns the
+# raw cwd (/private/tmp). In other words it tracks the caller — which makes it identical to
+# `git rev-parse --show-toplevel` inside a repo, and NOT a session-fixed value.
+#
+# So this is a fallback basis, not the authority: cmd_check prefers an explicit --session-root,
+# because a cwd-following query cannot describe the root a DISPATCHED subagent will inherit. It
+# stays as the fallback only to keep a bare manual `check` behaving as it always has.
 #
 # Empty on EVERY failure path: no companion installed, no node, no jq, a non-zero run, or an
 # absent field. Empty means "unknown", and cmd_check stays silent on unknown rather than hinting
@@ -721,7 +738,7 @@ path_contains() { # <parent> <child> -> 0 contained, 1 outside or unresolvable
 #
 # Any single glob match will do. Deliberately NOT "the newest": a lexical sort of version dirs is
 # wrong across a component rollover (1.9.0 sorts above 1.10.0), and the choice does not matter —
-# workspaceRoot is a property of the session, not of the companion build.
+# the reported root depends on the caller's cwd, not on the companion build.
 codex_workspace_root() { # -> path, or empty
   local comp="" g
   for g in "${HOME:-}"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do

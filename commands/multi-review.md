@@ -193,9 +193,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     each a stable `pref reviewer … dropping` line: `unknown — dropping` (stale, registry-removed)
     and `unavailable in this repo — dropping` (registered but not set up). So a self-healed, quietly
     narrowed combo is visible, mirroring a dispatch quarantine.
+  - **Capture the session root FIRST**, in your original invocation directory, before this command
+    changes directory anywhere: run `git rev-parse --show-toplevel` once and keep the result as
+    `<session-root>`. If it is empty (your cwd is not a git repo), say so and STOP rather than
+    passing an empty value — see below for why.
   - **Relay preflight hints.** For each resolved secondary, run
     `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh check --reviewer <id> --doc "<doc>"
-    --session-root "$(git rev-parse --show-toplevel)"` and surface any
+    --session-root "<session-root>"` and surface any
     `hint (<id>): …` line it prints on stderr in the armed message (e.g. "gemini: workspace may be
     untrusted — export GEMINI_CLI_TRUST_WORKSPACE=true"). This is **advisory** — `check` exits 0 and
     the secondary is still dispatched; the hint just puts the likely fix in front of the engineer
@@ -207,14 +211,23 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     decide whether to move the review. `--doc` is what enables it, which is why the standalone
     `--check-reviewers` doctor (no doc in hand) does not report it.
 
-    **`--session-root` must be your own invocation root — the same value you pass to `ensure-skill
-    --repo` — and you must read it BEFORE changing directory.** It is the cwd a dispatched subagent
-    inherits, and therefore the root the reviewer is actually bound to. Without it the check falls
-    back to asking the codex companion, whose answer follows the shell: run from the repo owning the
-    doc and it reports that repo, so the containment test compares a directory against itself and
-    the hint falls silent exactly where it is needed (issue #66). Passing the session root is what
-    makes a silent check mean "the reviewer can reach this copy" rather than "you happen to be
-    standing next to it".
+    **`<session-root>` is the value you captured above — the same one you pass to `ensure-skill
+    --repo`. Substitute the captured value; do NOT inline `$(git rev-parse --show-toplevel)` into
+    the `check` line.** A command substitution there re-resolves in whatever directory you are
+    standing in at that moment, and the egress guard pushes you into the repo that owns the doc —
+    which is exactly where it returns that repo, the basis collapses onto the doc's own root, and
+    the hint goes silent. That is the bug this flag exists to fix, reintroduced by the way the
+    command is written.
+
+    Why it must be the session root at all: it is the cwd a dispatched subagent inherits, and
+    therefore the root the reviewer is actually bound to. Without the flag the check falls back to
+    asking the codex companion, whose answer follows the shell in the same way (issue #66). Passing
+    the captured session root is what makes a silent check mean "the reviewer can reach this copy"
+    rather than "you happen to be standing next to it".
+
+    An **empty** value is rejected with exit 2 rather than ignored — an ignored empty value would
+    silently restore the wrong basis, and a failed capture is the one place an empty value comes
+    from. That is why the capture step above tells you to stop instead of passing it on.
   - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)"
     — and append any dropped-reviewer relay, e.g. "`gemini` dropped: unavailable in this repo".
 

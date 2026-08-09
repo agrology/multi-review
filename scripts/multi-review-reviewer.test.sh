@@ -1230,6 +1230,16 @@ HOME="${CD_}/home" PATH="${CD_}/bin:$PATH" \
 [[ $? -eq 2 ]] && ok "check --session-root: a missing value exits 2" \
   || bad "check --session-root with no value did not exit 2"
 
+# (S6) an EXPLICITLY EMPTY value must fail the same way (fable-rd1-r3). Treating "" as "not
+# supplied" sends the basis silently back to the companion — the very thing this flag exists to
+# replace — and the caller's capture is exactly where an empty value comes from: `git rev-parse
+# --show-toplevel` prints nothing when the cwd is not a repo. So the one plausible resolution
+# failure would degrade to the pre-fix silence, which is the failure mode with no signal.
+HOME="${CD_}/home" PATH="${CD_}/bin:$PATH" \
+  bash "$SUT" check --reviewer codex --doc "${CD_}/ws/docs/d.md" --session-root "" >/dev/null 2>&1
+[[ $? -eq 2 ]] && ok "check --session-root: an EMPTY value exits 2, not a silent fallback (fable-rd1-r3)" \
+  || bad "check --session-root '' silently fell back to the companion basis"
+
 # (8) gemini uses repo_root(), NOT the codex companion: a doc outside the cwd repo is hinted
 GD="${CD_}/grepo"; mkdir -p "$GD"; ( cd "$GD" && git init -q . )
 out="$(cd "$GD" && HOME="${CD_}/home" FAKE_WS="${CD_}/ws" GEMINI_CLI_TRUST_WORKSPACE=true \

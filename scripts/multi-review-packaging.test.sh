@@ -94,6 +94,15 @@ if [[ -f "$DR" ]]; then
     || bad "multi-review.md does not resolve-set --fable-floor"
   grep -qi 'attended' "$DR" && bad "multi-review.md still mentions the removed --attended route" \
     || ok "no --attended route (star is autonomous-only)"
+  # --session-root must be a PLACEHOLDER, never an inline command substitution (fable-rd1-r1).
+  # `--session-root "$(git rev-parse --show-toplevel)"` resolves at check time in whatever cwd the
+  # primary is standing in — and the egress guard forces that to be the repo owning the doc, which
+  # is precisely where the basis collapses back onto the doc's own root and the hint goes silent.
+  # The prose says to capture the value BEFORE changing directory; an inline substitution in the
+  # runnable line contradicts it, and an agent copies the runnable line.
+  grep -qF -- '--session-root "$(git rev-parse' "$DR" \
+    && bad "multi-review.md inlines a command substitution into --session-root (re-resolves per invocation; fable-rd1-r1)" \
+    || ok "--session-root is a captured placeholder, not an inline substitution (fable-rd1-r1)"
   # Guards the PROPERTY (star never hands the loop back to a human mid-review), not the word.
   # A bare 'degrad' ban was a proxy for it, and it became wrong once diff-scoping landed: a
   # round that cannot be scoped degrades to the FULL DOCUMENT and keeps running autonomously,

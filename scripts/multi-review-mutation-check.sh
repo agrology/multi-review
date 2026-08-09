@@ -760,6 +760,25 @@ mutations() {
     '  for a in "$@"; do [[ "$a" == "$want" ]] && return 0; done' \
     '  printf "%s\\n" "$@" | grep -qx -- "$want" && return 0'
 
+  # fable-rd1-r3. Accepting an EMPTY --session-root sends the basis silently back to the companion
+  # — the behaviour the flag replaces — and "" is exactly what a failed capture yields, since
+  # `git rev-parse --show-toplevel` prints nothing outside a repo. The missing-value guard (S5) does
+  # NOT cover this: "" is present, just empty, so only the S6 fixture distinguishes them.
+  mutate 'reviewer/session-root-empty-rejected' 'scripts/multi-review-reviewer.sh' replace \
+    "check --session-root '' silently fell back to the companion basis" 'multi-review-reviewer.test.sh' \
+    '      [[ -n "${args[i+1]}" ]] \' \
+    '      true \'
+
+  # fable-rd1-r1. The runnable `check` line must carry a PLACEHOLDER. Restoring the inline command
+  # substitution re-resolves the root in whatever cwd the primary occupies — and the egress guard
+  # forces that to be the doc's own repo, collapsing the basis onto the doc and silencing the hint.
+  # That reintroduces #66 through the documentation alone, with every script-level test still green,
+  # which is why the guard lives on the doc rather than on the code.
+  mutate 'command/session-root-placeholder' 'commands/multi-review.md' replace \
+    'multi-review.md inlines a command substitution into --session-root' 'multi-review-packaging.test.sh' \
+    '    --session-root "<session-root>"` and surface any' \
+    '    --session-root "$(git rev-parse --show-toplevel)"` and surface any'
+
   # The gemini arm must judge against the CWD repo, not codex's sandbox — swapping the basis
   # makes it hint on a doc that is legitimately inside its own workspace.
   mutate 'reviewer/check-doc-gemini-basis' 'scripts/multi-review-reviewer.sh' replace \
