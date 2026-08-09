@@ -198,14 +198,24 @@ gemini_has_key() { # <repo-root> -> 0 if a key source exists (never reads the va
   return 1
 }
 
-cmd_check() { # --reviewer <id> [--doc <path>] -> 0 dispatchable, 1 with reason
-  local row id doc="" i args=("$@")
+cmd_check() { # --reviewer <id> [--doc <path>] [--session-root <dir>] -> 0 dispatchable, 1 with reason
+  local row id doc="" session_root="" i args=("$@")
   # Same explicit-arity loop as cmd_ensure_skill's --repo: `shift 2` with one arg left does not
   # shift in bash, so a flag with no value must be caught here rather than looping forever.
   for ((i=0; i<${#args[@]}; i++)); do
     if [[ "${args[i]}" == "--doc" ]]; then
       [[ $((i+1)) -lt ${#args[@]} ]] || die "--doc requires a value" 2
       doc="${args[i+1]}"
+    elif [[ "${args[i]}" == "--session-root" ]]; then
+      [[ $((i+1)) -lt ${#args[@]} ]] || die "--session-root requires a value" 2
+      # An EXPLICITLY EMPTY value is a usage error too, not "not supplied" (fable-rd1-r3). Letting
+      # "" fall through sends the basis silently back to the companion — the exact behaviour this
+      # flag replaces — and "" is precisely what a failed capture produces, since `git rev-parse
+      # --show-toplevel` prints nothing outside a repo. Failing loud keeps the one plausible
+      # resolution failure from degrading into the pre-fix silence.
+      [[ -n "${args[i+1]}" ]] \
+        || die "--session-root was given an empty value — capture it before changing directory, and stop if it is empty (a non-repo cwd); an empty root would silently restore the wrong basis" 2
+      session_root="${args[i+1]}"
     fi
   done
   row="$(resolve_row "$@")" || exit 2
@@ -233,21 +243,37 @@ cmd_check() { # --reviewer <id> [--doc <path>] -> 0 dispatchable, 1 with reason
           hint codex "untracked files at ${skill_dir} (pre-plugin manual copy or unrelated work) — remove it and re-run to enable auto-provisioning"
         fi
       fi
-      # Issue #60. codex is bound to ONE root for the session and does not follow a shell `cd`,
-      # so the copy's location is compared against the companion's workspaceRoot — not against
-      # `git rev-parse --show-toplevel`, which moves with the shell and therefore agrees with
-      # itself in exactly the cwd-drift case this exists to catch.
+      # Issue #60 established WHY this check exists: a copy outside the reviewer's sandbox root
+      # otherwise surfaces only as a wait-bound timeout. Its stated mechanism — that codex is bound
+      # to one root per session and the companion's report "does not follow a shell `cd`" — was
+      # wrong, and is corrected in the BASIS note below (#66). Left as one sentence rather than
+      # restated here: two copies of this rationale in one function is what let the refuted version
+      # survive the first correction (fable-rd2-r1).
       #
       # An unknown or unresolvable root means SILENCE, not a hint: without the guard below an
       # empty root makes the containment test fail for every doc, so every arm-time check on a
       # machine with no codex plugin would print a warning.
       if [[ -n "$doc" ]]; then
         local cws cws_c ddir
-        cws="$(codex_workspace_root)"
+        # BASIS. `--session-root` when the caller supplies one, else the companion's report.
+        #
+        # Issue #66: the comment above overstated what codex_workspace_root() gives us. The
+        # companion's workspaceRoot DOES follow the shell — queried from a repo root it returns that
+        # repo, from /tmp it returns /private/tmp. It reports wherever THIS helper is standing, so
+        # the pair degenerates to doc-dir vs helper-cwd and agrees with itself in the cwd-drift case
+        # this exists to catch. That is not academic: the egress guard forces the primary to run
+        # from the repo owning the doc, which is precisely where the query returns that same repo
+        # and the hint falls silent — while the dispatched subagent inherits the SESSION cwd and is
+        # rooted somewhere else entirely.
+        #
+        # A cwd-sensitive query cannot discover the session root, so the caller passes it: the skill
+        # already resolves that value for `ensure-skill --repo` and hands over the same one.
+        if [[ -n "$session_root" ]]; then cws="$session_root"; else cws="$(codex_workspace_root)"; fi
         cws_c="$(canon "$cws")"
         ddir="$(dirname "$doc")"
+        # Unresolvable basis -> SILENCE, not a hint on everything (same rule as an unknown root).
         if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then
-          hint codex "the review copy is outside codex's sandbox root ($(canon "$ddir") vs ${cws_c}) — codex is bound to that root for this session and will likely be unable to write the copy. Run the review from the repo that contains the copy."
+          hint codex "the review copy is outside codex's sandbox root ($(canon "$ddir") vs ${cws_c}) — codex is bound to that root for the session and will likely be unable to write the copy. Move the copy inside that root, or start the session from the repo that owns it."
         fi
       fi
       ;;
@@ -694,9 +720,19 @@ path_contains() { # <parent> <child> -> 0 contained, 1 outside or unresolvable
   case "${c}/" in "${p%/}/"*) return 0 ;; *) return 1 ;; esac
 }
 
-# The codex sandbox root for THIS session, or empty. codex is bound to one root per session and
-# does not follow a shell `cd`, so this — not `git rev-parse --show-toplevel` — is the pair to
-# compare a working copy against (issue #60).
+# The codex sandbox root as reported FROM THIS PROCESS'S cwd, or empty.
+#
+# CORRECTION (issue #66) — this comment previously claimed the report "does not follow a shell
+# `cd`", and that `git rev-parse --show-toplevel` was therefore the WRONG pair to compare against.
+# Both halves are false, and the claim was load-bearing enough to justify reverting the fix, so it
+# is corrected rather than deleted. Measured: from a repo root the query returns that repo, from a
+# repo SUBDIRECTORY it returns the repo top level, and from a non-repo cwd (/tmp) it returns the
+# raw cwd (/private/tmp). In other words it tracks the caller — which makes it identical to
+# `git rev-parse --show-toplevel` inside a repo, and NOT a session-fixed value.
+#
+# So this is a fallback basis, not the authority: cmd_check prefers an explicit --session-root,
+# because a cwd-following query cannot describe the root a DISPATCHED subagent will inherit. It
+# stays as the fallback only to keep a bare manual `check` behaving as it always has.
 #
 # Empty on EVERY failure path: no companion installed, no node, no jq, a non-zero run, or an
 # absent field. Empty means "unknown", and cmd_check stays silent on unknown rather than hinting
@@ -704,7 +740,7 @@ path_contains() { # <parent> <child> -> 0 contained, 1 outside or unresolvable
 #
 # Any single glob match will do. Deliberately NOT "the newest": a lexical sort of version dirs is
 # wrong across a component rollover (1.9.0 sorts above 1.10.0), and the choice does not matter —
-# workspaceRoot is a property of the session, not of the companion build.
+# the reported root depends on the caller's cwd, not on the companion build.
 codex_workspace_root() { # -> path, or empty
   local comp="" g
   for g in "${HOME:-}"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do

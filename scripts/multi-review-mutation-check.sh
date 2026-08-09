@@ -224,10 +224,18 @@ mutate() {
   cp "$tmp" "$f"; rm -f "$tmp"
 
   # A mutation must not make the file unparseable — that would fail the gate for the wrong reason.
-  if ! bash -n "$f" 2>/dev/null; then
-    echo "  ERROR [$id]: the mutated file is not valid bash — the gate would fail for the wrong reason"
-    cp "${BK}/${safe}.bak" "$f"; fails=$((fails + 1)); return 0
-  fi
+  # SHELL TARGETS ONLY. Guards also live in documentation the command is driven from, and a doc
+  # regression can reintroduce a bug with every script-level test still green — so those need
+  # entries too. Running `bash -n` over markdown rejected such an entry as "not valid bash", which
+  # is the check firing for the wrong reason itself: the parse test is about not breaking the file
+  # it mutates, and markdown was never bash to break.
+  case "$rel" in
+    *.sh|*.bash|.githooks/*)
+      if ! bash -n "$f" 2>/dev/null; then
+        echo "  ERROR [$id]: the mutated file is not valid bash — the gate would fail for the wrong reason"
+        cp "${BK}/${safe}.bak" "$f"; fails=$((fails + 1)); return 0
+      fi ;;
+  esac
 
   GATE_WITNESS=""; GATE_RED_OUT=""; GATE_ANY_RED=0; GATE_WRONG_SUITE=""
   local caught=1
@@ -733,6 +741,15 @@ mutations() {
     '        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then' \
     '        if [[ -n "$cws_c" ]]; then'
 
+  # #66. Ignoring --session-root sends the basis back to the companion's report, which follows the
+  # shell — so the containment test compares the doc's repo against itself in exactly the cwd the
+  # egress guard forces the primary into, and the hint goes silent where it is needed. Every #60
+  # assertion still passes with this reverted, so only the #66 trap distinguishes them.
+  mutate 'reviewer/check-doc-session-root-basis' 'scripts/multi-review-reviewer.sh' replace \
+    'check --session-root stayed silent on the #66 trap' 'multi-review-reviewer.test.sh' \
+    '        if [[ -n "$session_root" ]]; then cws="$session_root"; else cws="$(codex_workspace_root)"; fi' \
+    '        cws="$(codex_workspace_root)"'
+
   # Dropping the non-empty root guard makes an UNKNOWN root hint on everything — every machine
   # without the codex plugin would print a warning at every arm.
   mutate 'reviewer/check-doc-unknown-root-silent' 'scripts/multi-review-reviewer.sh' replace \
@@ -750,6 +767,31 @@ mutations() {
     'argv membership failed with a large trailing element' 'multi-review-reviewer.test.sh' \
     '  for a in "$@"; do [[ "$a" == "$want" ]] && return 0; done' \
     '  printf "%s\\n" "$@" | grep -qx -- "$want" && return 0'
+
+  # fable-rd1-r3. Accepting an EMPTY --session-root sends the basis silently back to the companion
+  # — the behaviour the flag replaces — and "" is exactly what a failed capture yields, since
+  # `git rev-parse --show-toplevel` prints nothing outside a repo. The missing-value guard (S5) does
+  # NOT cover this: "" is present, just empty, so only the S6 fixture distinguishes them.
+  mutate 'reviewer/session-root-empty-rejected' 'scripts/multi-review-reviewer.sh' replace \
+    "check --session-root '' silently fell back to the companion basis" 'multi-review-reviewer.test.sh' \
+    '      [[ -n "${args[i+1]}" ]] \' \
+    '      true \'
+
+  # fable-rd1-r1. The runnable `check` line must carry a PLACEHOLDER. Restoring the inline command
+  # substitution re-resolves the root in whatever cwd the primary occupies — and the egress guard
+  # forces that to be the doc's own repo, collapsing the basis onto the doc and silencing the hint.
+  # That reintroduces #66 through the documentation alone, with every script-level test still green,
+  # which is why the guard lives on the doc rather than on the code.
+  #
+  # The expect names the PLACEHOLDER branch, not the substitution branch: swapping the runnable line
+  # for the inline form removes the placeholder too, so that assertion is the one that fires. The
+  # substitution clause beside it is defence in depth for a doc that grew a second --session-root
+  # occurrence — deliberately not given its own entry, since manufacturing that shape would test the
+  # fixture rather than the property.
+  mutate 'command/session-root-placeholder' 'commands/multi-review.md' replace \
+    'does not pass --session-root as the captured <session-root> placeholder' 'multi-review-packaging.test.sh' \
+    '    --session-root "<session-root>"` and surface any' \
+    '    --session-root "$(git rev-parse --show-toplevel)"` and surface any'
 
   # The gemini arm must judge against the CWD repo, not codex's sandbox — swapping the basis
   # makes it hint on a doc that is legitimately inside its own workspace.
