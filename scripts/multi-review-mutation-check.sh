@@ -508,8 +508,17 @@ mutations() {
   # the copy was merged into. A copy could carry it with the record lines stripped.
   mutate 'star/blind-check-footer' 'scripts/multi-review-star.sh' replace \
     'a copy carrying the findings footer passed as blind' 'multi-review-star.test.sh' \
-    "  footer=\"\$(printf '%s\\n' \"\$live\" | grep '<!-- star-findings:' || true)\"" \
+    "  footer=\"\$(printf '%s\\n' \"\$live\" | grep -E '^<!-- star-findings: .*-->\$' || true)\"" \
     '  footer=""'
+
+  # ...and the anchoring is the guard's usability, not a detail (#68). Widened back to a substring,
+  # it matches PROSE naming the footer — which strip_fences cannot help with, because a mention in
+  # inline backticks is live text — and fails a copy that is genuinely blind. Nothing else catches
+  # it: the entry above still passes on an unanchored grep, so only the prose case distinguishes them.
+  mutate 'star/blind-check-footer-anchor' 'scripts/multi-review-star.sh' replace \
+    'blind-check false-failed on a PROSE mention of the star-findings footer' 'multi-review-star.test.sh' \
+    "  footer=\"\$(printf '%s\\n' \"\$live\" | grep -E '^<!-- star-findings: .*-->\$' || true)\"" \
+    "  footer=\"\$(printf '%s\\n' \"\$live\" | grep '<!-- star-findings:' || true)\""
 
   # A carried-over `[no-findings]` is a record: it tells the next secondary that someone already
   # read this document and called it clean. Dropping the tag from the alternation restores the
