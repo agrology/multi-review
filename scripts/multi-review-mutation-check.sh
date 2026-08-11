@@ -800,6 +800,40 @@ mutations() {
     '        grr_c="$(canon "$rr")"' \
     '        grr_c="$(canon "$(codex_workspace_root)")"'
 
+  # ---- the wait bound's quarantine inputs (#71, #47) ------------------------------------------
+  # wait.sh had NO entries before this group. Its exit code is the sole input to the quarantine
+  # decision, so a guard lost here does not fail loudly — it silently discards reviewer turns.
+
+  # The in-flight/no-turn split. Collapsed back to a bare 9, a reviewer that is demonstrably
+  # mid-write is indistinguishable from one that never opened the document, and the playbook
+  # quarantines both.
+  mutate 'wait/seed-inflight-distinct' 'scripts/multi-review-wait.sh' replace \
+    'in-flight bound hit' 'multi-review-wait.test.sh' \
+    '  if cmp -s "$doc" "$seed"; then' \
+    '  if true; then'
+
+  # The missing-seed refusal. Downgraded to a silent pass, a caller that asked for the
+  # distinction gets the undifferentiated 9 back without being told — which is exactly how the
+  # quarantine reason becomes wrong again.
+  mutate 'wait/seed-missing-is-usage-error' 'scripts/multi-review-wait.sh' delete \
+    'missing seed rc=' 'multi-review-wait.test.sh' \
+    '[[ -z "$seed" || -f "$seed" ]] || die "seed snapshot not found: $seed"'
+
+  # The exit-8 retry budget. Reverted to operator judgement, an AUTONOMOUS primary has no patience
+  # to run out and a copy that changes on every poll returns 8 forever — the round never reaches
+  # verification or a deliberate quarantine (codex-rd1-r1 on PR #78).
+  mutate 'command/exit8-retry-budget' 'commands/multi-review.md' replace \
+    'exit-8 retry has no finite budget' 'multi-review-packaging.test.sh' \
+    '     turn that is actively being written. **Re-run the same wait, at most 3 more times.** If the' \
+    '     turn that is actively being written. **Re-run the same wait** as needed. If a later'
+
+  # The default bound. Back under the floor reviewer's measured range, `fable` is quarantined on
+  # latency alone — and in a default (fable-only) run that empties the admitted set and trips the
+  # all-quarantined anomaly stop, killing the review with no reviewer having actually failed.
+  mutate 'wait/default-bound-covers-fable' 'scripts/multi-review-wait.sh' replace \
+    'below fable'"'"'s measured' 'multi-review-wait.test.sh' \
+    'DEFAULT_MAX_SECONDS=600' \
+    'DEFAULT_MAX_SECONDS=240'
   # ---- the local-copy never-worse guard (#41, #74) -------------------------------------------
   # scope.sh had NO entry in this table before this group, and it is the file where an unguarded
   # path shipped and became #74 — the shape this runner exists to catch. Both halves are tabled
