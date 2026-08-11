@@ -1008,6 +1008,24 @@ cmd_merge() {
     [[ "$nfoot" -eq 0 ]] || die "merge: '${doc}' carries ${nfoot} already-merged round(s) but '${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run" 1
   fi
 
+  # Zero admitted copies is a REACHABLE state, not an impossible one: a default (fable-only) run
+  # whose single secondary hits the wait bound quarantines it and arrives here with a reason and
+  # nothing to merge. Refuse deliberately and by name.
+  #
+  # Without this, bash 3.2 — the version CI pins and these scripts claim to support — aborts on
+  # the expansion below with a raw `copies[@]: unbound variable` (3.2 treats `local copies=()` as
+  # unset rather than empty). The operator sees a bash error instead of a reason, and the round's
+  # quarantine record is never written: the one round that provably produced nothing is also the
+  # one whose evidence is lost. Bash 5 prints nothing at all and iterates zero times, so this
+  # never surfaced there — the 3.2 leg of the gate is what makes it visible.
+  #
+  # The sibling quarantine loops use "${quarantined[@]:-}" for the same 3.2 reason; here that
+  # idiom alone is not enough, because it yields one EMPTY element that would then be reported as
+  # `copy not found: `. The count check is what makes the refusal say the true thing.
+  if (( ${#copies[@]} == 0 )); then
+    die "merge: no admitted copies for round ${round} — a round with nothing to merge is the all-quarantined anomaly stop: surface every quarantine reason and stop, do not merge" 2
+  fi
+
   local block="" copy provider
   for copy in "${copies[@]}"; do
     [[ -f "$copy" ]] || die "merge: copy not found: $copy" 1
@@ -1305,6 +1323,10 @@ cmd_round_stats() {
       p = pp[1]; r = pp[2]; sub(/-.*/, "", r)
       if (p == "" || r+0 < 1) next
       C[p SUBSEP (r+0)]++; provs[p] = 1
+      # Severity, per round. Column 7 of _table has always carried it; the verdict below counted
+      # findings and never looked (issue #47 item 5). Findings are not fungible: a stale docstring
+      # and a false certificate are one each.
+      if ($7 == "high") HI[r+0]++
     }
     END {
       n = 0; for (p in provs) sorted[++n] = p
@@ -1422,6 +1444,16 @@ cmd_round_stats() {
         # the human gate should be able to tell the two apart. NB: no apostrophes in this awk
         # program — it is single-quoted in the shell, and one would terminate it.
         v = "converge — the finding rate ROSE at round " rounds " (" cmp_prev " → " cmp_last "); the new findings most likely concern the between-round edits, not the original doc — review them at the gate"
+      # A converge verdict computed from COUNTS must not stay silent about the SEVERITY of what
+      # the final round raised. Demonstrated (#47 item 5): two `low` -> two `high` reads as "flat"
+      # and is advised to stop, while two `low` -> one `high` reads as "decaying" and is advised
+      # to continue — the count drove both, and the round that ESCALATED is the one told to stop.
+      #
+      # This appends rather than overrides. Whether to re-fan is the primary'"'"'s call and the
+      # triggers above still govern it (one round is the default, #29); what the verdict owes the
+      # reader is not to present a round that raised new highs as if it were saturation.
+      if (v ~ /^converge/ && HI[rounds+0] > 0)
+        v = v "; round " rounds " raised " HI[rounds+0] " new high-severity finding(s) — weigh those at the gate before treating this as saturation"
       print "verdict: " v
     }'
 }

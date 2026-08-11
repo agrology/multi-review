@@ -1452,6 +1452,52 @@ CPI2="$(mkstar cpi2.md \
 bash "$SUT" check-primary-id "$CPI2" claude-opus-5 >/dev/null 2>&1 \
   && ok "check-primary-id: the primary's own prior response is not a collision" \
   || bad "check-primary-id treats the primary's own response id as a raiser — round 2 would be impossible"
+# --- the self-response guard must actually bite -----------------------------------------------
+#
+# This guard is what stops a primary answering its own findings — i.e. what makes the review a
+# review rather than a self-review. It had NO test: deleting `_table`'s self-response line left
+# every suite green, so nothing anywhere would have noticed its removal.
+SR="$(mkstar selfresp.md \
+  '> [finding:fable-rd1-r1|high] a real concern' \
+  '> — via fable' \
+  '> — risk: r' \
+  '> — evidence: mechanism' \
+  '> [agree:fable-rd1-r1]' \
+  '> — via fable')"
+err="$(bash "$SUT" open-findings "$SR" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] \
+  && ok "self-response guard: a response disclosed under the raiser's own model id is refused" \
+  || bad "self-response guard did not bite — the primary can answer its own findings and converge"
+grep -qi 'self-response' <<<"$err" \
+  && ok "self-response guard names the failure" || bad "self-response refusal is unnamed: '$err'"
+
+# ...and a DISTINCT primary id on the same doc must still pass, or the guard is just "refuse all".
+SROK="$(mkstar selfresp-ok.md \
+  '> [finding:fable-rd1-r1|high] a real concern' \
+  '> — via fable' \
+  '> — risk: r' \
+  '> — evidence: mechanism' \
+  '> [agree:fable-rd1-r1]' \
+  '> — via claude-opus-5')"
+bash "$SUT" open-findings "$SROK" >/dev/null 2>&1 \
+  && ok "self-response guard: a distinct primary id is accepted" \
+  || bad "self-response guard refuses a legitimately distinct primary id"
+
+# --- merge with zero admitted copies must refuse deliberately, not crash ----------------------
+#
+# Reachable in a default (fable-only) run whose single secondary hits the wait bound: the primary
+# records the quarantine and has no copy to merge. Under bash 3.2 — the version CI pins and the
+# scripts claim to support — `"${copies[@]}"` on an empty array is a fatal unbound-variable error,
+# so the round's quarantine record is never written and the operator sees a raw bash error rather
+# than a reason.
+MZ="$(mkstar mergezero.md)"
+err="$(bash "$SUT" merge --round 1 --quarantined "fable:no turn taken" "$MZ" 2>&1 >/dev/null)"; rc=$?
+grep -qi 'unbound variable' <<<"$err" \
+  && bad "merge with zero admitted copies crashes with a raw bash error: '$err'" \
+  || ok "merge with zero admitted copies does not crash on an empty array"
+[[ $rc -ne 0 ]] && grep -qi 'no admitted copies\|anomaly' <<<"$err" \
+  && ok "merge with zero admitted copies refuses with a named reason" \
+  || bad "merge with zero copies did not refuse with a named reason (rc=$rc): '$err'"
 
 # --- round-stats (issue #22) ---------------------------------------------------------------
 # The re-fan rule was "re-fan while the previous round produced >=1 new admitted finding". That
@@ -1464,6 +1510,39 @@ bash "$SUT" check-primary-id "$CPI2" claude-opus-5 >/dev/null 2>&1 \
 
 # fnd <provider> <round> <id> -> one finding block (3 lines) on stdout
 fnd() { printf '> [finding:%s-rd%s-%s|low] concern %s%s\n> — via %s-model\n> — risk: r\n' "$1" "$2" "$3" "$3" "$1" "$1"; }
+# fndsev <provider> <round> <id> <sev> -> same, at an explicit severity
+fndsev() { printf '> [finding:%s-rd%s-%s|%s] concern %s%s\n> — via %s-model\n> — risk: r\n> — evidence: mechanism\n' "$1" "$2" "$3" "$4" "$3" "$1" "$1"; }
+
+# --- the verdict must not say a bare "converge" over a round that raised new highs (#47 item 5) ---
+#
+# The verdict is computed from COUNTS alone, and findings are not fungible. Demonstrated: a round
+# that ESCALATED from two `low` to two `high` reads as "flat" and is advised to stop, while a round
+# that DECAYED from two lows to one high is advised to continue. Severity is column 7 of the same
+# _table output the awk already consumes — it was simply never read.
+RSH="${WORK}/rs-highs.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 2/5 -->'
+  echo '<!-- multi-review-mode: star · reviewers: fable -->'; echo; echo "## Review"; echo
+  fndsev fable 1 a low; fndsev fable 1 b low
+  fndsev fable 2 c high; fndsev fable 2 d high
+} > "$RSH"
+out="$(bash "$SUT" round-stats "$RSH" 2>&1)"
+grep -qE '^verdict:' <<<"$out" || bad "round-stats: no verdict line on the highs fixture: '$out'"
+grep -qiE 'verdict:.*high' <<<"$out" \
+  && ok "round-stats: the verdict names the highs raised in the final round" \
+  || bad "round-stats: a flat round that escalated to two NEW highs still reads as a plain converge: '$(grep '^verdict:' <<<"$out")'"
+
+# ...and the clause must NOT appear when the final round raised no high — or it is decoration
+# rather than a signal, and the next reader learns to ignore it.
+RSL="${WORK}/rs-lows.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 2/5 -->'
+  echo '<!-- multi-review-mode: star · reviewers: fable -->'; echo; echo "## Review"; echo
+  fndsev fable 1 a low; fndsev fable 1 b low
+  fndsev fable 2 c low; fndsev fable 2 d low
+} > "$RSL"
+out="$(bash "$SUT" round-stats "$RSL" 2>&1)"
+grep -qiE 'verdict:.*high' <<<"$out" \
+  && bad "round-stats: the high clause fired on a round with no highs (decoration, not signal)" \
+  || ok "round-stats: no high clause when the final round raised none"
 
 # RS_FLAT reproduces the issue's shape exactly: rd1=9 (codex 1, fable 5, gemini 3),
 # rd2=3 (0,2,1), rd3=3 (0,1,2). The rate decays once, then goes flat.
