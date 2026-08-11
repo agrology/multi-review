@@ -404,11 +404,41 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             (( ${#argv[@]} )) && "${argv[@]}"
 
    All same-turn subagent dispatches go in the SAME response block as each other.
-5. **Bound the wait, per copy.**
-   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh "<doc>.<id>" awaiting-author [seconds]`
-   (240s default is reasonable; raise it for a known-slow provider). Exit 0 → verify below.
-   Non-zero (bound hit, or the copy went sideways) → quarantine this provider (next step) with
-   that reason. A hung secondary must never stall the others or the round.
+5. **Bound the wait, per copy — and never quarantine on the first bound hit.**
+
+       "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh" "<doc>.<id>" awaiting-author \
+         [seconds] --seed "<doc>.<id>.seed"
+
+   Pass `--seed` (the snapshot step 2 already took). It is what lets the wait tell a reviewer that
+   never took a turn from one that is mid-write — opposite facts that a bare bound hit reports
+   identically, and the difference between quarantining a no-op and discarding real findings.
+
+   - **Exit 0** → verify below.
+   - **Exit 8** — the copy CHANGED since dispatch but the marker is not flipped. The reviewer is
+     demonstrably alive and still writing. **Re-run the same wait** (as many times as it keeps
+     returning 8 and you are willing to spend); do NOT quarantine. Quarantining here throws away a
+     turn that is actively being written.
+   - **Exit 9** — the copy is byte-identical to its seed: no turn taken *yet*. Re-run the wait
+     **once** as grace before recording anything. A reviewer 82 seconds past the bound is not a
+     reviewer that failed (issue #71: a bound-hit copy completed with 11 findings, one `high`).
+     If the second wait also returns 9, quarantine with the reason **`no turn taken`** — the one
+     state that proves the reviewer contributed nothing, as opposed to finishing late.
+   - **Exit 10** — a terminal state preempted the wait. Stop and surface it; this is not a
+     quarantine.
+   - **Exit 2** — a usage error on your side (bad path, missing seed). Fix the invocation.
+     **Never quarantine a reviewer for an exit 2.**
+
+   The default bound is 600s, chosen to cover the floor reviewer's measured 60–622s range. Raise
+   it for a known-slow provider; lowering it below that range quarantines `fable` on latency
+   alone, and in a default (fable-only) run that empties the admitted set and trips the
+   all-quarantined anomaly stop — the review dies without a single reviewer having failed.
+
+   Use the two reasons **verbatim** when you do quarantine here — `no turn taken` for exit 9, and
+   the wait's own message for anything else. `gate-summary` renders quarantine reasons as free
+   text, so two different failures worded two different ways read alike to whoever reads the gate.
+
+   A hung secondary must never stall the others or the round: these waits are per-copy and a
+   provider that keeps returning 8 past your patience is still yours to quarantine, deliberately.
 6. **Verify identity, per copy that reached `awaiting-author`.**
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh verify-vendor --baseline
    "<doc>.baseline" "<doc>.<id>" --reviewer <id>`. Pass → admit the copy into the merge. Fail →

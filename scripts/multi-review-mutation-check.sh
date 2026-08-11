@@ -800,6 +800,33 @@ mutations() {
     '        grr_c="$(canon "$rr")"' \
     '        grr_c="$(canon "$(codex_workspace_root)")"'
 
+  # ---- the wait bound's quarantine inputs (#71, #47) ------------------------------------------
+  # wait.sh had NO entries before this group. Its exit code is the sole input to the quarantine
+  # decision, so a guard lost here does not fail loudly — it silently discards reviewer turns.
+
+  # The in-flight/no-turn split. Collapsed back to a bare 9, a reviewer that is demonstrably
+  # mid-write is indistinguishable from one that never opened the document, and the playbook
+  # quarantines both.
+  mutate 'wait/seed-inflight-distinct' 'scripts/multi-review-wait.sh' replace \
+    'in-flight bound hit' 'multi-review-wait.test.sh' \
+    '  if cmp -s "$doc" "$seed"; then' \
+    '  if true; then'
+
+  # The missing-seed refusal. Downgraded to a silent pass, a caller that asked for the
+  # distinction gets the undifferentiated 9 back without being told — which is exactly how the
+  # quarantine reason becomes wrong again.
+  mutate 'wait/seed-missing-is-usage-error' 'scripts/multi-review-wait.sh' delete \
+    'missing seed rc=' 'multi-review-wait.test.sh' \
+    '[[ -z "$seed" || -f "$seed" ]] || die "seed snapshot not found: $seed"'
+
+  # The default bound. Back under the floor reviewer's measured range, `fable` is quarantined on
+  # latency alone — and in a default (fable-only) run that empties the admitted set and trips the
+  # all-quarantined anomaly stop, killing the review with no reviewer having actually failed.
+  mutate 'wait/default-bound-covers-fable' 'scripts/multi-review-wait.sh' replace \
+    'below fable'"'"'s measured' 'multi-review-wait.test.sh' \
+    'DEFAULT_MAX_SECONDS=600' \
+    'DEFAULT_MAX_SECONDS=240'
+
 }
 
 if (( list )); then mutations; exit 0; fi
