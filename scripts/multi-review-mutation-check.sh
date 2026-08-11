@@ -819,6 +819,14 @@ mutations() {
     'missing seed rc=' 'multi-review-wait.test.sh' \
     '[[ -z "$seed" || -f "$seed" ]] || die "seed snapshot not found: $seed"'
 
+  # The exit-8 retry budget. Reverted to operator judgement, an AUTONOMOUS primary has no patience
+  # to run out and a copy that changes on every poll returns 8 forever — the round never reaches
+  # verification or a deliberate quarantine (codex-rd1-r1 on PR #78).
+  mutate 'command/exit8-retry-budget' 'commands/multi-review.md' replace \
+    'exit-8 retry has no finite budget' 'multi-review-packaging.test.sh' \
+    '     turn that is actively being written. **Re-run the same wait, at most 3 more times.** If the' \
+    '     turn that is actively being written. **Re-run the same wait** as needed. If a later'
+
   # The default bound. Back under the floor reviewer's measured range, `fable` is quarantined on
   # latency alone — and in a default (fable-only) run that empties the admitted set and trips the
   # all-quarantined anomaly stop, killing the review with no reviewer having actually failed.

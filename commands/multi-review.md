@@ -415,9 +415,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    - **Exit 0** → verify below.
    - **Exit 8** — the copy CHANGED since dispatch but the marker is not flipped. The reviewer is
-     demonstrably alive and still writing. **Re-run the same wait** (as many times as it keeps
-     returning 8 and you are willing to spend); do NOT quarantine. Quarantining here throws away a
-     turn that is actively being written.
+     demonstrably alive and still writing, so do NOT quarantine on the first 8: that throws away a
+     turn that is actively being written. **Re-run the same wait, at most 3 more times.** If the
+     4th wait still returns 8, quarantine with the reason **`still writing at the retry cap`** —
+     distinct from `no turn taken`, because the two describe opposite states and the gate renders
+     reasons as free text.
+
+     The cap is a number rather than your judgement because this command is **autonomous by
+     default**: a primary running with nobody watching has no patience to run out, and a copy that changes on every
+     poll would otherwise return 8 forever, so the round would never reach verification or a
+     deliberate quarantine (codex-rd1-r1 on PR #78). Four waits at the 600s default is ~40 minutes
+     for one provider, which is already generous for a reviewer that has not managed to flip a
+     marker.
    - **Exit 9** — the copy is byte-identical to its seed: no turn taken *yet*. Re-run the wait
      **once** as grace before recording anything. A reviewer 82 seconds past the bound is not a
      reviewer that failed (issue #71: a bound-hit copy completed with 11 findings, one `high`).
