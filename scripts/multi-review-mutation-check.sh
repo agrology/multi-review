@@ -323,6 +323,15 @@ mutations() {
     '  local id; id="$(printf '"'"'%s'"'"' "$1" | LC_ALL=C tr '"'"'[:upper:]'"'"' '"'"'[:lower:]'"'"')"' \
     '  local id; id="$1"'
 
+  # ---- C2: contract delivery is keyed on what the reviewer can reach ---------------------------
+
+  # Collapse the three shapes back to two and fable inlines again — 14 KB on the most-dispatched
+  # prompt in the system, since fable is the floor reviewer present in every round of every run.
+  mutate 'reviewer/fable-contract-by-path' 'scripts/multi-review-reviewer.sh' replace \
+    'still inlines the whole contract' 'multi-review-reviewer.test.sh' \
+    '  elif [[ "$2" == "shell" ]]; then' \
+    '  elif true; then'
+
   # ---- G2: gemini's half of #66 ----------------------------------------------------------------
 
   # The check's BASIS. Reverted to the helper's cwd repo, the arm is wrong in both directions:
