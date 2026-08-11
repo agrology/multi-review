@@ -399,6 +399,81 @@ printf 'x `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowe
 bash "$DOCCHK" "$FX7" >/dev/null 2>&1 \
   && ok "docs-check: an aligned table row passes" || bad "false positive on an aligned table row"
 
+# --- the repo's OWN memory files must teach the live grammar, not a retired one ---
+#
+# CLAUDE.md and AGENTS.md are auto-loaded into every agent working in this repo — including a
+# dispatched secondary, whose whole turn is then shaped by them. `emit_prompt` deliberately cuts
+# the contract at `## Supersedes` so a reviewer is never offered the retired grammars
+# (multi-review-reviewer.test.sh guards that on the prompt side); a memory file that re-offers
+# them defeats it from the other direction. A reviewer that complies writes lines `merge` cannot
+# read, `channel-check` scores the turn as a non-response, and the whole turn is quarantined —
+# with a reason that describes the symptom, not the cause.
+#
+# The retired grammars are named in docs/multi-review.md's `## Supersedes`: the asymmetric
+# single-reviewer pair (`[reviewer:]` / `[author: resolved:]`) and the two-agent peer-review
+# pair (`[concur:]` / `[withdraw:]`, and the `peer-review` mode hint that selected them).
+#
+# Extracted as a function so the detection can be exercised against a SYNTHETIC section as well as
+# the real files. Asserting only against the real files makes the check unfalsifiable in practice:
+# it passes because those files are currently correct, not because it can detect a bad one.
+retired_grammar_in() { # <section-text> -> offending tokens, space-joined (empty = clean)
+  { grep -oE '\[(reviewer|author: resolved|concur|withdraw):|peer-review' <<<"$1"
+    # A `[finding:` with NO `|<sev>` part is the RETIRED peer spelling, and `[finding:` alone
+    # cannot be banned because the live grammar uses it too (codex-rd2-r1 on PR #76). The
+    # character class stops at `]` or `|`, so `[finding:r1]` matches and
+    # `[finding:<id>|<sev>]` does not. This one is consequential rather than cosmetic: a
+    # severity-less finding is a HARD parse error (`finding r1 needs a |high, |med, or |low
+    # severity tag`, exit 2), so a reviewer following that instruction destroys its own turn.
+    grep -oE '\[finding:[^]|]*\]' <<<"$1"
+  } 2>/dev/null | sort -u | tr '\n' ' '
+}
+
+# The detector must FIRE on a section that teaches the retired severity-less form while still
+# mentioning the live one — the shape that slips past a "does it name the live grammar" check,
+# because both that assertion and the banned-verb assertion pass.
+_synthetic="Leave concerns as \`> [finding:r1] concern\` lines. The parser expects [finding:<id>|<sev>]."
+if [[ -n "$(retired_grammar_in "$_synthetic")" ]]; then
+  ok "retired-grammar detector fires on a severity-less [finding:] that also names the live form"
+else
+  bad "retired-grammar detector misses a severity-less [finding:] — a complying reviewer hard-fails the parser (codex-rd2-r1)"
+fi
+# ...and must NOT fire on the live grammar alone, or it fails every correct document.
+if [[ -z "$(retired_grammar_in 'Append \`> [finding:<id>|<sev>] <concern>\` under ## Review.')" ]]; then
+  ok "retired-grammar detector accepts the live [finding:<id>|<sev>] form"
+else
+  bad "retired-grammar detector rejects the LIVE grammar — it would fail a correct memory file"
+fi
+
+for mf in CLAUDE.md AGENTS.md; do
+  f="${ROOT}/${mf}"
+  if [[ ! -f "$f" ]]; then bad "${mf} missing"; continue; fi
+  # Scope to the reviewer-role section: the rest of the file may legitimately discuss history.
+  sec="$(awk '/^### Multi-review \(reviewer role\)/{on=1} on{print} on && /^### How this repo applies/{exit}' "$f")"
+  if [[ -z "$sec" ]]; then bad "${mf}: no '### Multi-review (reviewer role)' section to check"; continue; fi
+  retired="$(retired_grammar_in "$sec")"
+  [[ -z "$retired" ]] \
+    && ok "${mf}: reviewer role teaches no retired grammar" \
+    || bad "${mf}: reviewer role instructs retired grammar (${retired}) — a complying reviewer is quarantined as a non-response"
+  grep -qF '[finding:<id>|<sev>]' <<<"$sec" \
+    && ok "${mf}: reviewer role names the live finding grammar" \
+    || bad "${mf}: reviewer role does not name the live '[finding:<id>|<sev>]' grammar"
+  grep -qF '[no-findings]' <<<"$sec" \
+    && ok "${mf}: reviewer role names the no-findings signal" \
+    || bad "${mf}: reviewer role omits [no-findings] — a silent clean turn is quarantined"
+done
+
+# --- the dispatched reviewer is told to ignore repo memory files ---
+# Independence is the point of the star, and a target repo's CLAUDE.md/AGENTS.md is the author's
+# standing instruction set — context the topology never accounted for. The prompt must say the
+# inlined contract is complete, or a reviewer weighs the author's own words while reviewing them.
+D="$(mktemp -d)"; printf '# D\n\n<!-- multi-review: awaiting-reviewer -->\n\n## Review\n' > "$D/d.md"
+for p in fable codex gemini; do
+  out="$(bash "${ROOT}/scripts/multi-review-reviewer.sh" prompt "$D/d.md" --reviewer "$p" 2>/dev/null)"
+  grep -qiE 'CLAUDE\.md|AGENTS\.md|memory file' <<<"$out" \
+    && ok "prompt($p) tells the reviewer to ignore repo memory files" \
+    || bad "prompt($p) never mentions repo memory files — an injected CLAUDE.md silently outranks the contract"
+done
+rm -rf "$D"
 # --- #66 wiring: one root, captured before anything can move the cwd ---
 #
 # Both halves shipped broken and were found by re-reading the file, not by a test.

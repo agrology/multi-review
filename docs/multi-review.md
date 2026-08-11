@@ -153,6 +153,17 @@ convergence impossible.
 - The gate summary warns when the round's admitted secondaries are all same-vendor as the
   primary: `⚠ Independence: ... no independent cross-vendor perspective this run.` Add
   `--reviewers codex` (or `gemini`) for architectural independence.
+- **What independence here does and does not mean.** `blind-check` proves the bytes a secondary
+  was HANDED carry nobody else's findings, and `verify-vendor` proves the model that answered
+  belongs to the vendor it was dispatched as. Neither can prove what a reviewer read at runtime.
+  Working copies sit beside the live doc — which from round 2 carries every prior finding and the
+  primary's responses — and every provider can mechanically open them; what stops it is the
+  prompt's instruction, not a sandbox. Repo memory files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`)
+  are a second such channel: a harness injects them as standing instructions, so a reviewer can
+  arrive already carrying the author's own words about the work under review. The prompt tells
+  every secondary to ignore them and treat the contract as complete. Both are **instructed, not
+  enforced** — read the gate's independence line as "nothing structural was wrong with this
+  round", not as a proof about what each reviewer had in context.
 
 ## Bounds & terminal state
 
