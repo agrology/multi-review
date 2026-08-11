@@ -838,6 +838,31 @@ mutations() {
     'a multi-line-block-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
     '        if (inblock) {' \
     '        if (0) {'
+  # ---- convergence integrity ------------------------------------------------------------------
+
+  # THE SELF-RESPONSE GUARD. This is what makes the review a review rather than a self-review: it
+  # refuses a response disclosed under the same model id that raised the finding. It shipped with
+  # ZERO coverage — deleting it left every suite green — on the one guard the command file calls
+  # convergence-critical. Exactly the §11 defect class, so it gets an entry as well as a test.
+  mutate 'star/self-response-guard' 'scripts/multi-review-star.sh' replace \
+    'self-response guard did not bite' 'multi-review-star.test.sh' \
+    '        if (id in rverb && rmodel[id] == raiser[id]) fail("self-response on finding: " id)' \
+    '        if (0) fail("self-response on finding: " id)'
+
+  # Zero admitted copies is reachable (a fable-only run whose one secondary hits the wait bound).
+  # Without the refusal, bash 3.2 aborts on the array expansion with a raw unbound-variable error
+  # and the round's quarantine record is never written.
+  mutate 'star/merge-zero-copies-refused' 'scripts/multi-review-star.sh' replace \
+    'did not refuse with a named reason' 'multi-review-star.test.sh' \
+    '  if (( ${#copies[@]} == 0 )); then' \
+    '  if false; then'
+
+  # The verdict must not present a round that ESCALATED to new highs as saturation. Counting alone
+  # advised "converge" on two lows -> two highs and "re-fan" on two lows -> one high.
+  mutate 'star/round-stats-high-clause' 'scripts/multi-review-star.sh' replace \
+    'still reads as a plain converge' 'multi-review-star.test.sh' \
+    '      if (v ~ /^converge/ && HI[rounds+0] > 0)' \
+    '      if (0)'
 
 }
 
