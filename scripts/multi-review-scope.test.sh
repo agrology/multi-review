@@ -400,6 +400,26 @@ lc_sout="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P9" --curr "$C9" 2>
 [[ -z "$lc_sout" ]] && ok "local-copy: exit-3 path emits nothing on stdout" \
   || bad "half-composed local copy leaked to stdout"
 
+# The guard's FULL side must be the artifact the exit-3 fallback actually emits, not `--curr`
+# itself (codex-rd2-r1). `--curr` is a baseline and carries a DOC header
+# (`awaiting-secondaries`, plus the `reviewers:` suffix); the fallback re-seeds and rewrites that
+# to a COPY header (`awaiting-reviewer`, bare mode hint), which is 23 B shorter. Measuring the
+# longer one makes the guard permissive by exactly that margin: a scoped copy up to 23 B LARGER
+# than the real fallback still passes, which is the case the guard exists to reject.
+fb="${WORK}/fallback.md"
+awk -v m="<!-- multi-review: awaiting-reviewer · round 2/5 -->" '
+  /^<!-- multi-review: / { print m; next }
+  /^<!-- multi-review-mode: star/ { print "<!-- multi-review-mode: star -->"; next }
+  { print }' "$C9" > "$fb"
+fb_b=$(wc -c < "$fb" | tr -d ' '); curr_b=$(wc -c < "$C9" | tr -d ' ')
+(( fb_b < curr_b )) \
+  && ok "guard basis: the fallback (${fb_b} B) really is smaller than --curr (${curr_b} B)" \
+  || bad "fixture cannot distinguish the two bases (${fb_b} vs ${curr_b}) — the assertion below is vacuous"
+reported="$(sed -E 's/.*\(([0-9]+) B vs ([0-9]+) B\).*/\2/' <<<"$lc_err")"
+[[ "$reported" == "$fb_b" ]] \
+  && ok "guard measures against the fallback copy (${reported} B), not --curr" \
+  || bad "guard measured ${reported} B — that is --curr (${curr_b} B), not the fallback the round would actually use (${fb_b} B)"
+
 # (2) silent below the floor: the same losing shape, small. This is the regime every composition
 # assertion above runs in, and it must stay exit 0 or those ~30 assertions stop being reachable.
 P8="$(mkbase prevf.md '## A' '' 'x')"

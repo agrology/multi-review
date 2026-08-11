@@ -269,14 +269,30 @@ cmd_local_copy() {
     printf '## Review\n\n'
   } > "$tmp/out"
 
-  # Never-worse guard (issues #41, #74). Basis is the composed copy against the artifact it would
-  # actually replace: on the exit-3 fallback the primary re-seeds from <doc>.baseline and rewrites
-  # the header, so --curr is that artifact's content. Both sides therefore carry a copy's worth of
-  # header, matching pr-copy's payload-vs-payload rule. `tr -d` strips BSD wc's padding so the
-  # arithmetic and the notice both read cleanly.
+  # Never-worse guard (issues #41, #74). Basis is the composed copy against the artifact the
+  # exit-3 fallback ACTUALLY emits — which is not `--curr` itself (codex-rd2-r1).
+  #
+  # `--curr` is a baseline: it carries a DOC header (`awaiting-secondaries`, plus the `reviewers:`
+  # suffix). The fallback re-seeds from it and rewrites that to a COPY header (`awaiting-reviewer`,
+  # bare mode hint), which is ~23 B shorter. Measuring the longer one made the guard permissive by
+  # exactly that margin: a scoped copy up to 23 B LARGER than the real fallback still passed —
+  # the case the guard exists to reject, at the boundary where it matters most.
+  #
+  # So reconstruct the fallback here, applying the same two header substitutions the primary is
+  # told to make, and measure that. Only now is this genuinely payload-vs-payload — both sides
+  # carry an identical copy header — which is what pr-copy's call site already does and what the
+  # previous version of this comment incorrectly claimed was true.
+  #
+  # `tr -d` strips BSD `wc`'s padding so the arithmetic and the notice both read cleanly.
+  awk -v m="<!-- multi-review: awaiting-reviewer · round ${round}/${max} -->" '
+    /^<!-- multi-review: / { print m; next }
+    /^<!-- multi-review-mode: star/ { print "<!-- multi-review-mode: star -->"; next }
+    { print }
+  ' "$curr" > "$tmp/fallback"
+
   local scoped_b full_b
   scoped_b="$(wc -c < "$tmp/out" | tr -d ' ')"
-  full_b="$(wc -c < "$curr" | tr -d ' ')"
+  full_b="$(wc -c < "$tmp/fallback" | tr -d ' ')"
   if (( full_b >= LOCAL_GUARD_FLOOR_B )); then
     _payload_guard "$scoped_b" "$full_b"
   fi
