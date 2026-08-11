@@ -324,11 +324,34 @@ If you are asked to review a doc that is under a multi-review review, read
 
 - In Codex, prefer the repo skill `/multi-review <doc>` for this workflow.
 - Act **only** when the marker `<!-- multi-review: ... -->` says `awaiting-reviewer`.
-- Leave concerns as `> [reviewer:<id>]` lines with **unique** ids, each followed by a
-  required `> — via <your-model>` disclosure line.
-- **Flip the marker last:** after writing every concern, change `awaiting-reviewer` →
-  `awaiting-author` as your final edit (the flip is the handoff). Set it to `converged`
-  instead only when no `[reviewer:<id>]` lacks its `[author: resolved:<id>]`.
+- You are a **secondary**: you raise findings and nothing else. Append each under the doc's
+  LAST `## Review` heading, outside any fenced block, as:
+
+      > [finding:<id>|<sev>] <concern>
+      > — via <your-model-id>
+      > — risk: <short risk>
+      > — evidence: <how you know>
+
+  `<sev>` is `high`, `med`, or `low`. The `> — via` disclosure and `> — risk:` lines are
+  required on every finding; `> — evidence:` is required on `high` and `med` — state the
+  mechanism that produces the failure, or the reproduction you ran. A concern you cannot ground
+  that way is still worth raising: raise it as `low`.
+- Ids are scoped to your own copy (`r1`, `r2`, …); you never coordinate them with anyone else —
+  the primary namespaces them on merge.
+- If you read the doc in full and have nothing to raise, **say so explicitly** — a flipped
+  marker with nothing written is byte-identical to a turn that never opened the document, and is
+  quarantined as a non-response:
+
+      > [no-findings] reviewed in full; nothing to raise
+      > — via <your-model-id>
+
+  Mutually exclusive with findings; never emit both in one turn.
+- **Do not respond to findings.** `[agree:]`/`[dispute:]` belong to the primary, and a response
+  disclosed under the same model id as the finding's raiser fails the self-response guard. Do
+  not decide convergence either.
+- **Flip the marker last:** after writing every finding, change `awaiting-reviewer` →
+  `awaiting-author` as your final edit (the flip is the handoff). Never set any other state, and
+  never edit the primary's doc or another provider's copy.
 - Respect the round bound shown in the marker. Never advance past the human gate, and never
   proceed to implementation or a PR.
 - Read only this doc; do not expand to repo-wide context, capture secrets, or upload
@@ -336,13 +359,12 @@ If you are asked to review a doc that is under a multi-review review, read
   may read the current bodies of repo files the doc's diff directly references, solely to check
   the change is self-consistent — a narrow local read, no whole-corpus sweeps; every finding
   must still trace to a changed hunk (see "Scope" in `docs/multi-review.md`).
-- For a PR-mode doc (header `<!-- multi-review-mode: peer-review -->`), use the symmetric
-  peer-review grammar (`[finding:]`/`[concur:]`/`[dispute:]`/`[withdraw:]` with `> — via`
-  lines), not `[reviewer:]`/`[author: resolved:]`. See `docs/multi-review.md`. You MAY
-  optionally anchor a finding to a specific changed line by adding a `> — at <path>:<line>`
-  (or `<path>:<start>-<end>`) line immediately after that finding's `> — via` line, using
-  RIGHT-side new-file line numbers. Only **agreed** anchored findings post inline; an anchor
-  that does not land on a changed line degrades to the summary.
+- On a **PR-flavor** doc you MAY anchor a finding to a specific changed line by adding
+  `> — at <path>:<line>` (or `<path>:<start>-<end>`) immediately after that finding's
+  `> — risk:`/`> — evidence:` lines, using RIGHT-side new-file line numbers. Only **agreed**
+  anchored findings post inline; an anchor that does not land on a changed line degrades to the
+  summary. There is otherwise no mode to detect — the grammar above is the same for a local doc
+  and a PR scratch.
 
 ### How this repo applies the sections above
 

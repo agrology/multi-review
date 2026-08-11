@@ -399,4 +399,48 @@ printf 'x `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowe
 bash "$DOCCHK" "$FX7" >/dev/null 2>&1 \
   && ok "docs-check: an aligned table row passes" || bad "false positive on an aligned table row"
 
+# --- the repo's OWN memory files must teach the live grammar, not a retired one ---
+#
+# CLAUDE.md and AGENTS.md are auto-loaded into every agent working in this repo — including a
+# dispatched secondary, whose whole turn is then shaped by them. `emit_prompt` deliberately cuts
+# the contract at `## Supersedes` so a reviewer is never offered the retired grammars
+# (multi-review-reviewer.test.sh guards that on the prompt side); a memory file that re-offers
+# them defeats it from the other direction. A reviewer that complies writes lines `merge` cannot
+# read, `channel-check` scores the turn as a non-response, and the whole turn is quarantined —
+# with a reason that describes the symptom, not the cause.
+#
+# The retired grammars are named in docs/multi-review.md's `## Supersedes`: the asymmetric
+# single-reviewer pair (`[reviewer:]` / `[author: resolved:]`) and the two-agent peer-review
+# pair (`[concur:]` / `[withdraw:]`, and the `peer-review` mode hint that selected them).
+for mf in CLAUDE.md AGENTS.md; do
+  f="${ROOT}/${mf}"
+  if [[ ! -f "$f" ]]; then bad "${mf} missing"; continue; fi
+  # Scope to the reviewer-role section: the rest of the file may legitimately discuss history.
+  sec="$(awk '/^### Multi-review \(reviewer role\)/{on=1} on{print} on && /^### How this repo applies/{exit}' "$f")"
+  if [[ -z "$sec" ]]; then bad "${mf}: no '### Multi-review (reviewer role)' section to check"; continue; fi
+  retired="$(grep -oE '\[(reviewer|author: resolved|concur|withdraw):|peer-review' <<<"$sec" | sort -u | tr '\n' ' ')"
+  [[ -z "$retired" ]] \
+    && ok "${mf}: reviewer role teaches no retired grammar" \
+    || bad "${mf}: reviewer role instructs retired grammar (${retired}) — a complying reviewer is quarantined as a non-response"
+  grep -qF '[finding:<id>|<sev>]' <<<"$sec" \
+    && ok "${mf}: reviewer role names the live finding grammar" \
+    || bad "${mf}: reviewer role does not name the live '[finding:<id>|<sev>]' grammar"
+  grep -qF '[no-findings]' <<<"$sec" \
+    && ok "${mf}: reviewer role names the no-findings signal" \
+    || bad "${mf}: reviewer role omits [no-findings] — a silent clean turn is quarantined"
+done
+
+# --- the dispatched reviewer is told to ignore repo memory files ---
+# Independence is the point of the star, and a target repo's CLAUDE.md/AGENTS.md is the author's
+# standing instruction set — context the topology never accounted for. The prompt must say the
+# inlined contract is complete, or a reviewer weighs the author's own words while reviewing them.
+D="$(mktemp -d)"; printf '# D\n\n<!-- multi-review: awaiting-reviewer -->\n\n## Review\n' > "$D/d.md"
+for p in fable codex gemini; do
+  out="$(bash "${ROOT}/scripts/multi-review-reviewer.sh" prompt "$D/d.md" --reviewer "$p" 2>/dev/null)"
+  grep -qiE 'CLAUDE\.md|AGENTS\.md|memory file' <<<"$out" \
+    && ok "prompt($p) tells the reviewer to ignore repo memory files" \
+    || bad "prompt($p) never mentions repo memory files — an injected CLAUDE.md silently outranks the contract"
+done
+rm -rf "$D"
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
