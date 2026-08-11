@@ -800,6 +800,33 @@ mutations() {
     '        grr_c="$(canon "$rr")"' \
     '        grr_c="$(canon "$(codex_workspace_root)")"'
 
+  # ---- identity mapping must not discard a round over a spelling ------------------------------
+  # Both entries mutate BACK to the pattern that shipped, so each asserts the specific miss.
+
+  # anthropic matched `claude-*` — hyphen required — so the bare family name of the PRIMARY's own
+  # vendor was unmappable while `gpt`, `o3` and `gemini` all mapped bare. An unmappable disclosure
+  # is die 1 -> the reviewer's whole round is quarantined.
+  mutate 'reviewer/vendor-anthropic-bare' 'scripts/multi-review-reviewer.sh' replace \
+    'a whole round is discarded over this' 'multi-review-reviewer.test.sh' \
+    '    *claude*|*anthropic*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;' \
+    '    claude-*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;'
+
+  # openai ENUMERATED the reasoning families that existed when it was written, so `o4` and later
+  # were unmappable. Worse than a one-off: the id is the model's self-report, so re-dispatch
+  # reproduces it and the arm starves every round until this line is edited.
+  mutate 'reviewer/vendor-openai-family' 'scripts/multi-review-reviewer.sh' replace \
+    'starves the arm every round' 'multi-review-reviewer.test.sh' \
+    '    gpt|gpt-*|o[0-9]*|*codex*)                             echo "openai" ;;' \
+    '    gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)                     echo "openai" ;;'
+
+  # A commented-out `respectGitIgnore: false` folded into a substring the matcher read as a LIVE
+  # opt-out once whitespace was deleted, silencing the #22 hint in exactly the repo state it warns
+  # about. Without the strip, gemini refuses the doc and the round dies as a wait-bound timeout.
+  mutate 'reviewer/gitignore-strip-comments' 'scripts/multi-review-reviewer.sh' replace \
+    'read as a live opt-out' 'multi-review-reviewer.test.sh' \
+    'strip_json_comments() { sed -e '"'"'s|/\*[^*]*\*/||g'"'"' -e '"'"'s|//.*$||'"'"' "$1"; }' \
+    'strip_json_comments() { cat "$1"; }'
+
 }
 
 if (( list )); then mutations; exit 0; fi
