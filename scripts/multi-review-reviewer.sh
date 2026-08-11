@@ -226,6 +226,17 @@ cmd_check() { # --reviewer <id> [--doc <path>] [--session-root <dir>] -> 0 dispa
     codex)
       command -v codex >/dev/null 2>&1 \
         || die "codex CLI not on PATH — the plugin route drives the local Codex CLI" 1
+      # THE CLI IS NOT THE DISPATCH TARGET (issue #73). `codex` is dispatch-kind `subagent`: the
+      # fan-out asks the Agent tool for `codex:codex-rescue`, an agent shipped by a SEPARATE
+      # Claude Code plugin. Probing only the binary reported "ready" for a provider that cannot be
+      # dispatched at all — every readiness signal green (doctor, check, ensure-skill,
+      # resolve-set) and then `Agent type 'codex:codex-rescue' not found` after the round was
+      # already armed, costing a round and the cross-vendor independence codex was selected for.
+      #
+      # Readiness has to mean dispatchable, so this is a hard failure rather than a hint: a hint
+      # would leave `doctor` printing ✓ for a provider guaranteed to fail.
+      codex_dispatch_agent >/dev/null \
+        || die "codex CLI is present but its dispatch agent is not installed — multi-review dispatches codex through the 'codex:codex-rescue' agent, which ships in a separate Claude Code plugin. Install it (/plugin marketplace add openai/codex-plugin-cc && /plugin install codex@openai-codex) and reload plugins, or drop codex from the reviewer set" 1
       # readiness = CLI present; auth is NOT probed here. The skill is provisioned
       # automatically at dispatch (ensure-skill), so its prior presence is not required.
       local rr; rr="$(repo_root)"
@@ -741,6 +752,24 @@ path_contains() { # <parent> <child> -> 0 contained, 1 outside or unresolvable
 # Any single glob match will do. Deliberately NOT "the newest": a lexical sort of version dirs is
 # wrong across a component rollover (1.9.0 sorts above 1.10.0), and the choice does not matter —
 # the reported root depends on the caller's cwd, not on the companion build.
+# Path to the agent the codex fan-out actually dispatches, or empty (exit 1) when absent.
+#
+# The agent lives in another plugin, so this globs the installed-plugin cache the same way
+# codex_workspace_root globs for the companion. Owner-agnostic (`*/codex/*`): the plugin is
+# published under a marketplace owner that is not ours to pin, and a rename of that owner must
+# not be reported as "codex is broken".
+#
+# PRESENCE ONLY. Whether the plugin is ENABLED lives in settings.json across several scopes plus
+# managed policy, and guessing it wrong in the strict direction would refuse a working setup — so
+# presence is the gate and enablement is left to the dispatch error itself.
+codex_dispatch_agent() { # -> path, or empty + exit 1
+  local g
+  for g in "${HOME:-}"/.claude/plugins/cache/*/codex/*/agents/codex-rescue.md; do
+    if [[ -f "$g" ]]; then printf '%s\n' "$g"; return 0; fi
+  done
+  return 1
+}
+
 codex_workspace_root() { # -> path, or empty
   local comp="" g
   for g in "${HOME:-}"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do

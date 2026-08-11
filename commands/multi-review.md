@@ -373,12 +373,32 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    existing all-failed anomaly stop (below) before dispatching anyone.
 4. **Dispatch every secondary in the same turn**, so the harness runs them concurrently — never
    one after another. Branch on `kind`, pointed at `<doc>.<id>`:
-   - **`subagent`** → dispatch the Agent tool with the resolved `model`, passing the output of
-     `multi-review-reviewer.sh prompt "<doc>.<id>" --reviewer <id>` as the task text. For `codex`
-     use the `codex:codex-rescue` agent with `--model <model> --write --background`; for `fable`
-     use `general-purpose` with `model: fable`. `--model`/`--write`/`--background` are runtime
-     controls, stripped from the task text. Run it in the same working root the reviewer was just
-     provisioned into (step 3) — the two must never diverge.
+   - **`subagent`** → dispatch the Agent tool, passing the output of
+     `multi-review-reviewer.sh prompt "<doc>.<id>" --reviewer <id>` as the task text. The two
+     providers are dispatched **differently**, and the difference is not cosmetic:
+
+     - **`fable`** → agent `general-purpose`, with the Agent tool's own `model` parameter set to
+       `fable`.
+     - **`codex`** → agent `codex:codex-rescue`, with the Agent tool's `model` parameter **left
+       unset**, and `--model <model> --write --background` appended to the END of the task text.
+       The rescue wrapper parses those three out of the text as runtime controls; they are not
+       instructions to the reviewer.
+
+     **Do not put the resolved `model` in the Agent tool's `model` parameter for codex.** That
+     parameter takes a fixed set of harness aliases (`sonnet`/`opus`/`haiku`/`fable`), so a codex
+     model id like `gpt-5.6-terra` is rejected outright and the dispatch never happens. It works
+     for `fable` only because `fable` happens to be one of those aliases.
+
+     Run it in the same working root the reviewer was just provisioned into (step 3) — the two
+     must never diverge.
+
+     **If the Agent tool itself errors** — unknown agent type, rejected model — that is an
+     ENVIRONMENT failure, not a reviewer outcome. Do not fold it into the quarantine path: it is
+     deterministic, so re-dispatching next round fails identically, and quarantining it spends a
+     round to discover something already known. Surface it immediately with the remedy (for
+     `codex:codex-rescue`, the codex plugin is not installed — see the README's reviewer table)
+     and ask the engineer whether to proceed on the remaining set or stop. `check` gates this
+     before arming, so reaching it here means the environment changed mid-run.
 
      **`--background` is not optional for `codex`.** The rescue wrapper forwards to
      `codex-companion.mjs task`, which runs in the FOREGROUND by default; a real review outlives

@@ -41,6 +41,19 @@ D="$(mkdoc peer.md '<!-- multi-review-mode: peer-review -->')"
 out="$(bash "$SUT" mode "$D" 2>/dev/null)"; [[ -z "$out" ]] && ok "mode: peer hint defers" || bad "mode peer leaked (got '$out')"
 
 # --- resolve-set ---
+# HERMETIC ENVIRONMENT. resolve-set probes each provider's availability (issue #73), so without
+# stubs these assertions would answer differently depending on whether the machine running the
+# suite happens to have the gemini/codex CLIs and the codex dispatch plugin installed — the exact
+# ambiguity #73 is about, reproduced inside the suite. Stub both CLIs and provision the codex
+# dispatch agent under a fixture HOME, so what is tested here is RESOLUTION, not this laptop.
+RSBIN="${WORK}/rsbin"; mkdir -p "$RSBIN"
+for c in codex gemini; do printf '#!/usr/bin/env bash\n:\n' > "$RSBIN/$c"; chmod +x "$RSBIN/$c"; done
+RSHOME="${WORK}/rshome"
+mkdir -p "${RSHOME}/.claude/plugins/cache/openai-codex/codex/1.0.6/agents"
+printf -- '---\nname: codex-rescue\n---\n' > "${RSHOME}/.claude/plugins/cache/openai-codex/codex/1.0.6/agents/codex-rescue.md"
+export PATH="${RSBIN}:$PATH"
+export HOME="$RSHOME"
+
 # flag beats env; dedup; order preserved
 out="$(MULTI_REVIEW_REVIEWERS="fable" bash "$SUT" resolve-set --reviewers codex,gemini,codex 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
 [[ "$out" == "codex gemini " ]] && ok "resolve-set: flag>env, dedup, order" || bad "resolve-set flag (got '$out')"
@@ -75,7 +88,9 @@ sub="${1:-}"; shift || true
 id=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--reviewer" ]] && { id="${2:-}"; shift 2; continue; }; shift; done
 case "$sub" in
   resolve) case "$id" in codex|fable|gemini) echo "${id}|vendor|kind|model|no"; exit 0;; *) exit 1;; esac ;;
-  check)   case "$id" in codex|fable) exit 0;; *) exit 1;; esac ;;   # gemini resolves but is unavailable
+  # gemini's availability is switchable: precedence tests need an available id to prove
+  # precedence with, and the drop tests need an unavailable one. Default is unavailable.
+  check)   case "$id" in codex|fable) exit 0;; gemini) [[ "${STUB_GEMINI_OK:-}" == "1" ]] && exit 0 || exit 1;; *) exit 1;; esac ;;
   *) exit 2 ;;
 esac
 STUBEOF
@@ -95,11 +110,11 @@ out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --
 [[ "$out" == "codex fable " ]] && ok "pref: used when flag+env empty" || bad "pref used (got '$out')"
 
 # flag beats pref
-out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers gemini --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" STUB_GEMINI_OK=1 bash "$SUT" resolve-set --fable-floor --reviewers gemini --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
 [[ "$out" == "gemini fable " ]] && ok "pref: flag beats pref" || bad "pref flag-beats (got '$out')"
 
 # env beats pref (non-empty)
-out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" STUB_GEMINI_OK=1 MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --pref-file "$PREF" 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
 [[ "$out" == "gemini fable " ]] && ok "pref: env beats pref" || bad "pref env-beats (got '$out')"
 
 # empty-string env is treated as unset -> falls through to pref
@@ -107,9 +122,33 @@ out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="" bash "$SUT" re
 [[ "$out" == "codex fable " ]] && ok "pref: empty env is unset, falls to pref" || bad "pref empty-env (got '$out')"
 
 # a CSV env value splits like the flag (fable-rd1-r1) — not one unknown "codex,gemini" token.
-# env source is not availability-filtered (that is pref-only), so both ids survive + fable floored.
-out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="codex,gemini" bash "$SUT" resolve-set --fable-floor 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+# Both ids are dispatchable here, so the split is what is under test rather than the filter.
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" STUB_GEMINI_OK=1 MULTI_REVIEW_REVIEWERS="codex,gemini" bash "$SUT" resolve-set --fable-floor 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
 [[ "$out" == "codex gemini fable " ]] && ok "pref: csv env value splits (not one token)" || bad "csv env split (got '$out')"
+
+# --- availability is filtered for EVERY source, not just the pref (issue #73) ---
+# This gate used to be pref-only, so a reviewer named on the flag / in prose / via the env was
+# resolved without ever being probed: the run armed, dispatched something undispatchable, and paid
+# a full wait bound before quarantining it. Reproduced live with no gemini CLI installed —
+# `check --reviewer gemini` exited 1 while `resolve-set --reviewers gemini` returned the row and
+# exit 0. #73 reports the same shape for codex via its missing dispatch agent.
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers gemini 2>&1 >/dev/null)"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers gemini 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+[[ "$out" == "fable " ]] \
+  && ok "resolve-set: a NAMED but undispatchable reviewer is dropped, not armed" \
+  || bad "a named undispatchable reviewer still resolved (got '$out') — the run would burn a round (#73)"
+grep -qi 'named for this run' <<<"$err" \
+  && ok "resolve-set: the named-drop notice says the drop was for a named reviewer" \
+  || bad "named drop is silent or unattributed: '$err'"
+
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor 2>&1 >/dev/null)"
+[[ "$out" == "fable " ]] \
+  && ok "resolve-set: an ENV reviewer that cannot be dispatched is dropped too" \
+  || bad "an env-sourced undispatchable reviewer still resolved (got '$out')"
+grep -qi 'MULTI_REVIEW_REVIEWERS' <<<"$err" \
+  && ok "resolve-set: the env-drop notice names the variable it came from" \
+  || bad "env drop does not name its source: '$err'"
 
 # read-path normalization: whitespace, duplicates, a literal 'fable', blank lines
 printf '  codex , codex \n\nfable,gemini\n' > "$PREF"

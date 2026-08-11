@@ -706,22 +706,37 @@ out="$(bash "$SUT" check --reviewer fable 2>&1)"; rc=$?
 
 # --- advisory check: codex skill dir (Task 4) ---
 CBIN="${WORK}/cbin"; mkdir -p "$CBIN"; printf '#!/usr/bin/env bash\n:\n' > "$CBIN/codex"; chmod +x "$CBIN/codex"
+# codex is dispatch-kind `subagent`: the fan-out asks the Agent tool for `codex:codex-rescue`,
+# which ships in a SEPARATE plugin. `check` gates on its presence, so every codex assertion below
+# must control HOME — otherwise the result depends on whether the machine running the suite
+# happens to have that plugin installed, which is exactly the ambiguity issue #73 is about.
+CHOME="${WORK}/chome"
+mkdir -p "${CHOME}/.claude/plugins/cache/openai-codex/codex/1.0.6/agents"
+printf -- '---\nname: codex-rescue\n---\n' > "${CHOME}/.claude/plugins/cache/openai-codex/codex/1.0.6/agents/codex-rescue.md"
+# ...and a HOME with the CLI but NO agent, for the #73 state itself.
+CHOME_NOAGENT="${WORK}/chome-noagent"; mkdir -p "${CHOME_NOAGENT}/.claude/plugins/cache"
+# Any fixture HOME used for a codex `check` needs the dispatch agent, or the agent gate fires
+# and masks whatever that block is actually testing.
+put_codex_agent() { # <home-dir>
+  mkdir -p "$1/.claude/plugins/cache/openai-codex/codex/1.0.6/agents"
+  printf -- '---\nname: codex-rescue\n---\n' > "$1/.claude/plugins/cache/openai-codex/codex/1.0.6/agents/codex-rescue.md"
+}
 CREPO="${WORK}/crepo"; mkdir -p "$CREPO"; ( cd "$CREPO" && git init -q )
 
 # no skill dir: ready, no hint about copying
-out="$(cd "$CREPO" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+out="$(cd "$CREPO" && HOME="$CHOME" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
 [[ "$rc" == 0 ]] && ok "codex check ready with no pre-copied skill" || bad "codex check rc=$rc"
 grep -qi 'copy .*\.agents/skills' <<<"$out" && bad "obsolete copy hint still emitted" || ok "no obsolete copy hint"
 
 # a tracked copy: drift advisory
 rr_tracked="${WORK}/rtracked"; mkdir -p "$rr_tracked"; git -C "$rr_tracked" init -q; mkdir -p "$rr_tracked/.agents/skills/multi-review"
 echo x > "$rr_tracked/.agents/skills/multi-review/SKILL.md"; git -C "$rr_tracked" add -f .; git -C "$rr_tracked" -c user.email=t@t -c user.name=t commit -qm s
-out="$(cd "$rr_tracked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
+out="$(cd "$rr_tracked" && HOME="$CHOME" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
 grep -qi 'drift' <<<"$out" && ok "tracked copy -> drift hint" || bad "no drift hint for tracked copy"
 
 # repo-root resolution: from a SUBDIR with the tracked copy at the root -> still drift hint
 mkdir -p "$rr_tracked/sub/dir"
-out="$(cd "$rr_tracked/sub/dir" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
+out="$(cd "$rr_tracked/sub/dir" && HOME="$CHOME" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"
 grep -qi 'drift' <<<"$out" && ok "check codex: repo-root resolved from a subdirectory" || bad "codex subdir missed drift hint: '$out'"
 
 # --- Fix 1 regression: an UNTRACKED, non-marker .agents/skills/multi-review copy is exactly the
@@ -731,7 +746,7 @@ grep -qi 'drift' <<<"$out" && ok "check codex: repo-root resolved from a subdire
 rr_untracked="${WORK}/runtracked"; mkdir -p "$rr_untracked"; git -C "$rr_untracked" init -q
 mkdir -p "$rr_untracked/.agents/skills/multi-review"
 echo x > "$rr_untracked/.agents/skills/multi-review/SKILL.md"   # untracked: never git add'd, no marker
-out="$(cd "$rr_untracked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+out="$(cd "$rr_untracked" && HOME="$CHOME" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
 [[ "$rc" == 0 ]] && ok "check codex: untracked non-marker copy still exits 0 (advisory, not a gate)" \
   || bad "codex untracked-copy rc=$rc (want 0)"
 grep -qi 'untracked files' <<<"$out" && grep -qi 'remove it and re-run' <<<"$out" \
@@ -743,7 +758,7 @@ rr_marked="${WORK}/rmarked"; mkdir -p "$rr_marked"; git -C "$rr_marked" init -q
 mkdir -p "$rr_marked/.agents/skills/multi-review"
 echo x > "$rr_marked/.agents/skills/multi-review/SKILL.md"
 echo "1.0.0" > "$rr_marked/.agents/skills/multi-review/.multi-review-materialized"
-out="$(cd "$rr_marked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+out="$(cd "$rr_marked" && HOME="$CHOME" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
 [[ "$rc" == 0 && -z "$out" ]] && ok "check codex: materialized (marker present) copy emits no hint" \
   || bad "codex materialized copy unexpectedly hinted (rc=$rc): '$out'"
 
@@ -751,14 +766,14 @@ out="$(cd "$rr_marked" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer code
 # --- fire EITHER hint — the bundle there is the plugin's own legitimately-tracked source, and the
 # --- untracked-copy hint's "remove it" advice would otherwise target the plugin's own bundle.
 NOGIT="${WORK}/nogit"; mkdir -p "$NOGIT"
-out="$(cd "$NOGIT" && PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+out="$(cd "$NOGIT" && HOME="$CHOME" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
 [[ "$rc" == 0 ]] && ok "check codex: non-git cwd (ROOT fallback) exits 0" || bad "codex non-git-cwd rc=$rc (want 0)"
 grep -qiE 'drift|untracked files' <<<"$out" \
   && bad "codex ROOT-fallback wrongly fired a drift/untracked hint: '$out'" \
   || ok "check codex: ROOT fallback suppresses both the drift and untracked-copy hints"
 
 # CLI absent -> exit 1 (unchanged)
-( cd "$CREPO" && PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?
+( cd "$CREPO" && HOME="$CHOME" PATH="/usr/bin:/bin" bash "$SUT" check --reviewer codex >/dev/null 2>&1 ); rc=$?
 [[ $rc -eq 1 ]] && ok "check codex: CLI absent still exit 1" || bad "codex absent rc=$rc (want 1)"
 
 # --- command: opt-in gemini auto-trust (Task 3) ---
@@ -782,11 +797,40 @@ MULTI_REVIEW_GEMINI_AUTOTRUST=yes bash "$SUT" command "$DAT" --reviewer gemini >
 first=""; IFS= read -r -d '' first < "${WORK}/at2.bin"
 [[ "$first" == "gemini" ]] && ok "command gemini: autotrust!=1 leaves argv unchanged" || bad "autotrust!=1 first='$first'"
 
+# --- readiness must mean DISPATCHABLE, not "the CLI exists" (issue #73) ---
+#
+# codex is dispatch-kind `subagent`: the fan-out asks the Agent tool for `codex:codex-rescue`,
+# an agent that ships in a SEPARATE Claude Code plugin. Probing only the binary reported
+# "✓ codex: ready" for a provider that cannot be dispatched at all — every readiness signal green,
+# then `Agent type 'codex:codex-rescue' not found` AFTER the round was armed. That costs a round
+# and the cross-vendor independence codex was chosen for.
+out="$(cd "$CREPO" && HOME="$CHOME_NOAGENT" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 1 ]] \
+  && ok "check codex: CLI present but dispatch agent absent is NOT ready (rc=1)" \
+  || bad "check codex reported rc=$rc with no dispatch agent — readiness does not mean dispatchable (#73)"
+grep -qi 'dispatch agent' <<<"$out" && grep -qi 'plugin' <<<"$out" \
+  && ok "check codex: the refusal names the missing agent and the plugin to install" \
+  || bad "codex no-agent refusal is not actionable: '$out'"
+
+# ...and it must not fire when the agent IS present, or codex is simply unusable for everyone.
+out="$(cd "$CREPO" && HOME="$CHOME" PATH="${CBIN}:$PATH" bash "$SUT" check --reviewer codex 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && ! grep -qi 'dispatch agent' <<<"$out" \
+  && ok "check codex: an installed dispatch agent is accepted" \
+  || bad "codex agent probe fires with the agent present (rc=$rc): '$out'"
+
+# doctor inherits the verdict for free, since it calls check.
+DA="${WORK}/dbin-agent"; mkdir -p "$DA"
+printf '#!/usr/bin/env bash\n:\n' > "$DA/codex"; chmod +x "$DA/codex"
+out="$(cd "$CREPO" && HOME="$CHOME_NOAGENT" PATH="${DA}:$PATH" bash "$SUT" doctor 2>&1)"
+grep -qE '✗ codex' <<<"$out" \
+  && ok "doctor: codex without its dispatch agent reports ✗, not ✓ ready" \
+  || bad "doctor still reports codex ready with no dispatch agent — the #73 misreport: '$out'"
+
 # --- doctor (Task 4) ---
 unset GEMINI_API_KEY GEMINI_CLI_TRUST_WORKSPACE MULTI_REVIEW_GEMINI_AUTOTRUST
 DREPO="${WORK}/drepo"; mkdir -p "$DREPO"; ( cd "$DREPO" && git init -q )
 # stub gemini that replies instantly (probe -> OK) and codex present
-DBIN="${WORK}/dbin"; mkdir -p "$DBIN"
+DBIN="${WORK}/dbin"; mkdir -p "$DBIN"; put_codex_agent "$DREPO/home"
 printf '#!/usr/bin/env bash\necho OK\n' > "$DBIN/gemini"; chmod +x "$DBIN/gemini"
 printf '#!/usr/bin/env bash\n:\n' > "$DBIN/codex"; chmod +x "$DBIN/codex"
 
@@ -1049,6 +1093,7 @@ bash "$SUT" _path_contains_for_test "$PC/root" "$PC/rootstuff"
 # This needs neither the real codex plugin nor a real node — CI's tool inventory has no node.
 
 CWS="${WORK}/cws"
+put_codex_agent "${CWS}/home"
 CWS_COMP="${CWS}/home/.claude/plugins/cache/openai-codex/codex/1.0.0/scripts"
 mkdir -p "$CWS_COMP" "${CWS}/bin" "${CWS}/ws"
 : > "${CWS_COMP}/codex-companion.mjs"
@@ -1110,6 +1155,7 @@ got="$(HOME="${CWS}/home" FAKE_WS="${CWS}/ws" PATH="$JQLESS" \
 # exactly when the hint is needed (spec §2).
 
 CD_="${WORK}/cd"
+put_codex_agent "${CD_}/home"
 CD_COMP="${CD_}/home/.claude/plugins/cache/openai-codex/codex/1.0.0/scripts"
 mkdir -p "$CD_COMP" "${CD_}/bin" "${CD_}/ws/docs" "${CD_}/elsewhere/docs"
 : > "${CD_COMP}/codex-companion.mjs"
@@ -1135,7 +1181,9 @@ out="$(HOME="${CD_}/home" FAKE_WS="${CD_}/ws" PATH="${CD_}/bin:$PATH" \
   || bad "a same-root copy produced a false out-of-root hint (got: '$out')"
 
 # (3) no companion under HOME -> unknown root -> silence, exit 0
-mkdir -p "${CD_}/nohome"
+# The dispatch agent IS present here: this case is about an unresolvable sandbox root, and
+# without the agent the readiness gate would fire first and mask what is being tested.
+mkdir -p "${CD_}/nohome"; put_codex_agent "${CD_}/nohome"
 out="$(HOME="${CD_}/nohome" FAKE_WS="${CD_}/ws" PATH="${CD_}/bin:$PATH" \
   bash "$SUT" check --reviewer codex --doc "${CD_}/elsewhere/docs/d.md" 2>&1 >/dev/null)"; rc=$?
 [[ "$out" != *"outside"* && $rc -eq 0 ]] \

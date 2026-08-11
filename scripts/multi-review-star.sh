@@ -254,9 +254,26 @@ cmd_resolve_set() {
       fi
       set +f; die "unknown reviewer provider in set: ${id}" 2
     fi
-    if [[ "$src" == "pref" ]] && ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then
+    # AVAILABILITY IS CHECKED FOR EVERY SOURCE, not just the pref (issue #73). This gate used to
+    # read `[[ "$src" == "pref" ]] && ! check`, so a reviewer named on the flag, in prose, or via
+    # MULTI_REVIEW_REVIEWERS was only looked up in the registry — never probed. Reproduced: with
+    # no gemini CLI installed, `check --reviewer gemini` exits 1 while `resolve-set --reviewers
+    # gemini` returned `gemini|google|shell|...` and exit 0, so the run armed, dispatched a binary
+    # that does not exist, and paid a full wait bound before quarantining it. #73 reports the same
+    # shape for codex and attributes it to the missing dispatch agent; the agent is one instance,
+    # and this is the hole.
+    #
+    # Dropping, not erroring, on every source. The alternative — refusing to arm because one named
+    # provider is unusable — costs the whole review to protect one reviewer, and a review with the
+    # remaining secondaries is worth more than no review. The notice names the source so a NAMED
+    # drop reads differently from a remembered one, and the command relays it at arm time.
+    if ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then
       seen="$seen $id"
-      echo "multi-review-star: pref reviewer '$id' unavailable in this repo — dropping (pref unchanged)" >&2
+      case "$src" in
+        pref) echo "multi-review-star: pref reviewer '$id' unavailable in this repo — dropping (pref unchanged)" >&2 ;;
+        env)  echo "multi-review-star: reviewer '$id' from MULTI_REVIEW_REVIEWERS is not dispatchable here — dropping; run '/multi-review --check-reviewers' for the reason" >&2 ;;
+        *)    echo "multi-review-star: reviewer '$id' was named for this run but is not dispatchable here — dropping; run '/multi-review --check-reviewers' for the reason" >&2 ;;
+      esac
       continue
     fi
     seen="$seen $id"
