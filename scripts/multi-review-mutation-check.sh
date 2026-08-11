@@ -847,6 +847,26 @@ mutations() {
     '        grr_c="$(canon "$rr")"' \
     '        grr_c="$(canon "$(codex_workspace_root)")"'
 
+  # ---- readiness must mean DISPATCHABLE (issue #73) -------------------------------------------
+
+  # codex is dispatch-kind `subagent`: the fan-out asks the Agent tool for `codex:codex-rescue`,
+  # shipped by a SEPARATE plugin. Probing only the binary reported "✓ codex: ready" for a provider
+  # that cannot be dispatched at all, and the failure surfaced only after the round was armed.
+  # Neutered rather than deleted: the call is the left side of a `||` continuation, so removing
+  # the line orphans the `die` and the file no longer parses — which the runner correctly rejects
+  # as failing the gate for the wrong reason rather than crediting it as coverage.
+  mutate 'reviewer/codex-dispatch-agent-gate' 'scripts/multi-review-reviewer.sh' replace \
+    'readiness does not mean dispatchable' 'multi-review-reviewer.test.sh' \
+    '      codex_dispatch_agent >/dev/null \' \
+    '      true >/dev/null \'
+
+  # The availability probe applies to EVERY source. Restricted back to the pref, a reviewer named
+  # on the flag / in prose / via the env is resolved without ever being probed — the run arms,
+  # dispatches something undispatchable, and pays a full wait bound to discover it.
+  mutate 'star/resolve-set-checks-all-sources' 'scripts/multi-review-star.sh' replace \
+    'the run would burn a round' 'multi-review-star.test.sh' \
+    '    if ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then' \
+    '    if [[ "$src" == "pref" ]] && ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then'
   # ---- repo memory files as a reviewer-context channel ---------------------------------------
   # CLAUDE.md/AGENTS.md are auto-loaded into every agent in this repo, including a dispatched
   # secondary. Both entries below are DOC-level guards: the bug they prevent is a documentation

@@ -101,8 +101,25 @@ unless a named test catches it — because a green suite is not by itself eviden
 | reviewer | vendor | setup |
 |---|---|---|
 | `fable` *(on by default)* | anthropic | **none** — runs in-harness |
-| `codex` | openai | `codex` CLI authed — skill provisioned automatically per run (git-ignored) |
+| `codex` | openai | `codex` CLI authed **+ the Codex Claude Code plugin** (below) — skill provisioned automatically per run (git-ignored) |
 | `gemini` | google | `gemini` CLI authed + 3 settings (below) |
+
+**codex prereqs:** two things, and the second is easy to miss because the CLI alone looks
+sufficient.
+
+1. The **`codex` CLI**, installed and authenticated (`codex login`).
+2. The **Codex Claude Code plugin**, which provides the `codex:codex-rescue` agent that
+   multi-review dispatches through. It is published by OpenAI, not by us:
+
+       /plugin marketplace add openai/codex-plugin-cc
+       /plugin install codex@openai-codex
+       /reload-plugins
+
+Without (2), the CLI is present and authenticated and codex still cannot be dispatched at all.
+`--check-reviewers` reports that state as `✗ codex` rather than `✓ ready`, so you find out before
+a round is armed rather than after one is spent (issue #73). Verify with:
+
+    /multi-review --check-reviewers
 
 **codex skill:** provisioned automatically. On each run `/multi-review` materializes
 this repo's `.agents/skills/multi-review/` into the reviewed repo's root (git-ignored via
