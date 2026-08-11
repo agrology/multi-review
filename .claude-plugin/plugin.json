@@ -1,7 +1,7 @@
 {
   "name": "multi-review",
   "description": "Human-gated star review: Claude (the neutral primary) fans a spec/plan/PR out to N independent secondary reviewers (in-harness fable by default — disable with MULTI_REVIEW_FABLE=off — plus cross-vendor codex/gemini), adjudicates their findings, and converges — always ending at a human approval gate.",
-  "version": "1.19.3",
+  "version": "1.19.6",
   "author": {
     "name": "Agrology"
   },

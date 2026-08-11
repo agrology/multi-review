@@ -145,11 +145,48 @@ hint() { echo "multi-review-reviewer: hint ($1): $2" >&2; }
 # about (issue #22): gemini refuses the doc, the copy is never written, and the round dies as a
 # wait-bound timeout whose recorded reason names neither gitignore nor the setting.
 #
-# Two accepted limits, both erring toward firing the hint rather than suppressing it — a spurious
-# hint costs a line of advisory text, a suppressed one costs the round:
-#   - a `//` inside a string value (a proxy URL) truncates that line, which can only ADD a hint;
-#   - a block comment spanning multiple lines is not joined, so only its first line is stripped.
-strip_json_comments() { sed -e 's|/\*[^*]*\*/||g' -e 's|//.*$||' "$1"; }
+# BLOCK COMMENTS ARE TRACKED ACROSS LINES, which a `sed` pass structurally cannot do (codex-rd1-r1).
+# A line-based strip removes only the line carrying `/*`, so the setting on the NEXT line survives
+# into the normalized string and reads as a live opt-out again — the same suppression this function
+# exists to prevent, in the comment shape a human is most likely to write:
+#
+#     {  /*
+#          "respectGitIgnore": false
+#        */
+#        "theme": "Default" }
+#
+# Hence the awk state machine: `inblock` persists between lines, and the scan is left-to-right so
+# whichever of `/*` and `//` comes FIRST on a line wins (a `//` inside a block comment is not a
+# line comment, and a `/*` after a `//` is already commented out).
+#
+# One accepted limit remains, and it errs toward FIRING the hint rather than suppressing it — a
+# spurious hint costs a line of advisory text, a suppressed one costs the round: a `//` or `/*`
+# inside a string VALUE (a proxy URL, a glob) is treated as a comment, which deletes text and can
+# therefore only remove a `false`, never invent one. Removing it leaves the setting absent, the
+# default (honor gitignore) applies, and the hint fires.
+strip_json_comments() {
+  awk '
+    {
+      line = $0; out = ""
+      while (length(line)) {
+        if (inblock) {
+          p = index(line, "*/")
+          if (p == 0) { line = ""; break }          # rest of the line is still inside the comment
+          inblock = 0; line = substr(line, p + 2); continue
+        }
+        b = index(line, "/*"); s = index(line, "//")
+        if (s > 0 && (b == 0 || s < b)) {           # line comment starts first: drop to EOL
+          out = out substr(line, 1, s - 1); line = ""; break
+        }
+        if (b > 0) {                                # block comment opens
+          out = out substr(line, 1, b - 1); line = substr(line, b + 2); inblock = 1; continue
+        }
+        out = out line; line = ""
+      }
+      print out
+    }
+  ' "$1"
+}
 gitignore_setting() { # <settings-file> -> false | true | (empty)
   [[ -f "$1" ]] || return 0
   local norm

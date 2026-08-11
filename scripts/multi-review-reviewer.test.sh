@@ -740,7 +740,8 @@ grep -qi 'respectGitIgnore' <<<"$out" && bad "gitignore hint fired despite valid
 printf 'docs/specs/\n' > "$GREPO/.gitignore"
 for spec in \
   '{\n  // "respectGitIgnore": false\n  "theme": "Default"\n}\n|line-commented' \
-  '{\n  /* "respectGitIgnore": false */\n  "theme": "Default"\n}\n|block-commented' ; do
+  '{\n  /* "respectGitIgnore": false */\n  "theme": "Default"\n}\n|block-commented' \
+  '{\n  /*\n  "respectGitIgnore": false\n  */\n  "theme": "Default"\n}\n|multi-line-block-commented' ; do
   body="${spec%%|*}"; label="${spec##*|}"
   printf "$body" > "$GREPO/.gemini/settings.json"
   out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
