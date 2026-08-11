@@ -800,6 +800,30 @@ mutations() {
     '        grr_c="$(canon "$rr")"' \
     '        grr_c="$(canon "$(codex_workspace_root)")"'
 
+  # ---- the local-copy never-worse guard (#41, #74) -------------------------------------------
+  # scope.sh had NO entry in this table before this group, and it is the file where an unguarded
+  # path shipped and became #74 — the shape this runner exists to catch. Both halves are tabled
+  # because they fail in opposite directions: without the guard a degenerate copy ships silently,
+  # and without the floor the guard fires on every composition fixture and scoping never runs.
+
+  # The guard itself. Neutered, local-copy re-emits a copy larger than the artifact it replaces and
+  # reports success — measured live at 102% of a 36 KB doc and 106% of a 27 KB doc.
+  # Replaced with `:` rather than deleted: the call is the whole body of the floor's `if`, and
+  # deleting it leaves an empty `if ... then / fi` that no longer parses — the runner rejects that
+  # as failing the gate for the wrong reason, which is the correct call and not a coverage signal.
+  mutate 'scope/local-never-worse' 'scripts/multi-review-scope.sh' replace \
+    'local-copy emitted a copy no smaller' 'multi-review-scope.test.sh' \
+    '    _payload_guard "$scoped_b" "$full_b"' \
+    '    :'
+
+  # The floor. Forced always-on, the guard fires on artifacts too small for scoping to win by
+  # construction, so every composition fixture in the suite stops being reachable. This is the
+  # failure direction that kept the guard out of the tree for two issues.
+  mutate 'scope/local-guard-floor' 'scripts/multi-review-scope.sh' replace \
+    'floor exemption broke' 'multi-review-scope.test.sh' \
+    '  if (( full_b >= LOCAL_GUARD_FLOOR_B )); then' \
+    '  if true; then'
+
 }
 
 if (( list )); then mutations; exit 0; fi

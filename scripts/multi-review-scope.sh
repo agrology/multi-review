@@ -193,6 +193,25 @@ _payload_guard() { # <scoped-bytes> <full-bytes>
   return 0
 }
 
+# The artifact size below which local-copy does not apply the guard at all (issues #41, #74).
+#
+# This is a LANDABILITY floor, not a tuning knob. A 2-section document with 1 section touched is
+# §4.6's "primary rewrote everything" row, where scoping cannot win by construction and the diff
+# format's own overhead exceeds the body it describes — measured 101 B scoped vs 43 B full on this
+# suite's smallest fixture. An unfloored guard therefore fires on every composition fixture, which
+# is what deferred this fix in #41 behind a ~30-assertion re-baseline that turns out not to be
+# needed: every one of those fixtures sits under 1 KiB, so the floor exempts them untouched.
+#
+# It is safe on the other side too. Below the floor the ABSOLUTE waste a missed guard can cause is
+# bounded by ~1 KiB — noise beside the ~15 KB protocol contract every dispatch already carries —
+# whereas the failure this guard exists to stop scales with the document (measured at 102% of a
+# 36 KB doc and 106% of a 27 KB doc on live reviews). The floor discards only the region where the
+# guard could not be right anyway.
+#
+# pr-copy takes no floor: its basis is payload-vs-payload with the ~308 B of copy boilerplate on
+# both sides, so it has no small-artifact regime to protect.
+LOCAL_GUARD_FLOOR_B=1024
+
 cmd_local_copy() {
   local round="" max="" prev="" curr=""
   while (( $# )); do
@@ -229,17 +248,40 @@ cmd_local_copy() {
 
   local h1; h1="$(_h1 "$curr")"
 
-  printf '%s\n\n' "$h1"
-  printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
-  printf '<!-- multi-review-mode: star -->\n\n'
-  printf '> SCOPED ROUND. You are reviewing what changed since round %s, not the whole document.\n' \
-    "$((round - 1))"
-  _emit_names "$tmp"
-  printf '\n## Changes since round %s\n\n' "$((round - 1))"
-  _emit_diff "$tmp" "$round"
-  printf '\n'
-  _emit_regions "$tmp"
-  printf '## Review\n\n'
+  # Compose into a temp file rather than straight to stdout, so the never-worse guard below can
+  # measure the finished copy and still emit NOTHING when it refuses. A caller redirecting stdout
+  # (`... > "<doc>.<id>"`) must never receive a copy the guard rejected.
+  #
+  # The whole composition stays inside ONE redirected block, which preserves the ordering coupling
+  # this sequence depends on: _emit_names builds regions.curr/touched as a side effect that
+  # _emit_regions later consumes (#41), so the calls cannot be reordered or split apart.
+  {
+    printf '%s\n\n' "$h1"
+    printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
+    printf '<!-- multi-review-mode: star -->\n\n'
+    printf '> SCOPED ROUND. You are reviewing what changed since round %s, not the whole document.\n' \
+      "$((round - 1))"
+    _emit_names "$tmp"
+    printf '\n## Changes since round %s\n\n' "$((round - 1))"
+    _emit_diff "$tmp" "$round"
+    printf '\n'
+    _emit_regions "$tmp"
+    printf '## Review\n\n'
+  } > "$tmp/out"
+
+  # Never-worse guard (issues #41, #74). Basis is the composed copy against the artifact it would
+  # actually replace: on the exit-3 fallback the primary re-seeds from <doc>.baseline and rewrites
+  # the header, so --curr is that artifact's content. Both sides therefore carry a copy's worth of
+  # header, matching pr-copy's payload-vs-payload rule. `tr -d` strips BSD wc's padding so the
+  # arithmetic and the notice both read cleanly.
+  local scoped_b full_b
+  scoped_b="$(wc -c < "$tmp/out" | tr -d ' ')"
+  full_b="$(wc -c < "$curr" | tr -d ' ')"
+  if (( full_b >= LOCAL_GUARD_FLOOR_B )); then
+    _payload_guard "$scoped_b" "$full_b"
+  fi
+
+  cat "$tmp/out"
 }
 
 cmd_pr_copy() {
