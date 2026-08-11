@@ -399,4 +399,74 @@ printf 'x `MULTI_REVIEW_DOC_DIRS` (default `docs/specs docs/plans docs/superpowe
 bash "$DOCCHK" "$FX7" >/dev/null 2>&1 \
   && ok "docs-check: an aligned table row passes" || bad "false positive on an aligned table row"
 
+# --- #66 wiring: one root, captured before anything can move the cwd ---
+#
+# Both halves shipped broken and were found by re-reading the file, not by a test.
+DR="${ROOT}/commands/multi-review.md"
+if [[ -f "$DR" ]]; then
+  # (a) ensure-skill must take the CAPTURED session root. An inline substitution resolves in
+  # whatever cwd the primary is standing in, and by fan-out the egress guard has pushed it into
+  # the repo that owns the doc — while the dispatched subagent inherits the SESSION cwd. The two
+  # differ in exactly the cross-repo case #66 is about, and the bundle then materializes into a
+  # repo the reviewer never sees.
+  es="$(grep -n -A 6 'Provision each secondary' "$DR" | grep -- '--repo' || true)"
+  if [[ -z "$es" ]]; then
+    bad "no 'ensure-skill --repo' instruction found in the fan-out step"
+  elif grep -qE -- '--repo[[:space:]]*"?\$\(' <<<"$es"; then
+    bad "ensure-skill --repo inlines a command substitution — it re-resolves in the guard-forced cwd, not the session root (#66)"
+  elif grep -qF -- '--repo "<session-root>"' <<<"$es"; then
+    ok "ensure-skill --repo uses the captured <session-root>"
+  else
+    bad "ensure-skill --repo does not pass the captured <session-root> placeholder: ${es}"
+  fi
+
+  # (b) the capture must come BEFORE the egress guard. The guard resolves MULTI_REVIEW_DOC_DIRS
+  # relative to the cwd, so on a cross-repo doc it refuses until the primary moves — and after the
+  # move `git rev-parse` returns the doc's repo. Capturing later yields the wrong value silently,
+  # which is the bug --session-root exists to fix. Ordering IS the guarantee here.
+  cap_ln="$(grep -n 'Capture the session root FIRST' "$DR" | head -1 | cut -d: -f1)"
+  eg_ln="$(grep -n 'multi-review-egress-guard.sh "<doc>"' "$DR" | head -1 | cut -d: -f1)"
+  if [[ -z "$cap_ln" || -z "$eg_ln" ]]; then
+    bad "cannot locate both the session-root capture and the egress guard in $(basename "$DR")"
+  elif (( cap_ln < eg_ln )); then
+    ok "session root is captured before the egress guard can force a directory change"
+  else
+    bad "session-root capture (line ${cap_ln}) comes AFTER the egress guard (line ${eg_ln}) — by then the original cwd is gone and the captured value is the doc's repo (#66)"
+  fi
+
+  # (c) the model-id collision must be a GATE, not a caution. Prose alone is what let a supported
+  # configuration (a fable-powered primary) brick a review with no mechanical defense.
+  if grep -qF 'check-primary-id "<doc>" "<primary-model-id>"' "$DR"; then
+    ok "the primary turn runs check-primary-id before writing a response"
+  else
+    bad "the primary turn does not run check-primary-id — the collision deadlock is defended by prose only"
+  fi
+fi
+
+# --- the exit-8 retry path must carry a FINITE budget (codex-rd1-r1 on PR #78) ---
+#
+# Exit 8 means "the reviewer is still writing", and the correct response is to wait again rather
+# than quarantine a turn in progress. But this command is AUTONOMOUS by default: an autonomous
+# primary has no patience to run out, so "re-run as many times as you are willing to spend" is not
+# a stopping rule. Without a number, a copy that changes on every poll keeps returning 8 and the
+# round never reaches verification or a deliberate quarantine.
+f="${ROOT}/commands/multi-review.md"
+if [[ -f "$f" ]]; then
+  # The exit-8 bullet plus the following few lines, where the budget must live.
+  n="$(grep -n '\*\*Exit 8\*\*' "$f" | head -1 | cut -d: -f1)"
+  if [[ -z "$n" ]]; then
+    bad "no exit-8 branch documented in $(basename "$f")"
+  else
+    blk="$(sed -n "${n},$((n+8))p" "$f")"
+    if grep -qE 'at most [0-9]+|no more than [0-9]+|up to [0-9]+ (more )?(re-?run|retr|wait)' <<<"$blk"; then
+      ok "exit-8 retry carries a finite budget"
+    else
+      bad "exit-8 retry has no finite budget — an autonomous primary can re-wait forever and the round never resolves"
+    fi
+    grep -qiE 'willing to spend|your patience' <<<"$blk" \
+      && bad "exit-8 retry still bounds itself by the primary's patience, which an autonomous run does not have" \
+      || ok "exit-8 retry is not bounded by operator patience"
+  fi
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

@@ -46,6 +46,26 @@ provider_row() { # <id> -> "id|vendor|dispatch-kind|model|has-skill"
 # own help documents `model="o3"` — and a suffix-only pattern leaves those unmappable, which
 # `verify-vendor` escalates to a hard failure and takes the whole route down.
 #
+# Two shapes follow from that rule, and both were once violated by patterns that looked correct:
+#
+#   anthropic — matched `claude-*`, which REQUIRES a hyphen, so the bare family name of the
+#     primary's own vendor was the one unmappable family name in the table: `Claude`, `Claude
+#     Code` and even `Anthropic Claude` all failed while `gpt`, `o3` and `gemini` mapped. Now
+#     substring-matched like its siblings (`*opus*`, `*fable*` already were), plus the vendor's
+#     own name.
+#
+#   openai — enumerated `o1|o1-*|o3|o3-*`, i.e. the reasoning families that existed when it was
+#     written; `o4` and anything later were unmappable. That is worse than a one-off miss,
+#     because the id is the model's SELF-REPORT: re-dispatching reproduces it exactly, so the arm
+#     starves every round until this line is edited, and `MULTI_REVIEW_REVIEWER_MODEL` cannot
+#     help (it changes what is requested, not what is disclosed). `o[0-9]*` matches the family
+#     rather than a release schedule.
+#
+# Widening stays BOUNDED — an id naming no known vendor (`llama-3`, `mistral-large`) is still
+# unmappable, and an id naming the WRONG vendor still fails `verify-vendor`. No impostor is
+# constrained by which spelling of its own name it chose, which is the same reasoning the
+# case-fold fix below rests on.
+#
 # Matching is CASE-INSENSITIVE (issue #24). Observed live: `codex` disclosed `gpt-5` in one round
 # and `GPT-5` in the next from identical dispatches; the lowercase-only patterns made the second
 # unmappable, quarantining a correct reviewer and discarding its whole round over the casing of
@@ -63,10 +83,10 @@ provider_row() { # <id> -> "id|vendor|dispatch-kind|model|has-skill"
 vendor_of_model() { # <model-id> -> vendor
   local id; id="$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
   case "$id" in
-    claude-*|*opus*|*sonnet*|*haiku*|*fable*)     echo "anthropic" ;;
-    gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)            echo "openai" ;;
-    gemini|gemini-*)                              echo "google" ;;
-    *)                                            return 1 ;;
+    *claude*|*anthropic*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;
+    gpt|gpt-*|o[0-9]*|*codex*)                             echo "openai" ;;
+    gemini|gemini-*)                                       echo "google" ;;
+    *)                                                     return 1 ;;
   esac
 }
 
@@ -118,9 +138,59 @@ hint() { echo "multi-review-reviewer: hint ($1): $2" >&2; }
 # pathological JSON. The tri-state matters because the two scopes are ranked, not OR-ed: see
 # gitignore_respected. (Supersedes an earlier boolean gitignore_disabled, which could not
 # express "explicitly true" and so could not rank the scopes.)
+# COMMENTS ARE STRIPPED FIRST. gemini-cli's settings.json documents comment support and strips
+# them on load, so a commented-out setting is an ordinary file — and deleting all whitespace folds
+# `// "respectGitIgnore": false` into `//"respectgitignore":false`, a substring the match below
+# reads as a LIVE opt-out. The hint then goes silent in exactly the repo state it exists to warn
+# about (issue #22): gemini refuses the doc, the copy is never written, and the round dies as a
+# wait-bound timeout whose recorded reason names neither gitignore nor the setting.
+#
+# BLOCK COMMENTS ARE TRACKED ACROSS LINES, which a `sed` pass structurally cannot do (codex-rd1-r1).
+# A line-based strip removes only the line carrying `/*`, so the setting on the NEXT line survives
+# into the normalized string and reads as a live opt-out again — the same suppression this function
+# exists to prevent, in the comment shape a human is most likely to write:
+#
+#     {  /*
+#          "respectGitIgnore": false
+#        */
+#        "theme": "Default" }
+#
+# Hence the awk state machine: `inblock` persists between lines, and the scan is left-to-right so
+# whichever of `/*` and `//` comes FIRST on a line wins (a `//` inside a block comment is not a
+# line comment, and a `/*` after a `//` is already commented out).
+#
+# One accepted limit remains, and it errs toward FIRING the hint rather than suppressing it — a
+# spurious hint costs a line of advisory text, a suppressed one costs the round: a `//` or `/*`
+# inside a string VALUE (a proxy URL, a glob) is treated as a comment, which deletes text and can
+# therefore only remove a `false`, never invent one. Removing it leaves the setting absent, the
+# default (honor gitignore) applies, and the hint fires.
+strip_json_comments() {
+  awk '
+    {
+      line = $0; out = ""
+      while (length(line)) {
+        if (inblock) {
+          p = index(line, "*/")
+          if (p == 0) { line = ""; break }          # rest of the line is still inside the comment
+          inblock = 0; line = substr(line, p + 2); continue
+        }
+        b = index(line, "/*"); s = index(line, "//")
+        if (s > 0 && (b == 0 || s < b)) {           # line comment starts first: drop to EOL
+          out = out substr(line, 1, s - 1); line = ""; break
+        }
+        if (b > 0) {                                # block comment opens
+          out = out substr(line, 1, b - 1); line = substr(line, b + 2); inblock = 1; continue
+        }
+        out = out line; line = ""
+      }
+      print out
+    }
+  ' "$1"
+}
 gitignore_setting() { # <settings-file> -> false | true | (empty)
   [[ -f "$1" ]] || return 0
-  local norm; norm="$(tr -d '[:space:]' < "$1" | tr '[:upper:]' '[:lower:]')"
+  local norm
+  norm="$(strip_json_comments "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
   case "$norm" in
     *'"respectgitignore":false'*) echo false ;;
     *'"respectgitignore":true'*)  echo true ;;

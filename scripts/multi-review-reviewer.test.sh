@@ -562,6 +562,44 @@ for id in o1 o3 o1-preview o3-mini; do
     || bad "vendor mapping: '$id' unmapped -> '$out'"
 done
 
+# --- vendor mapping: the OpenAI reasoning family is not frozen at o3 ---
+# `o1|o1-*|o3|o3-*` enumerates the families that existed when it was written. A disclosure the
+# map misses is `die 1` -> quarantine, and because the id is the model's own SELF-REPORT,
+# re-dispatching next round reproduces it identically: the arm starves every round until the
+# script is edited. MULTI_REVIEW_REVIEWER_MODEL cannot rescue it either — the override changes
+# what is REQUESTED, not what is disclosed. Enumerating a vendor's release schedule is the bug.
+for id in o4 o4-mini o5 o9-preview; do
+  out="$(bash "$SUT" vendor-of-model "$id" 2>/dev/null)"
+  [[ "$out" == "openai" ]] && ok "vendor mapping: '$id' -> openai (family, not an enumeration)" \
+    || bad "vendor mapping: '$id' unmapped -> '$out' — a future o-series disclosure starves the arm every round"
+done
+
+# --- vendor mapping: Anthropic accepts its BARE family name, like every other vendor ---
+# vendor_of_model's own comment states the rule: "Each family accepts the BARE id as well as the
+# versioned one." openai (`gpt`, `o3`) and google (`gemini`) honour it; anthropic did not, because
+# `claude-*` requires a hyphen. So the one family whose bare name failed was the primary's own —
+# and `Anthropic Claude` failed while naming the vendor literally. Same class as #24 (a correct
+# reviewer quarantined over the spelling of its own name), one spelling over.
+while IFS='|' read -r id want; do
+  out="$(bash "$SUT" vendor-of-model "$id" 2>/dev/null)"
+  [[ "$out" == "$want" ]] && ok "vendor mapping: '$id' -> $want (bare/informal self-report)" \
+    || bad "vendor mapping: '$id' -> '$out' (want $want) — a whole round is discarded over this"
+done <<'BARECASES'
+claude|anthropic
+Claude|anthropic
+Claude Code|anthropic
+Anthropic Claude|anthropic
+claude 3.7|anthropic
+BARECASES
+
+# An id that names NO vendor must still fail — widening must not become "map everything".
+for id in llama-3 mistral-large ''; do
+  [[ -z "$id" ]] && continue
+  bash "$SUT" vendor-of-model "$id" >/dev/null 2>&1 \
+    && bad "vendor mapping: '$id' mapped to a vendor — the guard no longer rejects an impostor" \
+    || ok "vendor mapping: '$id' is still unmappable (widening stayed bounded)"
+done
+
 # --- vendor mapping is CASE-INSENSITIVE (issue #24) ---
 # Observed live: `codex` disclosed `gpt-5` in one round and `GPT-5` in the next from IDENTICAL
 # dispatches. The lowercase-only patterns made the second unmappable, and verify-vendor escalates
@@ -687,6 +725,41 @@ out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="$
 printf '{\n  "context": {\n    "fileFiltering": { "respectGitIgnore" : false }\n  }\n}\n' > "$GREPO/.gemini/settings.json"
 out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
 grep -qi 'respectGitIgnore' <<<"$out" && bad "gitignore hint fired despite valid (spaced) setting" || ok "check gemini: gitignore match is whitespace-tolerant"
+
+# --- a COMMENTED-OUT opt-out must not read as a live one ---
+#
+# gemini-cli's settings.json documents comment support and strips them on load, so a
+# commented-out setting is an ordinary file, not pathological JSON. Normalising by deleting ALL
+# whitespace folds `// "respectGitIgnore": false` into `//"respectgitignore":false`, a substring
+# the matcher reads as a LIVE opt-out — so the hint goes silent in exactly the repo state it
+# exists to warn about (issue #22): gemini refuses the doc, the copy is never written, and the
+# round dies as a wait-bound timeout whose reason names neither gitignore nor the setting.
+#
+# The hint is conditional on something actually being unreadable (see the "ignores nothing"
+# assertion above), so these cases need a genuinely ignored doc dir to be reachable at all.
+printf 'docs/specs/\n' > "$GREPO/.gitignore"
+for spec in \
+  '{\n  // "respectGitIgnore": false\n  "theme": "Default"\n}\n|line-commented' \
+  '{\n  /* "respectGitIgnore": false */\n  "theme": "Default"\n}\n|block-commented' \
+  '{\n  /*\n  "respectGitIgnore": false\n  */\n  "theme": "Default"\n}\n|multi-line-block-commented' ; do
+  body="${spec%%|*}"; label="${spec##*|}"
+  printf "$body" > "$GREPO/.gemini/settings.json"
+  out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+  grep -qi 'respectGitIgnore' <<<"$out" \
+    && ok "check gemini: a ${label} opt-out does not suppress the hint" \
+    || bad "a ${label} respectGitIgnore read as a live opt-out — the #22 hint went silent"
+done
+
+# ...and a REAL opt-out sharing a line with a comment still counts: stripping must not eat data.
+printf '{\n  "context": { "fileFiltering": { "respectGitIgnore": false } } // opt out\n}\n' > "$GREPO/.gemini/settings.json"
+out="$(cd "$GREPO" && HOME="$GREPO/home" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GBIN}:$PATH" bash "$SUT" check --reviewer gemini 2>&1 >/dev/null)"
+grep -qi 'respectGitIgnore' <<<"$out" \
+  && bad "comment stripping ate a live setting — hint fired despite a real opt-out" \
+  || ok "check gemini: a trailing comment does not hide a real opt-out"
+
+# restore the fixture for the assertions that follow
+rm -f "$GREPO/.gitignore"
+printf '{"context":{"fileFiltering":{"respectGitIgnore":false}}}\n' > "$GREPO/.gemini/settings.json"
 
 # key in a workspace .env (not ~/.gemini) also counts -> no key hint
 rm -f "$GREPO/home/.gemini/.env"; printf 'GEMINI_API_KEY=fake-secret-value\n' > "$GREPO/.env"

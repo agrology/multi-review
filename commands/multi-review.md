@@ -169,6 +169,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
 ### Arm (idempotent)
 
+- **Capture the session root FIRST — before the egress guard below, and before anything else in
+  this command changes directory.** In your original invocation directory run
+  `git rev-parse --show-toplevel` once and keep the result as `<session-root>`. If it is empty
+  (your cwd is not a git repo), say so and STOP rather than passing an empty value.
+
+  This bullet is first because the ORDER is the whole point. The egress guard resolves
+  `MULTI_REVIEW_DOC_DIRS` relative to the current directory, so on a cross-repo doc it refuses
+  until you move into the repo that owns the doc — and once you have moved, the original
+  directory is gone and `git rev-parse` returns the doc's repo instead. Capturing afterwards
+  yields exactly the wrong value, silently, which is the bug `--session-root` exists to fix
+  (issue #66). Everything downstream that says `<session-root>` means the value captured HERE.
+
 - Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-egress-guard.sh "<doc>"`. Non-zero → report the
   message and STOP — do not arm.
 - Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-core.sh marker "<doc>"`.
@@ -193,10 +205,6 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     each a stable `pref reviewer … dropping` line: `unknown — dropping` (stale, registry-removed)
     and `unavailable in this repo — dropping` (registered but not set up). So a self-healed, quietly
     narrowed combo is visible, mirroring a dispatch quarantine.
-  - **Capture the session root FIRST**, in your original invocation directory, before this command
-    changes directory anywhere: run `git rev-parse --show-toplevel` once and keep the result as
-    `<session-root>`. If it is empty (your cwd is not a git repo), say so and STOP rather than
-    passing an empty value — see below for why.
   - **Relay preflight hints.** For each resolved secondary, run
     `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh check --reviewer <id> --doc "<doc>"
     --session-root "<session-root>"` and surface any
@@ -361,12 +369,22 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    Seeding is the one step you perform by hand, so it is the one step with no other check on it:
    get the truncation wrong and nothing downstream notices — `merge` accepts the copy, `verify`
    passes, `check-converged` passes, and the gate reports N *independent* secondaries.
-3. **Provision each secondary's skill, right before dispatch.** The working root is the git
-   toplevel of the repo under review — your own invocation directory (`git rev-parse
-   --show-toplevel`) — **never** `<doc>`'s own location: for a PR-flavor doc, `<doc>` is a
-   scratch file under `.multi-review/reviews/` and is not the repo it describes. For each id, run
-   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh ensure-skill --reviewer <id> --repo
-   <that working root>` — a no-op for skill-less reviewers. Non-zero
+3. **Provision each secondary's skill, right before dispatch.** The working root is
+   **`<session-root>` — the value you captured in Arm**, and **never** `<doc>`'s own location: for
+   a PR-flavor doc, `<doc>` is a scratch file under `.multi-review/reviews/` and is not the repo
+   it describes. For each id, run
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh ensure-skill --reviewer <id>
+   --repo "<session-root>"` — a no-op for skill-less reviewers.
+
+   **Substitute the captured value; do NOT inline `$(git rev-parse --show-toplevel)` here** — the
+   same rule Arm states for `check --session-root`, and for the same reason. By this point the
+   egress guard has pushed you into the repo that owns the doc, so a substitution resolves to
+   THAT repo while the dispatched subagent inherits the SESSION cwd. In the cross-repo case the
+   two differ, the bundle materializes into a repo the reviewer never sees, and the round dies as
+   a wait-bound timeout with a reason that describes the symptom (issue #66). Provisioning and
+   dispatch must resolve to one root, and `<session-root>` is the one dispatch actually uses.
+
+   Non-zero
    exit → do NOT dispatch that reviewer this round; quarantine it now, using the command's stderr
    as the reason, via the same quarantine path a dispatch failure uses (record `--quarantined
    <id>:<reason>` for the merge below). If every selected reviewer quarantines here, apply the
@@ -424,11 +442,50 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             (( ${#argv[@]} )) && "${argv[@]}"
 
    All same-turn subagent dispatches go in the SAME response block as each other.
-5. **Bound the wait, per copy.**
-   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh "<doc>.<id>" awaiting-author [seconds]`
-   (240s default is reasonable; raise it for a known-slow provider). Exit 0 → verify below.
-   Non-zero (bound hit, or the copy went sideways) → quarantine this provider (next step) with
-   that reason. A hung secondary must never stall the others or the round.
+5. **Bound the wait, per copy — and never quarantine on the first bound hit.**
+
+       "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh" "<doc>.<id>" awaiting-author \
+         [seconds] --seed "<doc>.<id>.seed"
+
+   Pass `--seed` (the snapshot step 2 already took). It is what lets the wait tell a reviewer that
+   never took a turn from one that is mid-write — opposite facts that a bare bound hit reports
+   identically, and the difference between quarantining a no-op and discarding real findings.
+
+   - **Exit 0** → verify below.
+   - **Exit 8** — the copy CHANGED since dispatch but the marker is not flipped. The reviewer is
+     demonstrably alive and still writing, so do NOT quarantine on the first 8: that throws away a
+     turn that is actively being written. **Re-run the same wait, at most 3 more times.** If the
+     4th wait still returns 8, quarantine with the reason **`still writing at the retry cap`** —
+     distinct from `no turn taken`, because the two describe opposite states and the gate renders
+     reasons as free text.
+
+     The cap is a number rather than your judgement because this command is **autonomous by
+     default**: a primary running with nobody watching has no patience to run out, and a copy that changes on every
+     poll would otherwise return 8 forever, so the round would never reach verification or a
+     deliberate quarantine (codex-rd1-r1 on PR #78). Four waits at the 600s default is ~40 minutes
+     for one provider, which is already generous for a reviewer that has not managed to flip a
+     marker.
+   - **Exit 9** — the copy is byte-identical to its seed: no turn taken *yet*. Re-run the wait
+     **once** as grace before recording anything. A reviewer 82 seconds past the bound is not a
+     reviewer that failed (issue #71: a bound-hit copy completed with 11 findings, one `high`).
+     If the second wait also returns 9, quarantine with the reason **`no turn taken`** — the one
+     state that proves the reviewer contributed nothing, as opposed to finishing late.
+   - **Exit 10** — a terminal state preempted the wait. Stop and surface it; this is not a
+     quarantine.
+   - **Exit 2** — a usage error on your side (bad path, missing seed). Fix the invocation.
+     **Never quarantine a reviewer for an exit 2.**
+
+   The default bound is 600s, chosen to cover the floor reviewer's measured 60–622s range. Raise
+   it for a known-slow provider; lowering it below that range quarantines `fable` on latency
+   alone, and in a default (fable-only) run that empties the admitted set and trips the
+   all-quarantined anomaly stop — the review dies without a single reviewer having failed.
+
+   Use the two reasons **verbatim** when you do quarantine here — `no turn taken` for exit 9, and
+   the wait's own message for anything else. `gate-summary` renders quarantine reasons as free
+   text, so two different failures worded two different ways read alike to whoever reads the gate.
+
+   A hung secondary must never stall the others or the round: these waits are per-copy and a
+   provider that keeps returning 8 past your patience is still yours to quarantine, deliberately.
 6. **Verify identity, per copy that reached `awaiting-author`.**
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh verify-vendor --baseline
    "<doc>.baseline" "<doc>.<id>" --reviewer <id>`. Pass → admit the copy into the merge. Fail →
@@ -510,9 +567,24 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    `agree` with, even when it is inconvenient — the point of the review is the findings you did
    not expect. If you are unsure, agree and fix; being wrong in that direction is cheaper.
 
-   Caution: `<primary-model-id>` must differ from every secondary's disclosed `> — via` model id
-   — the self-response guard fails a response whose model equals the finding's raiser model, so
-   colliding with a Claude-family secondary like `fable` would make convergence impossible.
+   **Check your own model id BEFORE writing the first response** — this is a gate, not a caution:
+
+       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-primary-id "<doc>" "<primary-model-id>"
+
+   - **Exit 0** → your id is distinct from every raiser's; proceed.
+   - **Exit 3** → it collides. Do NOT write a response under it. Disclose a distinguishing id
+     (the message suggests one) and use that for every response in this review.
+
+   The self-response guard fails a response whose model equals the finding's raiser model, and it
+   is **parse-fatal by design** — but it fires only once the colliding response is already in the
+   doc. `_table` underlies `_structural_consistency`, so from that moment merge's pre-check,
+   `verify`, `gate-summary`, `round-stats` and `compose-review` all fail too, and the review is
+   stuck in both directions: you cannot respond without tripping the guard, and cannot converge
+   without responding. Recovery means hand-editing the doc or disclosing a false id.
+
+   This is not operator error waiting to happen — it is a supported configuration. `fable` is a
+   selectable session model, so a fable-powered primary discloses exactly the string its floor
+   secondary does. One command up front costs a line of output; the collision costs the review.
 3. **Optionally** record a primary observation the secondaries all missed:
    `> [observation] <text>` + `> — via <primary-model-id>`. It is never a finding and never
    counted toward convergence — but in PR mode it IS published with the review (issue #63),

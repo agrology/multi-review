@@ -323,6 +323,53 @@ mutations() {
     '  local id; id="$(printf '"'"'%s'"'"' "$1" | LC_ALL=C tr '"'"'[:upper:]'"'"' '"'"'[:lower:]'"'"')"' \
     '  local id; id="$1"'
 
+  # ---- #66 wiring, the collision gate, and core.sh's first entries ------------------------------
+
+  # ensure-skill's root must be the CAPTURED session root. An inline substitution resolves in the
+  # guard-forced cwd, so in the cross-repo case the bundle lands in a repo the reviewer never sees.
+  mutate 'command/ensure-skill-session-root' 'commands/multi-review.md' replace \
+    'ensure-skill --repo inlines a command substitution' 'multi-review-packaging.test.sh' \
+    '   --repo "<session-root>"` — a no-op for skill-less reviewers.' \
+    '   --repo "$(git rev-parse --show-toplevel)"` — a no-op for skill-less reviewers.'
+
+  # The doc must still CLAIM the ordering. A single-line replace cannot actually reorder two
+  # bullets, so this entry covers the claim's presence, not the order itself; the order is asserted
+  # by comparing line numbers, which only a real reordering exercises. Named for what it covers.
+  mutate 'command/session-root-first-claim' 'commands/multi-review.md' replace \
+    'cannot locate both the session-root capture' 'multi-review-packaging.test.sh' \
+    '- **Capture the session root FIRST — before the egress guard below, and before anything else in' \
+    '- **Capture the session root (do this at some point during Arm) — before anything else in'
+
+  # The collision must be a GATE. Prose alone is what let a supported configuration (a
+  # fable-powered primary) brick a review with no mechanical defense.
+  mutate 'command/check-primary-id-gate' 'commands/multi-review.md' replace \
+    'does not run check-primary-id' 'multi-review-packaging.test.sh' \
+    '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-primary-id "<doc>" "<primary-model-id>"' \
+    '       (compare your model id against the secondaries by eye before responding)'
+
+  # ...and the check itself must read the RAISER's disclosure, not the primary's own responses —
+  # matching those would refuse every round after the first.
+  mutate 'star/check-primary-id-raiser-only' 'scripts/multi-review-star.sh' replace \
+    'accepted a colliding primary id' 'multi-review-star.test.sh' \
+    '    /^> \[finding:/ { want = 1; next }' \
+    '    /^> \[finding:/ { want = 0; next }'
+
+  # core.sh STILL HAS NO ENTRIES, and that is recorded rather than quietly omitted — a table entry
+  # is a claim that coverage exists, and here it cannot honestly be made yet. Two blockers, both
+  # measured while attempting it:
+  #
+  #   1. core.sh is VENDORED into .agents/skills/multi-review/scripts/. Any mutation to the source
+  #      makes multi-review-reviewer-bundle.test.sh fail first with "bundled script missing/
+  #      drifted", which is a real guard firing for an unrelated reason. Every core.sh mutation is
+  #      therefore MISCREDITED: the gate goes red, but never via the assertion being claimed.
+  #   2. Independently, `multi-review-core.test.sh` stayed GREEN with the duplicate-marker guard
+  #      (`(( n > 1 ))`) mutated, so that line has no coverage in its own suite either — the
+  #      "marker fails with duplicate markers" assertion is satisfied by a different mechanism.
+  #
+  # Fixing this needs the runner to mirror a mutation into the vendored copy (or exempt it), which
+  # is its own change. Recorded here so the next person does not re-derive the dead end, and so the
+  # gap stays visible instead of reading as "core.sh has no guards worth tabling".
+
   # ---- the PR diff window (#40) -------------------------------------------------------------
   # Every guard below was mutation-verified BY HAND while it was written. Tabling them is what makes
   # that permanent: a hand-verified guard with no entry can be silently un-covered by the next edit,
@@ -820,6 +867,126 @@ mutations() {
     'the run would burn a round' 'multi-review-star.test.sh' \
     '    if ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then' \
     '    if [[ "$src" == "pref" ]] && ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then'
+  # ---- the wait bound's quarantine inputs (#71, #47) ------------------------------------------
+  # wait.sh had NO entries before this group. Its exit code is the sole input to the quarantine
+  # decision, so a guard lost here does not fail loudly — it silently discards reviewer turns.
+
+  # The in-flight/no-turn split. Collapsed back to a bare 9, a reviewer that is demonstrably
+  # mid-write is indistinguishable from one that never opened the document, and the playbook
+  # quarantines both.
+  mutate 'wait/seed-inflight-distinct' 'scripts/multi-review-wait.sh' replace \
+    'in-flight bound hit' 'multi-review-wait.test.sh' \
+    '  if cmp -s "$doc" "$seed"; then' \
+    '  if true; then'
+
+  # The missing-seed refusal. Downgraded to a silent pass, a caller that asked for the
+  # distinction gets the undifferentiated 9 back without being told — which is exactly how the
+  # quarantine reason becomes wrong again.
+  mutate 'wait/seed-missing-is-usage-error' 'scripts/multi-review-wait.sh' delete \
+    'missing seed rc=' 'multi-review-wait.test.sh' \
+    '[[ -z "$seed" || -f "$seed" ]] || die "seed snapshot not found: $seed"'
+
+  # The exit-8 retry budget. Reverted to operator judgement, an AUTONOMOUS primary has no patience
+  # to run out and a copy that changes on every poll returns 8 forever — the round never reaches
+  # verification or a deliberate quarantine (codex-rd1-r1 on PR #78).
+  mutate 'command/exit8-retry-budget' 'commands/multi-review.md' replace \
+    'exit-8 retry has no finite budget' 'multi-review-packaging.test.sh' \
+    '     turn that is actively being written. **Re-run the same wait, at most 3 more times.** If the' \
+    '     turn that is actively being written. **Re-run the same wait** as needed. If a later'
+
+  # The default bound. Back under the floor reviewer's measured range, `fable` is quarantined on
+  # latency alone — and in a default (fable-only) run that empties the admitted set and trips the
+  # all-quarantined anomaly stop, killing the review with no reviewer having actually failed.
+  mutate 'wait/default-bound-covers-fable' 'scripts/multi-review-wait.sh' replace \
+    'below fable'"'"'s measured' 'multi-review-wait.test.sh' \
+    'DEFAULT_MAX_SECONDS=600' \
+    'DEFAULT_MAX_SECONDS=240'
+  # ---- the local-copy never-worse guard (#41, #74) -------------------------------------------
+  # scope.sh had NO entry in this table before this group, and it is the file where an unguarded
+  # path shipped and became #74 — the shape this runner exists to catch. Both halves are tabled
+  # because they fail in opposite directions: without the guard a degenerate copy ships silently,
+  # and without the floor the guard fires on every composition fixture and scoping never runs.
+
+  # The guard itself. Neutered, local-copy re-emits a copy larger than the artifact it replaces and
+  # reports success — measured live at 102% of a 36 KB doc and 106% of a 27 KB doc.
+  # Replaced with `:` rather than deleted: the call is the whole body of the floor's `if`, and
+  # deleting it leaves an empty `if ... then / fi` that no longer parses — the runner rejects that
+  # as failing the gate for the wrong reason, which is the correct call and not a coverage signal.
+  mutate 'scope/local-never-worse' 'scripts/multi-review-scope.sh' replace \
+    'local-copy emitted a copy no smaller' 'multi-review-scope.test.sh' \
+    '    _payload_guard "$scoped_b" "$full_b"' \
+    '    :'
+
+  # The floor. Forced always-on, the guard fires on artifacts too small for scoping to win by
+  # construction, so every composition fixture in the suite stops being reachable. This is the
+  # failure direction that kept the guard out of the tree for two issues.
+  mutate 'scope/local-guard-floor' 'scripts/multi-review-scope.sh' replace \
+    'floor exemption broke' 'multi-review-scope.test.sh' \
+    '  if (( full_b >= LOCAL_GUARD_FLOOR_B )); then' \
+    '  if true; then'
+  # ---- identity mapping must not discard a round over a spelling ------------------------------
+  # Both entries mutate BACK to the pattern that shipped, so each asserts the specific miss.
+
+  # anthropic matched `claude-*` — hyphen required — so the bare family name of the PRIMARY's own
+  # vendor was unmappable while `gpt`, `o3` and `gemini` all mapped bare. An unmappable disclosure
+  # is die 1 -> the reviewer's whole round is quarantined.
+  mutate 'reviewer/vendor-anthropic-bare' 'scripts/multi-review-reviewer.sh' replace \
+    'a whole round is discarded over this' 'multi-review-reviewer.test.sh' \
+    '    *claude*|*anthropic*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;' \
+    '    claude-*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;'
+
+  # openai ENUMERATED the reasoning families that existed when it was written, so `o4` and later
+  # were unmappable. Worse than a one-off: the id is the model's self-report, so re-dispatch
+  # reproduces it and the arm starves every round until this line is edited.
+  mutate 'reviewer/vendor-openai-family' 'scripts/multi-review-reviewer.sh' replace \
+    'starves the arm every round' 'multi-review-reviewer.test.sh' \
+    '    gpt|gpt-*|o[0-9]*|*codex*)                             echo "openai" ;;' \
+    '    gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)                     echo "openai" ;;'
+
+  # A commented-out `respectGitIgnore: false` folded into a substring the matcher read as a LIVE
+  # opt-out once whitespace was deleted, silencing the #22 hint in exactly the repo state it warns
+  # about. Without the strip, gemini refuses the doc and the round dies as a wait-bound timeout.
+  # Comment stripping has TWO separable properties, and the sed version this replaced only ever
+  # had the first. Tabled separately so losing either one is named.
+
+  # Line comments stripped at all: without this a commented-out setting reads as live.
+  mutate 'reviewer/gitignore-strip-line-comments' 'scripts/multi-review-reviewer.sh' replace \
+    'a line-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
+    '        if (s > 0 && (b == 0 || s < b)) {           # line comment starts first: drop to EOL' \
+    '        if (0) {'
+
+  # Block state PERSISTS ACROSS LINES. A line-based strip removes only the line carrying `/*`, so
+  # a setting on the next line survives — the shape codex-rd1-r1 reported against the sed version,
+  # and the one a human is most likely to write.
+  mutate 'reviewer/gitignore-strip-block-across-lines' 'scripts/multi-review-reviewer.sh' replace \
+    'a multi-line-block-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
+    '        if (inblock) {' \
+    '        if (0) {'
+  # ---- convergence integrity ------------------------------------------------------------------
+
+  # THE SELF-RESPONSE GUARD. This is what makes the review a review rather than a self-review: it
+  # refuses a response disclosed under the same model id that raised the finding. It shipped with
+  # ZERO coverage — deleting it left every suite green — on the one guard the command file calls
+  # convergence-critical. Exactly the §11 defect class, so it gets an entry as well as a test.
+  mutate 'star/self-response-guard' 'scripts/multi-review-star.sh' replace \
+    'self-response guard did not bite' 'multi-review-star.test.sh' \
+    '        if (id in rverb && rmodel[id] == raiser[id]) fail("self-response on finding: " id)' \
+    '        if (0) fail("self-response on finding: " id)'
+
+  # Zero admitted copies is reachable (a fable-only run whose one secondary hits the wait bound).
+  # Without the refusal, bash 3.2 aborts on the array expansion with a raw unbound-variable error
+  # and the round's quarantine record is never written.
+  mutate 'star/merge-zero-copies-refused' 'scripts/multi-review-star.sh' replace \
+    'did not refuse with a named reason' 'multi-review-star.test.sh' \
+    '  if (( ${#copies[@]} == 0 )); then' \
+    '  if false; then'
+
+  # The verdict must not present a round that ESCALATED to new highs as saturation. Counting alone
+  # advised "converge" on two lows -> two highs and "re-fan" on two lows -> one high.
+  mutate 'star/round-stats-high-clause' 'scripts/multi-review-star.sh' replace \
+    'still reads as a plain converge' 'multi-review-star.test.sh' \
+    '      if (v ~ /^converge/ && HI[rounds+0] > 0)' \
+    '      if (0)'
 
 }
 
