@@ -814,6 +814,14 @@ mutations() {
     '- You are a **secondary**: you raise findings and nothing else. Append each under the doc'"'"'s' \
     '- Leave concerns as `> [reviewer:<id>]` lines, each followed by a `> — via <your-model>` line, and'
 
+  # The severity-less `[finding:]` ban (codex-rd2-r1 on PR #76). `[finding:` alone cannot be
+  # banned — the live grammar uses it — so the check keys on the ABSENT `|<sev>` part. Consequential
+  # rather than cosmetic: a severity-less finding is a hard parse error (exit 2), so a reviewer
+  # following that instruction destroys its own turn, which is what this guard family prevents.
+  mutate 'docs/retired-bare-finding-token' 'scripts/multi-review-packaging.test.sh' delete \
+    'detector misses a severity-less' 'multi-review-packaging.test.sh' \
+    '    grep -oE '"'"'\[finding:[^]|]*\]'"'"' <<<"$1"'
+
   # The prompt's own counter-instruction. Without it an injected memory file is the only standing
   # instruction the reviewer has about grammar and scope, and it outranks nothing.
   mutate 'reviewer/prompt-ignore-memory-files' 'scripts/multi-review-reviewer.sh' replace \

@@ -412,13 +412,45 @@ bash "$DOCCHK" "$FX7" >/dev/null 2>&1 \
 # The retired grammars are named in docs/multi-review.md's `## Supersedes`: the asymmetric
 # single-reviewer pair (`[reviewer:]` / `[author: resolved:]`) and the two-agent peer-review
 # pair (`[concur:]` / `[withdraw:]`, and the `peer-review` mode hint that selected them).
+#
+# Extracted as a function so the detection can be exercised against a SYNTHETIC section as well as
+# the real files. Asserting only against the real files makes the check unfalsifiable in practice:
+# it passes because those files are currently correct, not because it can detect a bad one.
+retired_grammar_in() { # <section-text> -> offending tokens, space-joined (empty = clean)
+  { grep -oE '\[(reviewer|author: resolved|concur|withdraw):|peer-review' <<<"$1"
+    # A `[finding:` with NO `|<sev>` part is the RETIRED peer spelling, and `[finding:` alone
+    # cannot be banned because the live grammar uses it too (codex-rd2-r1 on PR #76). The
+    # character class stops at `]` or `|`, so `[finding:r1]` matches and
+    # `[finding:<id>|<sev>]` does not. This one is consequential rather than cosmetic: a
+    # severity-less finding is a HARD parse error (`finding r1 needs a |high, |med, or |low
+    # severity tag`, exit 2), so a reviewer following that instruction destroys its own turn.
+    grep -oE '\[finding:[^]|]*\]' <<<"$1"
+  } 2>/dev/null | sort -u | tr '\n' ' '
+}
+
+# The detector must FIRE on a section that teaches the retired severity-less form while still
+# mentioning the live one — the shape that slips past a "does it name the live grammar" check,
+# because both that assertion and the banned-verb assertion pass.
+_synthetic="Leave concerns as \`> [finding:r1] concern\` lines. The parser expects [finding:<id>|<sev>]."
+if [[ -n "$(retired_grammar_in "$_synthetic")" ]]; then
+  ok "retired-grammar detector fires on a severity-less [finding:] that also names the live form"
+else
+  bad "retired-grammar detector misses a severity-less [finding:] — a complying reviewer hard-fails the parser (codex-rd2-r1)"
+fi
+# ...and must NOT fire on the live grammar alone, or it fails every correct document.
+if [[ -z "$(retired_grammar_in 'Append \`> [finding:<id>|<sev>] <concern>\` under ## Review.')" ]]; then
+  ok "retired-grammar detector accepts the live [finding:<id>|<sev>] form"
+else
+  bad "retired-grammar detector rejects the LIVE grammar — it would fail a correct memory file"
+fi
+
 for mf in CLAUDE.md AGENTS.md; do
   f="${ROOT}/${mf}"
   if [[ ! -f "$f" ]]; then bad "${mf} missing"; continue; fi
   # Scope to the reviewer-role section: the rest of the file may legitimately discuss history.
   sec="$(awk '/^### Multi-review \(reviewer role\)/{on=1} on{print} on && /^### How this repo applies/{exit}' "$f")"
   if [[ -z "$sec" ]]; then bad "${mf}: no '### Multi-review (reviewer role)' section to check"; continue; fi
-  retired="$(grep -oE '\[(reviewer|author: resolved|concur|withdraw):|peer-review' <<<"$sec" | sort -u | tr '\n' ' ')"
+  retired="$(retired_grammar_in "$sec")"
   [[ -z "$retired" ]] \
     && ok "${mf}: reviewer role teaches no retired grammar" \
     || bad "${mf}: reviewer role instructs retired grammar (${retired}) — a complying reviewer is quarantined as a non-response"
