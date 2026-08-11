@@ -193,6 +193,25 @@ _payload_guard() { # <scoped-bytes> <full-bytes>
   return 0
 }
 
+# The artifact size below which local-copy does not apply the guard at all (issues #41, #74).
+#
+# This is a LANDABILITY floor, not a tuning knob. A 2-section document with 1 section touched is
+# §4.6's "primary rewrote everything" row, where scoping cannot win by construction and the diff
+# format's own overhead exceeds the body it describes — measured 101 B scoped vs 43 B full on this
+# suite's smallest fixture. An unfloored guard therefore fires on every composition fixture, which
+# is what deferred this fix in #41 behind a ~30-assertion re-baseline that turns out not to be
+# needed: every one of those fixtures sits under 1 KiB, so the floor exempts them untouched.
+#
+# It is safe on the other side too. Below the floor the ABSOLUTE waste a missed guard can cause is
+# bounded by ~1 KiB — noise beside the ~15 KB protocol contract every dispatch already carries —
+# whereas the failure this guard exists to stop scales with the document (measured at 102% of a
+# 36 KB doc and 106% of a 27 KB doc on live reviews). The floor discards only the region where the
+# guard could not be right anyway.
+#
+# pr-copy takes no floor: its basis is payload-vs-payload with the ~308 B of copy boilerplate on
+# both sides, so it has no small-artifact regime to protect.
+LOCAL_GUARD_FLOOR_B=1024
+
 cmd_local_copy() {
   local round="" max="" prev="" curr=""
   while (( $# )); do
@@ -229,17 +248,56 @@ cmd_local_copy() {
 
   local h1; h1="$(_h1 "$curr")"
 
-  printf '%s\n\n' "$h1"
-  printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
-  printf '<!-- multi-review-mode: star -->\n\n'
-  printf '> SCOPED ROUND. You are reviewing what changed since round %s, not the whole document.\n' \
-    "$((round - 1))"
-  _emit_names "$tmp"
-  printf '\n## Changes since round %s\n\n' "$((round - 1))"
-  _emit_diff "$tmp" "$round"
-  printf '\n'
-  _emit_regions "$tmp"
-  printf '## Review\n\n'
+  # Compose into a temp file rather than straight to stdout, so the never-worse guard below can
+  # measure the finished copy and still emit NOTHING when it refuses. A caller redirecting stdout
+  # (`... > "<doc>.<id>"`) must never receive a copy the guard rejected.
+  #
+  # The whole composition stays inside ONE redirected block, which preserves the ordering coupling
+  # this sequence depends on: _emit_names builds regions.curr/touched as a side effect that
+  # _emit_regions later consumes (#41), so the calls cannot be reordered or split apart.
+  {
+    printf '%s\n\n' "$h1"
+    printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
+    printf '<!-- multi-review-mode: star -->\n\n'
+    printf '> SCOPED ROUND. You are reviewing what changed since round %s, not the whole document.\n' \
+      "$((round - 1))"
+    _emit_names "$tmp"
+    printf '\n## Changes since round %s\n\n' "$((round - 1))"
+    _emit_diff "$tmp" "$round"
+    printf '\n'
+    _emit_regions "$tmp"
+    printf '## Review\n\n'
+  } > "$tmp/out"
+
+  # Never-worse guard (issues #41, #74). Basis is the composed copy against the artifact the
+  # exit-3 fallback ACTUALLY emits — which is not `--curr` itself (codex-rd2-r1).
+  #
+  # `--curr` is a baseline: it carries a DOC header (`awaiting-secondaries`, plus the `reviewers:`
+  # suffix). The fallback re-seeds from it and rewrites that to a COPY header (`awaiting-reviewer`,
+  # bare mode hint), which is ~23 B shorter. Measuring the longer one made the guard permissive by
+  # exactly that margin: a scoped copy up to 23 B LARGER than the real fallback still passed —
+  # the case the guard exists to reject, at the boundary where it matters most.
+  #
+  # So reconstruct the fallback here, applying the same two header substitutions the primary is
+  # told to make, and measure that. Only now is this genuinely payload-vs-payload — both sides
+  # carry an identical copy header — which is what pr-copy's call site already does and what the
+  # previous version of this comment incorrectly claimed was true.
+  #
+  # `tr -d` strips BSD `wc`'s padding so the arithmetic and the notice both read cleanly.
+  awk -v m="<!-- multi-review: awaiting-reviewer · round ${round}/${max} -->" '
+    /^<!-- multi-review: / { print m; next }
+    /^<!-- multi-review-mode: star/ { print "<!-- multi-review-mode: star -->"; next }
+    { print }
+  ' "$curr" > "$tmp/fallback"
+
+  local scoped_b full_b
+  scoped_b="$(wc -c < "$tmp/out" | tr -d ' ')"
+  full_b="$(wc -c < "$tmp/fallback" | tr -d ' ')"
+  if (( full_b >= LOCAL_GUARD_FLOOR_B )); then
+    _payload_guard "$scoped_b" "$full_b"
+  fi
+
+  cat "$tmp/out"
 }
 
 cmd_pr_copy() {
