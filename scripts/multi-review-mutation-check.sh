@@ -823,6 +823,44 @@ mutations() {
     'floor exemption broke' 'multi-review-scope.test.sh' \
     '  if (( full_b >= LOCAL_GUARD_FLOOR_B )); then' \
     '  if true; then'
+  # ---- identity mapping must not discard a round over a spelling ------------------------------
+  # Both entries mutate BACK to the pattern that shipped, so each asserts the specific miss.
+
+  # anthropic matched `claude-*` — hyphen required — so the bare family name of the PRIMARY's own
+  # vendor was unmappable while `gpt`, `o3` and `gemini` all mapped bare. An unmappable disclosure
+  # is die 1 -> the reviewer's whole round is quarantined.
+  mutate 'reviewer/vendor-anthropic-bare' 'scripts/multi-review-reviewer.sh' replace \
+    'a whole round is discarded over this' 'multi-review-reviewer.test.sh' \
+    '    *claude*|*anthropic*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;' \
+    '    claude-*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;'
+
+  # openai ENUMERATED the reasoning families that existed when it was written, so `o4` and later
+  # were unmappable. Worse than a one-off: the id is the model's self-report, so re-dispatch
+  # reproduces it and the arm starves every round until this line is edited.
+  mutate 'reviewer/vendor-openai-family' 'scripts/multi-review-reviewer.sh' replace \
+    'starves the arm every round' 'multi-review-reviewer.test.sh' \
+    '    gpt|gpt-*|o[0-9]*|*codex*)                             echo "openai" ;;' \
+    '    gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)                     echo "openai" ;;'
+
+  # A commented-out `respectGitIgnore: false` folded into a substring the matcher read as a LIVE
+  # opt-out once whitespace was deleted, silencing the #22 hint in exactly the repo state it warns
+  # about. Without the strip, gemini refuses the doc and the round dies as a wait-bound timeout.
+  # Comment stripping has TWO separable properties, and the sed version this replaced only ever
+  # had the first. Tabled separately so losing either one is named.
+
+  # Line comments stripped at all: without this a commented-out setting reads as live.
+  mutate 'reviewer/gitignore-strip-line-comments' 'scripts/multi-review-reviewer.sh' replace \
+    'a line-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
+    '        if (s > 0 && (b == 0 || s < b)) {           # line comment starts first: drop to EOL' \
+    '        if (0) {'
+
+  # Block state PERSISTS ACROSS LINES. A line-based strip removes only the line carrying `/*`, so
+  # a setting on the next line survives — the shape codex-rd1-r1 reported against the sed version,
+  # and the one a human is most likely to write.
+  mutate 'reviewer/gitignore-strip-block-across-lines' 'scripts/multi-review-reviewer.sh' replace \
+    'a multi-line-block-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
+    '        if (inblock) {' \
+    '        if (0) {'
   # ---- convergence integrity ------------------------------------------------------------------
 
   # THE SELF-RESPONSE GUARD. This is what makes the review a review rather than a self-review: it
