@@ -834,6 +834,92 @@ mutations() {
     'below fable'"'"'s measured' 'multi-review-wait.test.sh' \
     'DEFAULT_MAX_SECONDS=600' \
     'DEFAULT_MAX_SECONDS=240'
+  # ---- the local-copy never-worse guard (#41, #74) -------------------------------------------
+  # scope.sh had NO entry in this table before this group, and it is the file where an unguarded
+  # path shipped and became #74 — the shape this runner exists to catch. Both halves are tabled
+  # because they fail in opposite directions: without the guard a degenerate copy ships silently,
+  # and without the floor the guard fires on every composition fixture and scoping never runs.
+
+  # The guard itself. Neutered, local-copy re-emits a copy larger than the artifact it replaces and
+  # reports success — measured live at 102% of a 36 KB doc and 106% of a 27 KB doc.
+  # Replaced with `:` rather than deleted: the call is the whole body of the floor's `if`, and
+  # deleting it leaves an empty `if ... then / fi` that no longer parses — the runner rejects that
+  # as failing the gate for the wrong reason, which is the correct call and not a coverage signal.
+  mutate 'scope/local-never-worse' 'scripts/multi-review-scope.sh' replace \
+    'local-copy emitted a copy no smaller' 'multi-review-scope.test.sh' \
+    '    _payload_guard "$scoped_b" "$full_b"' \
+    '    :'
+
+  # The floor. Forced always-on, the guard fires on artifacts too small for scoping to win by
+  # construction, so every composition fixture in the suite stops being reachable. This is the
+  # failure direction that kept the guard out of the tree for two issues.
+  mutate 'scope/local-guard-floor' 'scripts/multi-review-scope.sh' replace \
+    'floor exemption broke' 'multi-review-scope.test.sh' \
+    '  if (( full_b >= LOCAL_GUARD_FLOOR_B )); then' \
+    '  if true; then'
+  # ---- identity mapping must not discard a round over a spelling ------------------------------
+  # Both entries mutate BACK to the pattern that shipped, so each asserts the specific miss.
+
+  # anthropic matched `claude-*` — hyphen required — so the bare family name of the PRIMARY's own
+  # vendor was unmappable while `gpt`, `o3` and `gemini` all mapped bare. An unmappable disclosure
+  # is die 1 -> the reviewer's whole round is quarantined.
+  mutate 'reviewer/vendor-anthropic-bare' 'scripts/multi-review-reviewer.sh' replace \
+    'a whole round is discarded over this' 'multi-review-reviewer.test.sh' \
+    '    *claude*|*anthropic*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;' \
+    '    claude-*|*opus*|*sonnet*|*haiku*|*fable*)  echo "anthropic" ;;'
+
+  # openai ENUMERATED the reasoning families that existed when it was written, so `o4` and later
+  # were unmappable. Worse than a one-off: the id is the model's self-report, so re-dispatch
+  # reproduces it and the arm starves every round until this line is edited.
+  mutate 'reviewer/vendor-openai-family' 'scripts/multi-review-reviewer.sh' replace \
+    'starves the arm every round' 'multi-review-reviewer.test.sh' \
+    '    gpt|gpt-*|o[0-9]*|*codex*)                             echo "openai" ;;' \
+    '    gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)                     echo "openai" ;;'
+
+  # A commented-out `respectGitIgnore: false` folded into a substring the matcher read as a LIVE
+  # opt-out once whitespace was deleted, silencing the #22 hint in exactly the repo state it warns
+  # about. Without the strip, gemini refuses the doc and the round dies as a wait-bound timeout.
+  # Comment stripping has TWO separable properties, and the sed version this replaced only ever
+  # had the first. Tabled separately so losing either one is named.
+
+  # Line comments stripped at all: without this a commented-out setting reads as live.
+  mutate 'reviewer/gitignore-strip-line-comments' 'scripts/multi-review-reviewer.sh' replace \
+    'a line-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
+    '        if (s > 0 && (b == 0 || s < b)) {           # line comment starts first: drop to EOL' \
+    '        if (0) {'
+
+  # Block state PERSISTS ACROSS LINES. A line-based strip removes only the line carrying `/*`, so
+  # a setting on the next line survives — the shape codex-rd1-r1 reported against the sed version,
+  # and the one a human is most likely to write.
+  mutate 'reviewer/gitignore-strip-block-across-lines' 'scripts/multi-review-reviewer.sh' replace \
+    'a multi-line-block-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
+    '        if (inblock) {' \
+    '        if (0) {'
+  # ---- convergence integrity ------------------------------------------------------------------
+
+  # THE SELF-RESPONSE GUARD. This is what makes the review a review rather than a self-review: it
+  # refuses a response disclosed under the same model id that raised the finding. It shipped with
+  # ZERO coverage — deleting it left every suite green — on the one guard the command file calls
+  # convergence-critical. Exactly the §11 defect class, so it gets an entry as well as a test.
+  mutate 'star/self-response-guard' 'scripts/multi-review-star.sh' replace \
+    'self-response guard did not bite' 'multi-review-star.test.sh' \
+    '        if (id in rverb && rmodel[id] == raiser[id]) fail("self-response on finding: " id)' \
+    '        if (0) fail("self-response on finding: " id)'
+
+  # Zero admitted copies is reachable (a fable-only run whose one secondary hits the wait bound).
+  # Without the refusal, bash 3.2 aborts on the array expansion with a raw unbound-variable error
+  # and the round's quarantine record is never written.
+  mutate 'star/merge-zero-copies-refused' 'scripts/multi-review-star.sh' replace \
+    'did not refuse with a named reason' 'multi-review-star.test.sh' \
+    '  if (( ${#copies[@]} == 0 )); then' \
+    '  if false; then'
+
+  # The verdict must not present a round that ESCALATED to new highs as saturation. Counting alone
+  # advised "converge" on two lows -> two highs and "re-fan" on two lows -> one high.
+  mutate 'star/round-stats-high-clause' 'scripts/multi-review-star.sh' replace \
+    'still reads as a plain converge' 'multi-review-star.test.sh' \
+    '      if (v ~ /^converge/ && HI[rounds+0] > 0)' \
+    '      if (0)'
 
 }
 

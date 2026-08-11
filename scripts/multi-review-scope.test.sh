@@ -369,19 +369,78 @@ hfp=$(cd "$GR" && git diff "$BASE" "$H2" | wc -c | tr -d ' ')
 (( hfp > hsp * 2 )) && ok "happy-path fixture clears the guard with margin ($hsp vs $hfp)" \
   || bad "happy-path fixture margin too thin ($hsp vs $hfp) — an unrelated edit will trip the guard"
 
-# local-copy is deliberately NOT guarded yet, and this asserts the CURRENT contract so the gap is
-# visible rather than assumed. Wiring _payload_guard into local-copy is correct (a real 102% copy
-# was measured on a live review) but it fires on every fixture in this file: a 2-section document
-# with 1 section touched is the "primary rewrote everything" case, where scoping genuinely cannot
-# win (measured 101 B scoped vs 43 B full on the fixture above). Guarding it therefore requires
-# re-baselining ~30 composition assertions onto realistically-sized fixtures, which is its own
-# change with its own review — not a green-making edit tacked onto this one.
+# --- local-copy never-worse guard, above a size floor (issues #41, #74) ---
+#
+# local-copy carries the same guard pr-copy has, but only once the artifact it would replace is at
+# least LOCAL_GUARD_FLOOR_B (1 KiB). The floor is what makes the guard landable: every composition
+# fixture in this file is a 2-section document with 1 section touched — §4.6's "primary rewrote
+# everything" row, where scoping genuinely cannot win — so an unfloored guard fires on all ~30 of
+# them. Below the floor the absolute waste is bounded by ~1 KiB, which is noise beside the ~15 KB
+# contract every dispatch already carries, and diff-format overhead dominates any real signal.
+#
+# Three assertions, because the guard has three distinct behaviours and only one of them is the bug:
+# it must FIRE above the floor, stay SILENT below it, and not over-fire on a genuine win.
+
+# (1) fires: a >=1 KiB artifact whose scoped copy is not smaller. This is issue #74's shape —
+# measured live at 102% and 106% on real documents, exit 0, nothing warned.
 P9="$(mkbase prevw.md '## A' '' 'x')"
-C9="$(mkbase currw.md '## A' '' 'x' '' '## B' '' "$(seq 1 200 | tr '\n' ' ')")"
-bash "$SUT" local-copy --round 2 --max 5 --prev "$P9" --curr "$C9" >/dev/null 2>&1
+C9="$(mkbase currw.md '## A' '' 'x' '' '## B' '' "$(seq 1 400 | tr '\n' ' ')")"
+lc_full=$(wc -c < "$C9" | tr -d ' ')
+(( lc_full >= 1024 )) && ok "local-copy: losing fixture is above the floor (${lc_full} B)" \
+  || bad "losing fixture is only ${lc_full} B — below the floor, so it cannot exercise the guard"
+lc_err="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P9" --curr "$C9" 2>&1 >/dev/null)"
 lc_rc=$?   # capture BEFORE the test, or the failure branch reports the [[ ]]'s own status (always 1)
-[[ $lc_rc -eq 0 ]] && ok "local-copy: still unguarded (documented gap — see issue #41)" \
-  || bad "local-copy behaviour changed unexpectedly (rc=$lc_rc) — the guard gap note is now stale"
+[[ $lc_rc -eq 3 ]] && ok "local-copy: exit 3 when the scoped copy is not smaller" \
+  || bad "local-copy emitted a copy no smaller than the artifact it replaces (rc=$lc_rc) — issue #74"
+grep -qE '[0-9]+ B.*[0-9]+ B' <<<"$lc_err" && ok "local-copy: the notice names both byte counts" \
+  || bad "local-copy guard notice does not name both sizes: $lc_err"
+# Nothing half-composed reaches stdout: the copy is composed to a temp file and only cat'd once the
+# guard clears, so a caller redirecting stdout never receives a copy the guard rejected.
+lc_sout="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P9" --curr "$C9" 2>/dev/null)"
+[[ -z "$lc_sout" ]] && ok "local-copy: exit-3 path emits nothing on stdout" \
+  || bad "half-composed local copy leaked to stdout"
+
+# The guard's FULL side must be the artifact the exit-3 fallback actually emits, not `--curr`
+# itself (codex-rd2-r1). `--curr` is a baseline and carries a DOC header
+# (`awaiting-secondaries`, plus the `reviewers:` suffix); the fallback re-seeds and rewrites that
+# to a COPY header (`awaiting-reviewer`, bare mode hint), which is 23 B shorter. Measuring the
+# longer one makes the guard permissive by exactly that margin: a scoped copy up to 23 B LARGER
+# than the real fallback still passes, which is the case the guard exists to reject.
+fb="${WORK}/fallback.md"
+awk -v m="<!-- multi-review: awaiting-reviewer · round 2/5 -->" '
+  /^<!-- multi-review: / { print m; next }
+  /^<!-- multi-review-mode: star/ { print "<!-- multi-review-mode: star -->"; next }
+  { print }' "$C9" > "$fb"
+fb_b=$(wc -c < "$fb" | tr -d ' '); curr_b=$(wc -c < "$C9" | tr -d ' ')
+(( fb_b < curr_b )) \
+  && ok "guard basis: the fallback (${fb_b} B) really is smaller than --curr (${curr_b} B)" \
+  || bad "fixture cannot distinguish the two bases (${fb_b} vs ${curr_b}) — the assertion below is vacuous"
+reported="$(sed -E 's/.*\(([0-9]+) B vs ([0-9]+) B\).*/\2/' <<<"$lc_err")"
+[[ "$reported" == "$fb_b" ]] \
+  && ok "guard measures against the fallback copy (${reported} B), not --curr" \
+  || bad "guard measured ${reported} B — that is --curr (${curr_b} B), not the fallback the round would actually use (${fb_b} B)"
+
+# (2) silent below the floor: the same losing shape, small. This is the regime every composition
+# assertion above runs in, and it must stay exit 0 or those ~30 assertions stop being reachable.
+P8="$(mkbase prevf.md '## A' '' 'x')"
+C8="$(mkbase currf.md '## A' '' 'x' '' '## B' '' 'y')"
+sm_full=$(wc -c < "$C8" | tr -d ' ')
+bash "$SUT" local-copy --round 2 --max 5 --prev "$P8" --curr "$C8" >/dev/null 2>&1
+sm_rc=$?
+(( sm_full < 1024 )) && [[ $sm_rc -eq 0 ]] \
+  && ok "local-copy: below the floor (${sm_full} B) the guard stays out of the way" \
+  || bad "floor exemption broke (size=${sm_full} B, rc=$sm_rc) — the composition fixtures above are now unreachable"
+
+# (3) does not over-fire: a >=1 KiB artifact with a genuinely small edit must still scope.
+BULK="$(seq 1 400 | tr '\n' ' ')"
+P7="$(mkbase prevg.md '## A' '' 'alpha one' '' '## B' '' "$BULK")"
+C7="$(mkbase currg.md '## A' '' 'alpha CHANGED' '' '## B' '' "$BULK")"
+win_out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P7" --curr "$C7" 2>/dev/null)"
+win_rc=$?
+win_full=$(wc -c < "$C7" | tr -d ' '); win_scoped=${#win_out}
+{ [[ $win_rc -eq 0 ]] && (( win_scoped < win_full )); } \
+  && ok "local-copy: a real win still scopes (${win_scoped} B vs ${win_full} B)" \
+  || bad "guard over-fires on a genuine win (rc=$win_rc, ${win_scoped} B vs ${win_full} B)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
