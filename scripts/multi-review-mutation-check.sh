@@ -323,6 +323,53 @@ mutations() {
     '  local id; id="$(printf '"'"'%s'"'"' "$1" | LC_ALL=C tr '"'"'[:upper:]'"'"' '"'"'[:lower:]'"'"')"' \
     '  local id; id="$1"'
 
+  # ---- #66 wiring, the collision gate, and core.sh's first entries ------------------------------
+
+  # ensure-skill's root must be the CAPTURED session root. An inline substitution resolves in the
+  # guard-forced cwd, so in the cross-repo case the bundle lands in a repo the reviewer never sees.
+  mutate 'command/ensure-skill-session-root' 'commands/multi-review.md' replace \
+    'ensure-skill --repo inlines a command substitution' 'multi-review-packaging.test.sh' \
+    '   --repo "<session-root>"` — a no-op for skill-less reviewers.' \
+    '   --repo "$(git rev-parse --show-toplevel)"` — a no-op for skill-less reviewers.'
+
+  # The doc must still CLAIM the ordering. A single-line replace cannot actually reorder two
+  # bullets, so this entry covers the claim's presence, not the order itself; the order is asserted
+  # by comparing line numbers, which only a real reordering exercises. Named for what it covers.
+  mutate 'command/session-root-first-claim' 'commands/multi-review.md' replace \
+    'cannot locate both the session-root capture' 'multi-review-packaging.test.sh' \
+    '- **Capture the session root FIRST — before the egress guard below, and before anything else in' \
+    '- **Capture the session root (do this at some point during Arm) — before anything else in'
+
+  # The collision must be a GATE. Prose alone is what let a supported configuration (a
+  # fable-powered primary) brick a review with no mechanical defense.
+  mutate 'command/check-primary-id-gate' 'commands/multi-review.md' replace \
+    'does not run check-primary-id' 'multi-review-packaging.test.sh' \
+    '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-primary-id "<doc>" "<primary-model-id>"' \
+    '       (compare your model id against the secondaries by eye before responding)'
+
+  # ...and the check itself must read the RAISER's disclosure, not the primary's own responses —
+  # matching those would refuse every round after the first.
+  mutate 'star/check-primary-id-raiser-only' 'scripts/multi-review-star.sh' replace \
+    'accepted a colliding primary id' 'multi-review-star.test.sh' \
+    '    /^> \[finding:/ { want = 1; next }' \
+    '    /^> \[finding:/ { want = 0; next }'
+
+  # core.sh STILL HAS NO ENTRIES, and that is recorded rather than quietly omitted — a table entry
+  # is a claim that coverage exists, and here it cannot honestly be made yet. Two blockers, both
+  # measured while attempting it:
+  #
+  #   1. core.sh is VENDORED into .agents/skills/multi-review/scripts/. Any mutation to the source
+  #      makes multi-review-reviewer-bundle.test.sh fail first with "bundled script missing/
+  #      drifted", which is a real guard firing for an unrelated reason. Every core.sh mutation is
+  #      therefore MISCREDITED: the gate goes red, but never via the assertion being claimed.
+  #   2. Independently, `multi-review-core.test.sh` stayed GREEN with the duplicate-marker guard
+  #      (`(( n > 1 ))`) mutated, so that line has no coverage in its own suite either — the
+  #      "marker fails with duplicate markers" assertion is satisfied by a different mechanism.
+  #
+  # Fixing this needs the runner to mirror a mutation into the vendored copy (or exempt it), which
+  # is its own change. Recorded here so the next person does not re-derive the dead end, and so the
+  # gap stays visible instead of reading as "core.sh has no guards worth tabling".
+
   # ---- the PR diff window (#40) -------------------------------------------------------------
   # Every guard below was mutation-verified BY HAND while it was written. Tabling them is what makes
   # that permanent: a hand-verified guard with no entry can be silently un-covered by the next edit,

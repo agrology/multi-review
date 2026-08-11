@@ -1413,6 +1413,45 @@ bash "$SUT" verify "$FO" >/dev/null 2>&1 \
   && bad "verify FAILED OPEN: an ungrammatical manifest id passed (#17-refix3 r1)" \
   || ok "verify: fails closed on a manifest id invisible to _table's grammar (#17-refix3 r1)"
 
+# --- check-primary-id: catch the collision BEFORE it bricks the doc ---
+#
+# The self-response guard is parse-fatal by design, but it fires only once a colliding response is
+# already written — and at that point `_table` underlies `_structural_consistency`, so merge's
+# pre-check, `verify`, `gate-summary`, `round-stats` and `compose-review` all fail too. The doc is
+# stuck: the primary cannot respond without tripping the guard, and cannot converge without
+# responding. Recovery means hand-editing or disclosing a false id.
+#
+# The trigger is a SUPPORTED configuration, not operator error: `fable` is a selectable session
+# model, so a fable-powered primary discloses the same string its floor secondary does. The only
+# defense was one prose line in the command file.
+CPI="$(mkstar cpi.md \
+  '> [finding:fable-rd1-r1|high] a concern' \
+  '> — via fable' \
+  '> — risk: r' \
+  '> — evidence: mechanism')"
+err="$(bash "$SUT" check-primary-id "$CPI" fable 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] \
+  && ok "check-primary-id: refuses a primary id that collides with a raiser" \
+  || bad "check-primary-id accepted a colliding primary id — the doc would brick on the first response"
+grep -qiE 'collid|same model id|distinguish' <<<"$err" \
+  && ok "check-primary-id: the refusal is actionable" || bad "collision refusal is not actionable: '$err'"
+
+bash "$SUT" check-primary-id "$CPI" claude-opus-5 >/dev/null 2>&1 \
+  && ok "check-primary-id: accepts a distinct primary id" \
+  || bad "check-primary-id rejected a legitimately distinct primary id"
+
+# It must read the RAISER's disclosure, not merely any `> — via` in the doc: the primary's own
+# responses also carry one, and matching those would refuse every round after the first.
+CPI2="$(mkstar cpi2.md \
+  '> [finding:codex-rd1-r1|high] a concern' \
+  '> — via gpt-5.6' \
+  '> — risk: r' \
+  '> — evidence: mechanism' \
+  '> [agree:codex-rd1-r1]' \
+  '> — via claude-opus-5')"
+bash "$SUT" check-primary-id "$CPI2" claude-opus-5 >/dev/null 2>&1 \
+  && ok "check-primary-id: the primary's own prior response is not a collision" \
+  || bad "check-primary-id treats the primary's own response id as a raiser — round 2 would be impossible"
 # --- the self-response guard must actually bite -----------------------------------------------
 #
 # This guard is what stops a primary answering its own findings — i.e. what makes the review a

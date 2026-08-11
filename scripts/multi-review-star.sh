@@ -905,6 +905,44 @@ cmd_verify() { # <doc> -> 0 + summary if consistent; else nonzero (message on st
   echo "verify: ${doc} consistent — ${nf} findings, doc matches manifest"
 }
 
+# check-primary-id <doc> <primary-model-id> -> 0 usable · 3 collides · 2 usage
+#
+# The self-response guard in `_table` is parse-fatal BY DESIGN, but it fires only once the
+# colliding response is ALREADY in the doc — and `_table` underlies `_structural_consistency`, so
+# at that point merge's pre-check, `verify`, `gate-summary`, `round-stats` and `compose-review`
+# all fail too. The review is then stuck in both directions: the primary cannot respond without
+# tripping the guard, and cannot converge without responding. Recovery means hand-editing the doc
+# or disclosing a false id, and neither is something a protocol should require.
+#
+# So this is the cheap pre-check the command's prose used to ask for and nothing enforced. Run it
+# BEFORE writing the first response of a primary turn; a refusal costs one line of output, the
+# collision costs the review.
+#
+# The trigger is a SUPPORTED configuration, not operator error: `fable` is a selectable session
+# model, so a fable-powered primary discloses exactly the string its floor secondary does.
+#
+# Reads the RAISER's disclosure only — the `> — via` line immediately following a `> [finding:` —
+# never just any `> — via` in the doc. The primary's own responses carry one too, and matching
+# those would refuse every round after the first.
+cmd_check_primary_id() { # <doc> <primary-model-id>
+  local doc="${1:-}" pid="${2:-}"
+  [[ -n "$doc" ]] || die "usage: multi-review-star.sh check-primary-id <doc> <primary-model-id>" 2
+  [[ -f "$doc" ]] || die "doc not found: $doc" 2
+  [[ -n "$pid" ]] || die "check-primary-id requires a primary model id" 2
+  local hit
+  hit="$(review_section "$doc" | awk -v pid="$pid" '
+    /^> \[finding:/ { want = 1; next }
+    want && /^> — via / {
+      v = $0; sub(/^> — via[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (v == pid) { print v; exit }
+      want = 0; next
+    }
+    /^> \[/ { want = 0 }
+  ')"
+  [[ -z "$hit" ]] || die "primary model id '${pid}' is the SAME model id a secondary disclosed when raising a finding in this doc. The self-response guard is parse-fatal, so responding under it would leave the review unparseable and unrecoverable without a hand edit. Disclose a distinguishing id (e.g. '${pid} (primary)') before writing any response." 3
+  return 0
+}
+
 cmd_merge() {
   local round="" doc="" copies=() quarantined=()
   while [[ $# -gt 0 ]]; do
@@ -1493,6 +1531,7 @@ main() {
     available) cmd_available "$@" ;;
     open-findings) cmd_open_findings "$@" ;;
     observations) cmd_observations "$@" ;;
+    check-primary-id) cmd_check_primary_id "$@" ;;
     merge) cmd_merge "$@" ;;
     verify) cmd_verify "$@" ;;
     check-converged) cmd_check_converged "$@" ;;
