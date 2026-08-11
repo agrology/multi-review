@@ -1361,6 +1361,43 @@ HOME="${CD_}/home" PATH="${CD_}/bin:$PATH" \
 [[ $? -eq 2 ]] && ok "check --session-root: an EMPTY value exits 2, not a silent fallback (fable-rd1-r3)" \
   || bad "check --session-root '' silently fell back to the companion basis"
 
+# --- gemini consumes --session-root too (G2, the other half of #66) ---
+#
+# gemini-cli's workspace is the cwd of the process at LAUNCH, and it refuses reads and writes
+# outside it. The check judged against `repo_root()` — the git toplevel of the CHECK invocation's
+# cwd — which is only the same thing when check and dispatch happen to stand in one place, and
+# nothing enforced that. The command file admitted the gap in writing rather than closing it:
+# "gemini remains exposed to the same check-cwd-vs-dispatch-cwd drift this fixed for codex".
+#
+# Same trap as codex's S1: the doc lives in a repo the CHECK is standing in, while the session
+# root the dispatched process will actually inherit does NOT contain it. The hint must fire.
+GD="$(mktemp -d)"
+mkdir -p "${GD}/ws" "${GD}/elsewhere/docs" "${GD}/bin"
+( cd "${GD}/ws" && git init -q )
+( cd "${GD}/elsewhere" && git init -q )
+printf '# d\n' > "${GD}/elsewhere/docs/d.md"
+printf '#!/usr/bin/env bash\n:\n' > "${GD}/bin/gemini"; chmod +x "${GD}/bin/gemini"
+
+out="$(cd "${GD}/elsewhere" && HOME="${GD}" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GD}/bin:$PATH" \
+  bash "$SUT" check --reviewer gemini --doc "${GD}/elsewhere/docs/d.md" \
+  --session-root "${GD}/ws" 2>&1 >/dev/null)"; rc=$?
+{ [[ "$out" == *"hint (gemini)"* && "$out" == *"outside"* ]]; } \
+  && ok "check gemini --session-root: fires when the copy is outside the root dispatch inherits (G2)" \
+  || bad "gemini judged against its own cwd, not the session root — the #66 drift is still open for gemini (out='$out')"
+[[ $rc -eq 0 ]] && ok "check gemini --session-root: the hint stays advisory (exit 0)" \
+  || bad "gemini session-root hint became a gate (rc=$rc)"
+
+# ...and stays SILENT when the copy really is inside the root dispatch will inherit, even though
+# the check is being run from somewhere else entirely. That is the whole point of the flag.
+mkdir -p "${GD}/ws/docs"; printf '# d\n' > "${GD}/ws/docs/d.md"
+out="$(cd "${GD}/elsewhere" && HOME="${GD}" GEMINI_CLI_TRUST_WORKSPACE=true PATH="${GD}/bin:$PATH" \
+  bash "$SUT" check --reviewer gemini --doc "${GD}/ws/docs/d.md" \
+  --session-root "${GD}/ws" 2>&1 >/dev/null)"
+[[ "$out" != *"outside"* ]] \
+  && ok "check gemini --session-root: silent when the copy is inside that root" \
+  || bad "gemini hinted on a copy inside the session root (false positive): '$out'"
+rm -rf "$GD"
+
 # (8) gemini uses repo_root(), NOT the codex companion: a doc outside the cwd repo is hinted
 GD="${CD_}/grepo"; mkdir -p "$GD"; ( cd "$GD" && git init -q . )
 out="$(cd "$GD" && HOME="${CD_}/home" FAKE_WS="${CD_}/ws" GEMINI_CLI_TRUST_WORKSPACE=true \

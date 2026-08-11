@@ -368,16 +368,28 @@ cmd_check() { # --reviewer <id> [--doc <path>] [--session-root <dir>] -> 0 dispa
       local unreadable; unreadable="$(gemini_unreadable_paths "$rr")"
       [[ -z "$unreadable" ]] \
         || hint gemini "gemini will refuse to read a review doc under $(fmt_paths "$unreadable") — git-ignored in this repo, and gemini-cli honors gitignore. Set context.fileFiltering.respectGitIgnore:false in .gemini/settings.json"
-      # Issue #60. gemini runs as a shell command in the CURRENT cwd, so unlike codex its
-      # workspace genuinely follows the shell and repo_root() is the right basis. The wording
-      # deliberately does not claim codex's per-session binding — gemini's sandbox constraint is
-      # reasoned by symmetry, not reproduced.
+      # BASIS: `--session-root` when the caller supplies one, else this helper's cwd repo.
+      #
+      # Issue #60 established the check; the basis was wrong in the same way codex's was (#66),
+      # and the earlier comment here argued the opposite — that because "gemini runs as a shell
+      # command in the CURRENT cwd", `repo_root()` was right. That holds only if the check and the
+      # dispatch stand in the same place, and nothing enforces it. gemini-cli's workspace is the
+      # cwd of the process at LAUNCH, so the root that matters is the one the DISPATCH will have,
+      # which is the session root the fan-out pins (see the command's shell branch).
+      #
+      # Using the helper's cwd was wrong in both directions, and the suite asserts both: it MISSED
+      # a copy outside the dispatch root (the failure #66 is about), and it FALSELY hinted on a
+      # copy that was inside the dispatch root but outside whatever repo the check happened to be
+      # standing in.
+      #
+      # Unresolvable basis -> SILENCE, not a hint on everything — same rule as the codex arm.
       if [[ -n "$doc" ]]; then
-        local grr_c gddir
-        grr_c="$(canon "$rr")"
+        local gbase gbase_c gddir
+        if [[ -n "$session_root" ]]; then gbase="$session_root"; else gbase="$rr"; fi
+        gbase_c="$(canon "$gbase")"
         gddir="$(dirname "$doc")"
-        if [[ -n "$grr_c" ]] && ! path_contains "$grr_c" "$gddir"; then
-          hint gemini "the review copy is outside this workspace ($(canon "$gddir") vs ${grr_c}) — gemini reads and writes within the workspace it is launched in, so it may be unable to write the copy. Run the review from the repo that contains it."
+        if [[ -n "$gbase_c" ]] && ! path_contains "$gbase_c" "$gddir"; then
+          hint gemini "the review copy is outside the workspace gemini will be launched in ($(canon "$gddir") vs ${gbase_c}) — gemini reads and writes only within that workspace, so it will likely be unable to write the copy. Dispatch from the root that contains it."
         fi
       fi
       ;;
