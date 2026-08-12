@@ -22,14 +22,15 @@
 # cleanly. Recorded rather than silently tolerated.
 #
 # Usage: multi-review-mutation-check.sh [--list] [--only <id>]
-#   --list        print the table and exit 0
-#   --only <id>   run a single mutation
+#   --list          print the table and exit 0
+#   --only <id>     run a single mutation
+#   --verify-table  check every entry still points at a real line; no mutations, no suites (fast)
 # Exit: 0 all mutations caught; 1 a mutation SURVIVED or was miscredited; 2 usage/setup error.
 set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SELF}/.." && pwd)"
-only=""; list=0
+only=""; list=0; verify=0
 while (( $# )); do
   case "$1" in
     # Testability seam for the target preconditions (tracked + clean). Without it the tracked-ness
@@ -42,6 +43,16 @@ while (( $# )); do
       git -C "$ROOT" diff --quiet -- "$_t" 2>/dev/null \
         || { echo "mutation-check: ${_t} has uncommitted changes" >&2; exit 4; }
       exit 0 ;;
+    # Fast staleness pass: validate every entry's TARGET without mutating anything or running a
+    # single suite. Seconds, not the sweep's ~25 minutes.
+    #
+    # It exists because the sweep is the only thing that currently catches a table that has drifted
+    # out of sync with the code, and the sweep is far too slow to run on every edit — so in practice
+    # a stale entry is found by CI, after the fact. Reproduced live: a change deleted the line
+    # `reviewer/check-doc-gemini-basis` targeted; the suite was green, `bash -n` was green, and every
+    # NEW entry verified with `--only` was caught, because `--only` structurally cannot see that a
+    # DIFFERENT entry went stale.
+    --verify-table) verify=1; shift ;;
     --list) list=1; shift ;;
     --only) only="${2:?--only needs an id}"; shift 2 ;;
     *) echo "mutation-check: unknown argument: $1" >&2; exit 2 ;;
@@ -79,7 +90,11 @@ gate_suites() {
 # "original" and then restores that — leaving a security guard deleted in a tree both runs believed
 # they had cleaned (codex-rd1-codex-2). A directory is the lock because mkdir is atomic everywhere.
 LOCK="${ROOT}/.multi-review-mutation.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
+# Verify mode mutates nothing, so it neither needs the lock nor should contend for it — a
+# staleness check that refuses to run while a sweep is in progress would be useless exactly when
+# someone is trying to diagnose that sweep.
+if (( verify )); then :
+elif ! mkdir "$LOCK" 2>/dev/null; then
   echo "mutation-check: another mutation run holds ${LOCK} — refusing to run concurrently" >&2
   # A SIGKILLed run cannot run its trap, so it leaves BOTH a stale lock and a possibly-mutated file.
   # Telling the user only to delete the lock would have them resume with a guard still absent
@@ -173,11 +188,11 @@ mutate() {
   # one-command fix instead of a hunt.)
   # TRACKED as well as clean. `git diff --quiet` exits 0 for an UNTRACKED file, so the stated
   # `git checkout --` recovery would not exist for one (fable-rd1-r3, reproduced).
-  if ! git -C "$ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+  if ! (( verify )) && ! git -C "$ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
     echo "  ERROR [$id]: $rel is not tracked by git — refusing to mutate (no recovery path)"
     fails=$((fails + 1)); return 0
   fi
-  if ! git -C "$ROOT" diff --quiet -- "$rel" 2>/dev/null; then
+  if ! (( verify )) && ! git -C "$ROOT" diff --quiet -- "$rel" 2>/dev/null; then
     echo "  ERROR [$id]: $rel has uncommitted changes — refusing to mutate it"; fails=$((fails + 1)); return 0
   fi
 
@@ -204,6 +219,13 @@ mutate() {
       fails=$((fails + 1)); return 0
     fi
   fi
+
+  # VERIFY MODE STOPS HERE. Everything above is exactly the staleness check — target file present,
+  # target line present, and present the expected number of times — computed by the SAME matcher a
+  # real run uses. That reuse is the point: a separate checker could drift from the real matcher and
+  # then certify a table the sweep would reject, which is the failure class this whole runner exists
+  # to prevent, one level up.
+  if (( verify )); then return 0; fi
 
   # Ids carry a '/' for grouping, which is not a filename. Never mutate unless the backup landed.
   local safe="${id//\//_}"
@@ -1064,6 +1086,10 @@ fi
 # and worse than worthless, because a red suite makes an expected-to-survive entry look STALE and an
 # unrelated failure look like coverage. This is not hypothetical: the first CI run of this script
 # reported two spurious STALEs, caused by a suite that failed because the `gemini` CLI was absent.
+# The baseline gate exists so a mutation verdict is never computed against an already-red suite.
+# Verify mode computes no verdict and runs no suite, so it skips this — and skipping it is most of
+# why the pass takes seconds rather than a minute and a half.
+if ! (( verify )); then
 echo "mutation-check: checking the baseline gate is green before mutating anything"
 baseline_red=""
 while IFS= read -r t; do
@@ -1076,6 +1102,24 @@ if [[ -n "$baseline_red" ]]; then
   exit 2
 fi
 echo "mutation-check: baseline green"
+
+fi
+
+if (( verify )); then
+  echo "mutation-check: verifying every table entry still points at a real line (no mutations, no suites)"
+  mutations
+  echo
+  if (( ran == 0 )); then
+    echo "mutation-check: no entry checked${only:+ (no such id: $only)}"; exit 2
+  fi
+  if (( fails > 0 )); then
+    echo "mutation-check: STALE TABLE — ${fails} of ${ran} entr(ies) no longer match the code"
+    echo "mutation-check: re-point or withdraw them; an entry that cannot apply proves nothing."
+    exit 1
+  fi
+  echo "mutation-check: all ${ran} table entr(ies) still match the code"
+  exit 0
+fi
 
 echo "mutation-check: proving each guard's removal is caught by a NAMED assertion"
 mutations

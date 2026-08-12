@@ -147,6 +147,50 @@ bash "$SUT" --check-target "scripts/multi-review-mutation-check.sh" >/dev/null 2
 [[ $rc -ne 3 ]] && ok "a tracked target is not rejected as untracked (rc=$rc)" \
   || bad "a tracked target was reported untracked"
 
+# --- --verify-table: the fast staleness pass ---------------------------------------------------
+#
+# The sweep is the only thing that catches a table which has drifted out of sync with the code, and
+# at ~25 minutes it is far too slow to run on every edit — so in practice a stale entry is found by
+# CI after the fact. Reproduced live: a change deleted the line one entry targeted; the suite was
+# green, `bash -n` was green, and every NEW entry verified with `--only` was caught, because
+# `--only` structurally cannot see that a DIFFERENT entry went stale.
+#
+# Skipped when a sweep is already running: this suite is excluded from the sweep's own gate runs,
+# and the runner refuses to nest.
+if [[ -z "${MULTI_REVIEW_MUTATION_RUNNING:-}" ]]; then
+  out="$(bash "$SUT" --verify-table 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && ok "--verify-table: the shipped table matches the code" \
+    || bad "--verify-table failed on the shipped table (rc=$rc): $(grep -E 'ERROR|STALE' <<<"$out" | head -2)"
+  grep -qE 'all [0-9]+ table entr' <<<"$out" \
+    && ok "--verify-table reports how many entries it checked" \
+    || bad "--verify-table gave no count — a pass over zero entries would look identical: $out"
+
+  # NON-VACUITY. It must actually fail on a stale entry, and the realistic shape is a
+  # BEHAVIOUR-PRESERVING edit: reflow one space in a targeted line and the suite stays green while
+  # the exact-line match breaks. That is the case the sweep catches 25 minutes later.
+  vt_f="${DIR}/multi-review-reviewer.sh"
+  vt_bak="$(mktemp)"; cp "$vt_f" "$vt_bak"
+  python3 - "$vt_f" <<'PYEOF'
+import sys
+p=sys.argv[1]; s=open(p).read()
+t='*fable*)  echo "anthropic" ;;'
+open(p,'w').write(s.replace(t,'*fable*) echo "anthropic" ;;',1) if t in s else s)
+PYEOF
+  if cmp -s "$vt_f" "$vt_bak"; then
+    bad "--verify-table non-vacuity probe could not perturb a target line — the assertion below is vacuous"
+  else
+    out="$(bash "$SUT" --verify-table 2>&1)"; rc=$?
+    [[ $rc -ne 0 ]] && grep -qi 'stale' <<<"$out" \
+      && ok "--verify-table fails on a behaviour-preserving edit that moves a target line" \
+      || bad "--verify-table passed a stale table (rc=$rc) — it cannot fail, so it proves nothing"
+  fi
+  cp "$vt_bak" "$vt_f"; rm -f "$vt_bak"
+  cmp -s "$vt_f" "${DIR}/multi-review-reviewer.sh" && ok "--verify-table probe restored the file" \
+    || bad "--verify-table probe left multi-review-reviewer.sh modified"
+else
+  ok "--verify-table checks skipped (a mutation sweep is running)"
+fi
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

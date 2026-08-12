@@ -125,5 +125,11 @@ jobs:
         run: command -v jq >/dev/null || sudo apt-get install -y jq
       - name: Mutation table
         run: scripts/multi-review-mutation-check.sh --list
+      # Fast staleness pass BEFORE the sweep: seconds, and it fails with the offending entry named.
+      # The sweep catches the same drift ~25 minutes later, buried among 85 results — and a
+      # behaviour-preserving edit that merely moves a targeted line leaves every suite green, so
+      # nothing else in the gate can see it.
+      - name: Mutation table staleness
+        run: scripts/multi-review-mutation-check.sh --verify-table
       - name: Mutation sweep
         run: scripts/multi-review-mutation-check.sh
