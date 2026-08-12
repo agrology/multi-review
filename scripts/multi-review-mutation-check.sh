@@ -370,6 +370,23 @@ mutations() {
     '            (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )' \
     '            (( ${#argv[@]} )) && "${argv[@]}"'
 
+  # The empty-argv guard must take an action a primary can OBSERVE. It shipped as
+  # `{ : quarantine <id> "…"; }`, which reads like an instruction but is bash's null builtin: the
+  # block is transcribed verbatim by design, so the "quarantine" never happened and the provider's
+  # absence resurfaced at step 5 as exit 9 — reported as `no turn taken`, the reason for a reviewer
+  # that declined rather than one that was never launched. The mutation restores that exact defect.
+  mutate 'command/shell-empty-argv-action' 'commands/multi-review.md' replace \
+    'null builtin' 'multi-review-packaging.test.sh' \
+    '            (( ${#argv[@]} )) || echo "DISPATCH-FAILED <id>: could not build reviewer command" >&2' \
+    '            (( ${#argv[@]} )) || { : quarantine <id> "could not build reviewer command"; }'
+
+  # ...and the signal must be WIRED to the quarantine path. Emitting DISPATCH-FAILED that no prose
+  # tells the primary to act on is the same silence in a louder voice: nothing downstream reads it.
+  mutate 'command/shell-dispatch-failed-quarantined' 'commands/multi-review.md' replace \
+    'never reaches the quarantine path' 'multi-review-packaging.test.sh' \
+    '     `--quarantined <id>:could not build reviewer command` for the merge — the same path a step-3' \
+    '     it as failed for the merge — the same path a step-3'
+
   # The doc must not re-acquire the stale claim that only codex consumes the flag — that sentence
   # is how the gap stayed open: documented instead of closed.
   mutate 'command/session-root-scope-claim' 'commands/multi-review.md' replace \

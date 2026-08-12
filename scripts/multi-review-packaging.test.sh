@@ -567,4 +567,40 @@ if [[ -f "$DR" ]]; then
     || ok "no stale 'only codex consumes --session-root' claim"
 fi
 
+# --- the empty-argv guard must DO something a primary can act on ---
+#
+# The guard's action shipped as `{ : quarantine <id> "…"; }`. It reads like an instruction, but `:`
+# is bash's null builtin: a primary that transcribes the block verbatim — which is exactly what the
+# block is for — runs a no-op. No quarantine is recorded, dispatch is (correctly) skipped, and the
+# provider's absence resurfaces at step 5 as exit 9, reported as `no turn taken` — the reason for a
+# reviewer that declined, not one that was never launched. The block must emit an observable signal,
+# and the prose must bind that signal to a quarantine record.
+DR="${ROOT}/commands/multi-review.md"
+if [[ -f "$DR" ]]; then
+  n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
+  if [[ -z "$n" ]]; then
+    bad "no shell-kind dispatch branch found in $(basename "$DR")"
+  else
+    blk="$(sed -n "${n},$((n+30))p" "$DR")"
+    # The empty-argv guard is the `||` arm; the dispatch line is the `&&` arm. Only the former.
+    eg="$(grep -F '${#argv[@]}' <<<"$blk" | grep -F '||' || true)"
+    if [[ -z "$eg" ]]; then
+      bad "shell dispatch has no empty-argv guard — \"\${argv[@]}\" on a zero-element array is fatal under set -u on bash 3.2"
+    elif grep -qE '\|\|[[:space:]]*\{?[[:space:]]*:[[:space:]]' <<<"$eg"; then
+      bad "the empty-argv guard's action is the ':' null builtin — transcribed verbatim it does nothing, and the miss resurfaces at step 5 as 'no turn taken'"
+    elif grep -qF 'DISPATCH-FAILED' <<<"$eg"; then
+      ok "the empty-argv guard emits an observable DISPATCH-FAILED signal"
+    else
+      bad "the empty-argv guard takes no observable action: ${eg}"
+    fi
+    # ...and the signal must be wired to the quarantine path, or it is just output nobody consumes.
+    win="$(sed -n "${n},$((n+40))p" "$DR")"
+    if grep -qF 'DISPATCH-FAILED' <<<"$win" && grep -qF -- '--quarantined' <<<"$win"; then
+      ok "the DISPATCH-FAILED signal is bound to a --quarantined record"
+    else
+      bad "nothing tells the primary what to DO with an un-dispatchable shell reviewer — the signal never reaches the quarantine path"
+    fi
+  fi
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

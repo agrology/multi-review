@@ -444,13 +444,20 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             # "${argv[@]}" on a zero-element array is a fatal unbound-variable error. An empty
             # argv means the command could not be built — treat it as a dispatch failure for
             # this provider (quarantine it) rather than expanding.
-            (( ${#argv[@]} )) || { : quarantine <id> "could not build reviewer command"; }
+            (( ${#argv[@]} )) || echo "DISPATCH-FAILED <id>: could not build reviewer command" >&2
             # PIN THE LAUNCH CWD. gemini-cli's workspace is the cwd of the process at LAUNCH, and
             # it refuses to read or write outside it — so without this `cd` the workspace is
             # whatever directory this Bash call happens to inherit, which is not necessarily the
             # root holding `<doc>.<id>`. Same drift `--session-root` fixes for codex (#66); the
             # subshell keeps it scoped to the dispatch and leaves your own cwd alone.
             (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )
+
+     **`DISPATCH-FAILED <id>` on stderr is yours to act on.** The block only reports it; nothing
+     downstream reads it for you. Do not dispatch that reviewer this round and record
+     `--quarantined <id>:could not build reviewer command` for the merge — the same path a step-3
+     non-zero exit uses. Left unrecorded, the provider is simply absent: step 5 then waits on a
+     copy nobody launched and returns exit 9, which you would report as `no turn taken` — the
+     reason for a reviewer that declined, not one that was never started.
 
    All same-turn subagent dispatches go in the SAME response block as each other.
 5. **Bound the wait, per copy — and never quarantine on the first bound hit.**
