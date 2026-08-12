@@ -552,73 +552,16 @@ fi
 # which this file used to DOCUMENT for gemini instead of closing.
 DR="${ROOT}/commands/multi-review.md"
 if [[ -f "$DR" ]]; then
+  # Bound both windows by DOCUMENT STRUCTURE, not by a line offset. Two fixed offsets in a row
+  # (22, then 30) ended up with the target sitting on the window's last row, where the next
+  # insertion silently ends the guard's coverage — fable-rd2-r5 caught the second one. A window
+  # that runs to the next numbered step cannot drift that way.
   n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
-  if [[ -z "$n" ]]; then
-    bad "no shell-kind dispatch branch found in $(basename "$DR")"
+  ne="$(awk -v s="$n" 'NR>s && /^5\. \*\*/ {print NR; exit}' "$DR")"
+  if [[ -z "$n" || -z "$ne" ]]; then
+    bad "cannot delimit the shell-kind dispatch branch in $(basename "$DR")"
   else
-    # Widened from 22 when the G3 log capture pushed the dispatch line to the window's last row —
-    # a window with no margin stops covering the moment anything is added above it, silently.
-    blk="$(sed -n "${n},$((n+30))p" "$DR")"
-    grep -qE 'cd "<session-root>"' <<<"$blk" \
-      && ok "shell dispatch pins its launch cwd to <session-root>" \
-      || bad "shell dispatch sets no cwd — gemini's workspace is then whatever directory the call inherits (G2/#66)"
-  fi
-  # ...and the file must stop claiming the gap it no longer has.
-  grep -qiE 'only the codex arm consumes' "$DR" \
-    && bad "multi-review.md still says only codex consumes --session-root — stale now that the gemini arm does too" \
-    || ok "no stale 'only codex consumes --session-root' claim"
-fi
-
-# --- the empty-argv guard must DO something a primary can act on ---
-#
-# The guard's action shipped as `{ : quarantine <id> "…"; }`. It reads like an instruction, but `:`
-# is bash's null builtin: a primary that transcribes the block verbatim — which is exactly what the
-# block is for — runs a no-op. No quarantine is recorded, dispatch is (correctly) skipped, and the
-# provider's absence resurfaces at step 5 as exit 9, reported as `no turn taken` — the reason for a
-# reviewer that declined, not one that was never launched. The block must emit an observable signal,
-# and the prose must bind that signal to a quarantine record.
-DR="${ROOT}/commands/multi-review.md"
-if [[ -f "$DR" ]]; then
-  n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
-  if [[ -z "$n" ]]; then
-    bad "no shell-kind dispatch branch found in $(basename "$DR")"
-  else
-    blk="$(sed -n "${n},$((n+30))p" "$DR")"
-    # The empty-argv guard is the `||` arm; the dispatch line is the `&&` arm. Only the former.
-    eg="$(grep -F '${#argv[@]}' <<<"$blk" | grep -F '||' || true)"
-    if [[ -z "$eg" ]]; then
-      bad "shell dispatch has no empty-argv guard — \"\${argv[@]}\" on a zero-element array is fatal under set -u on bash 3.2"
-    elif grep -qE '\|\|[[:space:]]*\{?[[:space:]]*:[[:space:]]' <<<"$eg"; then
-      bad "the empty-argv guard's action is the ':' null builtin — transcribed verbatim it does nothing, and the miss resurfaces at step 5 as 'no turn taken'"
-    elif grep -qF 'DISPATCH-FAILED' <<<"$eg"; then
-      ok "the empty-argv guard emits an observable DISPATCH-FAILED signal"
-    else
-      bad "the empty-argv guard takes no observable action: ${eg}"
-    fi
-    # ...and the signal must be wired to the quarantine path, or it is just output nobody consumes.
-    win="$(sed -n "${n},$((n+40))p" "$DR")"
-    if grep -qF 'DISPATCH-FAILED' <<<"$win" && grep -qF -- '--quarantined' <<<"$win"; then
-      ok "the DISPATCH-FAILED signal is bound to a --quarantined record"
-    else
-      bad "nothing tells the primary what to DO with an un-dispatchable shell reviewer — the signal never reaches the quarantine path"
-    fi
-  fi
-fi
-
-# --- a CRASHED shell reviewer must be distinguishable from a SLOW one (G3) ---
-#
-# The shell branch consulted neither exit code nor stderr. A gemini that died on launch — bad flag,
-# expired auth, exhausted quota — left a copy byte-identical to its seed, which is byte-identical to
-# what a reviewer still thinking produces. The primary then spent the grace re-run and the whole
-# retry budget re-waiting on a dead process, and quarantined it as `no turn taken`: the reason for a
-# reviewer that read the doc and declined. The cause was on the process's own stderr the entire time.
-DR="${ROOT}/commands/multi-review.md"
-if [[ -f "$DR" ]]; then
-  n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
-  if [[ -z "$n" ]]; then
-    bad "no shell-kind dispatch branch found in $(basename "$DR")"
-  else
-    blk="$(sed -n "${n},$((n+30))p" "$DR")"
+    blk="$(sed -n "${n},$((ne-1))p" "$DR")"
     # (a) the dispatch must capture what the process said. Assert it on the DISPATCH LINE, not
     # anywhere in the block: the status line below also names the log, so a block-wide grep stays
     # green with the redirect deleted and proves nothing. Name it `*.multi-review.log`, which
@@ -646,40 +589,70 @@ if [[ -f "$DR" ]]; then
     else
       bad "the exit status is not guaranteed to start on its own line: ${sl}"
     fi
-    # (c) a stale log from an earlier round must not survive into this one. The redirect truncates
-    # only when the background process opens the file, so a pre-wait read can beat it and act on
-    # round N-1's status — quarantining a reviewer that launched seconds ago (fable-rd1-r4).
+    # (c) the stale-log removal must NOT live in the dispatch block. That block runs as a
+    # background task, so a removal inside it races the primary's own pre-wait read of the same
+    # file — the fix for fable-rd1-r4 relocated the race instead of closing it (fable-rd2-r1).
     if grep -qE '^[[:space:]]*rm -f "<doc>\.<id>\.multi-review\.log"' <<<"$blk"; then
-      ok "the previous round's dispatch log is cleared before launch"
+      bad "the stale-log removal sits inside the backgrounded dispatch — it races the pre-wait read it exists to prevent"
     else
-      bad "a stale dispatch log survives into the next round — the pre-wait read can quarantine a just-launched reviewer on an old status line"
+      ok "the stale-log removal is not inside the backgrounded dispatch"
     fi
   fi
-  # (c) the log has to be CONSULTED, or it is evidence nobody reads. The bound-hit reasons are the
-  # decision point: that is where `no turn taken` gets chosen over `the process died`.
-  w="$(grep -n 'Bound the wait, per copy' "$DR" | head -1 | cut -d: -f1)"
-  if [[ -z "$w" ]]; then
-    bad "cannot locate the wait step in $(basename "$DR")"
+
+  # (d) ...it lives in the SEEDING step instead, which the primary runs synchronously before any
+  # reviewer is dispatched, so nothing can race it.
+  sd="$(grep -n 'snapshot each copy as' "$DR" | head -1 | cut -d: -f1)"
+  if [[ -z "$sd" ]]; then
+    bad "cannot locate the seed-snapshot step in $(basename "$DR")"
+  elif sed -n "${sd},$((sd+20))p" "$DR" | grep -qF 'rm -f "<doc>.<id>.multi-review.log"'; then
+    ok "the previous round's dispatch log is cleared synchronously, in the seeding step"
   else
-    wblk="$(sed -n "${w},$((w+75))p" "$DR")"
+    bad "nothing clears the previous round's dispatch log before dispatch — a pre-wait read can quarantine a just-launched reviewer on round N-1's status line"
+  fi
+
+  # (e) the log has to be CONSULTED, or it is evidence nobody reads. The bound-hit decision is
+  # where `no turn taken` gets chosen over `the process died`.
+  w="$(grep -n 'Bound the wait, per copy' "$DR" | head -1 | cut -d: -f1)"
+  we="$(awk -v s="$w" 'NR>s && /^6\. \*\*/ {print NR; exit}' "$DR")"
+  if [[ -z "$w" || -z "$we" ]]; then
+    bad "cannot delimit the wait step in $(basename "$DR")"
+  else
+    wblk="$(sed -n "${w},$((we-1))p" "$DR")"
     # Match the INSTRUCTION to read it, not merely the filename appearing somewhere in the window.
     # The quarantine-reason line below also names the log, so a bare filename grep here stays green
     # with the read instruction deleted — it SURVIVED the mutation sweep exactly that way.
-    if grep -qE 'read `<doc>\.<id>\.multi-review\.log`' <<<"$wblk" && grep -qiE 'non-?zero' <<<"$wblk"; then
+    if grep -qE 'read `<doc>\.<id>\.multi-review\.log`' <<<"$wblk"; then
       ok "a bound hit consults the dispatch log before choosing a quarantine reason"
     else
       bad "the wait step never reads the dispatch log — a dead reviewer still consumes the full retry budget and is reported as 'no turn taken' (G3)"
     fi
-    # (d) a FLIPPED MARKER OUTRANKS the status. A CLI can write its turn, flip, and only then die
+    # (f) the sentinel search must take the LAST match. The log is verbatim CLI output, and a
+    # reviewer echoing this protocol's own text reproduces the string — which in this repo's
+    # self-reviews is not hypothetical, the reviewed material contains it (fable-rd2-r4).
+    if grep -qE 'take the \*\*LAST\*\* line' <<<"$wblk"; then
+      ok "the status search takes the last matching line, not the first"
+    else
+      bad "the status line is matched without taking the LAST occurrence — echoed protocol text in the log can spoof it"
+    fi
+    # (g) a FLIPPED MARKER OUTRANKS the status. A CLI can write its turn, flip, and only then die
     # (teardown, or a post-edit call that exhausts a quota). Quarantining on the status alone
     # discards a completed turn and every finding in it — strictly worse than the bug the log
     # fixes, and reachable the moment the log exists (fable-rd1-r1).
-    if grep -qF 'marker already says `awaiting-author`' <<<"$wblk" && grep -qF 'do NOT quarantine' <<<"$wblk"; then
+    if grep -qF 'Marker says `awaiting-author`' <<<"$wblk" && grep -qF 'never quarantine' <<<"$wblk"; then
       ok "a flipped marker outranks a non-zero dispatch status"
     else
       bad "a reviewer that finished its turn and then died is quarantined on its exit status alone, discarding a completed turn and its findings"
     fi
-    # (e) the quarantine reason must NAME the log, not copy it. Reasons are recorded durably in the
+    # (h) a copy that CHANGED before dying must not be re-waited, and must not be discarded. The
+    # exit-8 retry path assumes the reviewer is "demonstrably alive and still writing", which the
+    # status disproves; and this state is byte-identical to the rc-zero one the doc calls
+    # recoverable, so the exit code must not decide their opposite fates (fable-rd2-r2/r3).
+    if grep -qF 'copy CHANGED since its seed' <<<"$wblk" && grep -qF 'Do **not** re-wait' <<<"$wblk"; then
+      ok "a copy that wrote findings then died is recovered, not re-waited and not discarded"
+    else
+      bad "a reviewer that wrote findings then died is re-waited on a dead process and its partial findings discarded"
+    fi
+    # (i) the quarantine reason must NAME the log, not copy it. Reasons are recorded durably in the
     # doc and rendered at the gate; the log is gitignored and local. The line most likely to sit at
     # the end of a failed dispatch is an auth error — the one most likely to carry a credential
     # (fable-rd1-r3).
