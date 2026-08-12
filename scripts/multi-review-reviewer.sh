@@ -423,22 +423,37 @@ protocol_body() {
 # review model (star) and one finding grammar — it is stated unconditionally in emit_prompt
 # below, never gated on a mode the reviewer has to detect.
 #
-# Inline rather than by path (issue #22): $PROTOCOL is rooted at the PLUGIN root, which under a
-# normal install is ~/.claude/plugins/cache/<owner>/multi-review/<version>/... — always outside
-# the repo being reviewed. gemini-cli refuses any read outside its workspace root
-# ("Path not in workspace"), and no user setting relaxes that, so the one provider dispatched as
-# an external CLI could never open the file. The in-repo copy is no fallback either: it is
-# git-ignored twice over by ensure-skill (`.git/info/exclude` + an in-dir `.gitignore`), and
-# gemini-cli honors gitignore by default. Inlining removes the filesystem from the path entirely,
-# so the contract reaches every reviewer regardless of workspace root, ignore rules, or trust
-# settings. Cost is ~7KB of prompt per dispatch.
-prompt_head() { # <has-skill>
+# THREE delivery shapes, chosen by what the reviewer can actually reach — not by a binary.
+#
+#   skill  (codex)  — pointed at its own materialized bundle.
+#   inline (gemini) — the whole contract in the prompt. Issue #22: $PROTOCOL is rooted at the
+#     PLUGIN root, under a normal install ~/.claude/plugins/cache/<owner>/multi-review/<version>/,
+#     always outside the repo being reviewed. gemini-cli refuses any read outside its workspace
+#     root ("Path not in workspace"), no user setting relaxes it, and the in-repo copy is no
+#     fallback either — ensure-skill git-ignores it twice over and gemini-cli honors gitignore.
+#     Inlining removes the filesystem from the path entirely.
+#   path   (fable)  — the absolute protocol path, read with its own tool.
+#
+# The inline shape used to cover fable too, and that was gemini's constraint applied to a provider
+# that never had it: fable runs IN-HARNESS as a subagent and can Read an absolute path anywhere.
+# It cost 14 KB on the most-dispatched prompt in the system, since fable is the guaranteed floor
+# reviewer and is therefore present in every round of every run.
+#
+# Keyed on dispatch-kind rather than provider id: `shell` means an external CLI with its own
+# workspace sandbox, which is exactly the population that cannot be sent to a path. A future
+# shell-kind provider inherits the right behaviour without touching this.
+#
+# SAFETY NET, and the reason this is sound rather than merely cheaper: the prompt tail states the
+# operative grammar in full regardless of shape. A fable turn that never opens the file still
+# emits findings `merge` can read — the file adds marker/scope detail, not the enforceable shape.
+# The suite asserts each grammar token survives without the inline.
+prompt_head() { # <has-skill> <dispatch-kind>
   if [[ "$1" == "yes" ]]; then
     cat <<'HEAD'
 You are a secondary reviewer in this repo's multi-review star review. Use your multi-review skill
 (it reads docs/multi-review.md and follows the star protocol).
 HEAD
-  else
+  elif [[ "$2" == "shell" ]]; then
     local body
     body="$(protocol_body)" || die "protocol contract not found at ${PROTOCOL}" 1
     [[ -n "$body" ]] || die "protocol contract at ${PROTOCOL} is empty" 1
@@ -453,11 +468,22 @@ the copy-marker handoff. Follow it for the rest of this turn.
 ${body}
 ----- END MULTI-REVIEW PROTOCOL -----
 HEAD
+  else
+    [[ -f "$PROTOCOL" ]] || die "protocol contract not found at ${PROTOCOL}" 1
+    cat <<HEAD
+You are a secondary reviewer in this repo's multi-review star review.
+
+FIRST, before editing anything, read the protocol contract in full:
+  ${PROTOCOL}
+It defines the star finding grammar and the copy-marker handoff, and it governs the rest of this
+turn. If you cannot read that file, say so and stop rather than guessing — the grammar below is
+enough to file findings, but the contract is what the merge step is written against.
+HEAD
   fi
 }
 
-emit_prompt() { # <abs-doc-path> <has-skill>
-  local abs="$1" has_skill="$2" authority
+emit_prompt() { # <abs-doc-path> <has-skill> <dispatch-kind>
+  local abs="$1" has_skill="$2" kind="${3:-}" authority
   # Who defines the finding grammar for this reviewer. Saying "your skill" to a skill-less
   # reviewer contradicts the head block, which just told it to read the protocol file.
   # The codex wording is byte-frozen; only the skill-less variant differs.
@@ -466,7 +492,7 @@ emit_prompt() { # <abs-doc-path> <has-skill>
   else
     authority="the protocol contract you just read"
   fi
-  prompt_head "$has_skill"
+  prompt_head "$has_skill" "$kind"
   cat <<PROMPT
 
 Review EXACTLY this document — its canonical absolute path:
@@ -518,10 +544,10 @@ cmd_prompt() { # <doc> --reviewer <id>
   [[ -n "$doc" ]] || die "usage: multi-review-reviewer.sh prompt <doc-path> --reviewer <id>" 2
   shift
   [[ -f "$doc" ]] || die "doc not found: $doc" 2
-  local row has_skill
+  local row has_skill kind
   row="$(resolve_row "$@")" || exit 2
-  has_skill="$(field "$row" 5)"
-  emit_prompt "$(abs_path "$doc")" "$has_skill"
+  has_skill="$(field "$row" 5)"; kind="$(field "$row" 3)"
+  emit_prompt "$(abs_path "$doc")" "$has_skill" "$kind"
 }
 
 cmd_command() { # <doc> --reviewer <id> -> NUL-delimited argv
@@ -539,7 +565,7 @@ cmd_command() { # <doc> --reviewer <id> -> NUL-delimited argv
   # protocol contract) exits only that subshell. Unchecked, we would emit a perfectly
   # well-formed argv carrying a truncated prompt — the reviewer would run with no contract at
   # all. Propagate instead. (Same subshell-die hazard resolve_row documents above.)
-  prompt="$(emit_prompt "$(abs_path "$doc")" "$has_skill")" || exit $?
+  prompt="$(emit_prompt "$(abs_path "$doc")" "$has_skill" "$kind")" || exit $?
   # NUL-delimited: the prompt is multi-line and doc paths contain spaces, so the caller must
   # never re-parse this through a shell. Consumer idiom (bash 3.2 safe, no mapfile):
   #   argv=(); while IFS= read -r -d '' a; do argv+=("$a"); done < <(… command "$doc")
