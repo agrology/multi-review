@@ -1141,6 +1141,27 @@ mutations() {
     'a multi-line-block-commented respectGitIgnore read as a live opt-out' 'multi-review-reviewer.test.sh' \
     '        if (inblock) {' \
     '        if (0) {'
+
+  # ---- G4: doctor's probe must RUN the dispatch argv -------------------------------------------
+
+  # Reverting the probe to its own literal restores the two-builder split, where doctor and
+  # dispatch could disagree in both directions. T3 is the assertion that encodes this guard
+  # directly (argv equality); T1 also fails, on the dropped `--approval-mode`, but that is one
+  # consequence rather than the guard itself. Expecting T3 is safe because this suite is NOT
+  # fail-fast — `bad()` increments a counter and returns, so every assertion runs and T3's FAIL
+  # line is emitted even though T1 fails first.
+  #
+  # The replacement restores the old BEHAVIOUR on one parseable line, not merely the old text.
+  # Substituting the literal into a multi-line `while … \` + `< <(…)` construct would leave either
+  # unparseable bash (which the runner rejects as "failing for the wrong reason") or an empty
+  # `argv` — the bash-3.2 `set -u` hazard the probe relies on being unreachable. Either way the
+  # entry would "catch" something while proving nothing about T3. That is why the probe writes
+  # the read loop on a single line.
+  mutate 'reviewer/gemini-probe-uses-dispatch-argv' 'scripts/multi-review-reviewer.sh' replace \
+    'probe and dispatch argv have drifted' 'multi-review-reviewer.test.sh' \
+    '  while IFS= read -r -d '"'"''"'"' a; do argv+=("$a"); done < <(gemini_argv "$model" "reply with OK")' \
+    '  argv=(gemini -m "$model" -p "reply with OK")'
+
   # ---- convergence integrity ------------------------------------------------------------------
 
   # THE SELF-RESPONSE GUARD. This is what makes the review a review rather than a self-review: it
