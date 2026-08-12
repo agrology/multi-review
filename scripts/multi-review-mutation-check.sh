@@ -415,13 +415,13 @@ mutations() {
     '   - **Marker says `awaiting-author`** → the turn completed. Verify it normally (step 6) whatever' \
     '   - **The copy finished early** → the turn may be done. Verify it normally (step 6) whatever'
 
-  # The sentinel search must take the LAST match. The log is verbatim CLI output, and a reviewer
-  # echoing this protocol's own text reproduces the string — not hypothetical in a repo whose
-  # self-reviews contain it (fable-rd2-r4).
-  mutate 'command/shell-status-last-match' 'commands/multi-review.md' replace \
-    'without taking the LAST occurrence' 'multi-review-packaging.test.sh' \
-    '   the process is gone; take the **LAST** line of that form. The log is verbatim CLI output, so a' \
-    '   the process is gone; find that line anywhere in the log. The log is verbatim CLI output, so a'
+  # The sentinel counts only as the log's FINAL non-empty line. "Last match" is not enough: while
+  # the reviewer is still alive the real status does not exist yet, so an echoed sentinel IS the
+  # last match and a live reviewer reads as exited (fable-rd2-r4, tightened by fable-rd3-r2).
+  mutate 'command/shell-status-final-line' 'commands/multi-review.md' replace \
+    'accepted from anywhere in the log' 'multi-review-packaging.test.sh' \
+    '   the process is gone. **It counts only when it is the log'"'"'s FINAL non-empty line.** A match' \
+    '   the process is gone. **Take the last line of that form.** A match'
 
   # A copy that wrote findings and THEN died must be recovered, not re-waited (the exit-8 path
   # assumes it is alive) and not discarded (the rc-zero case calls the identical state

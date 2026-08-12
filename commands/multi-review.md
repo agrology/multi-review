@@ -492,9 +492,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    **For a `shell` reviewer, read `<doc>.<id>.multi-review.log` — before the first wait, and again
    at every bound hit.** Step 2 removed the previous round's log synchronously, so what you read is
    this round's. The dispatch appends `multi-review: dispatch exited <rc>` on a line of its own once
-   the process is gone; take the **LAST** line of that form. The log is verbatim CLI output, so a
-   reviewer that echoes this protocol's own text can reproduce the string — in this repo's
-   self-reviews the reviewed material contains it, which makes an earlier match untrustworthy.
+   the process is gone. **It counts only when it is the log's FINAL non-empty line.** A match
+   anywhere earlier is echoed text, not a status: the log is verbatim CLI output, and in this
+   repo's self-reviews the reviewed material contains the sentinel string verbatim. Taking merely
+   the last match is not enough — while the reviewer is still alive the real status does not exist
+   yet, so an echoed one would be the last match and a live reviewer would read as exited. The
+   dispatch writes the real status after the process ends, so being last is exactly what makes it
+   real.
 
    The status answers exactly one question — *has the process exited?* What to DO is decided by the
    copy, in this order:
@@ -517,9 +521,9 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      re-waiting spends up to three more bounds on a process that can never flip anything. Run step
      6's `channel-check` against the seed on what it *did* write: admit the turn if the findings are
      readable, and only otherwise quarantine, with `died mid-turn after writing; see
-     <doc>.<id>.multi-review.log`. Partial findings are worth more than a discarded round, and this
-     state is byte-for-byte the one the rc-zero case treats as recoverable — the exit code must not
-     decide their opposite fates.
+     <doc>.<id>.multi-review.log`. Partial findings are worth more than a discarded round. Note
+     that neither `channel-check` nor `merge` requires the copy's marker to have been flipped —
+     both accept an unflipped copy — so this recovery is runnable exactly when it is needed.
    - **Status present, marker not flipped, copy byte-identical to its seed** → nothing was written.
      Quarantine with `dispatch exited <rc>; see <doc>.<id>.multi-review.log`.
 

@@ -667,9 +667,12 @@ if [[ -f "$DR" ]]; then
   # (d) ...it lives in the SEEDING step instead, which the primary runs synchronously before any
   # reviewer is dispatched, so nothing can race it.
   sd="$(grep -n 'snapshot each copy as' "$DR" | head -1 | cut -d: -f1)"
-  if [[ -z "$sd" ]]; then
-    bad "cannot locate the seed-snapshot step in $(basename "$DR")"
-  elif sed -n "${sd},$((sd+20))p" "$DR" | grep -qF 'rm -f "<doc>.<id>.multi-review.log"'; then
+  # Bounded by the step that follows it, not an offset. A fixed window here would re-seed the
+  # exact class this file just converted away from — flagged as fable-rd3-r3.
+  sde="$(awk -v s="$sd" 'NR>s && /Then prove the copy is BLIND/ {print NR; exit}' "$DR")"
+  if [[ -z "$sd" || -z "$sde" ]]; then
+    bad "cannot delimit the seed-snapshot step in $(basename "$DR")"
+  elif sed -n "${sd},$((sde-1))p" "$DR" | grep -qF 'rm -f "<doc>.<id>.multi-review.log"'; then
     ok "the previous round's dispatch log is cleared synchronously, in the seeding step"
   else
     bad "nothing clears the previous round's dispatch log before dispatch — a pre-wait read can quarantine a just-launched reviewer on round N-1's status line"
@@ -694,10 +697,10 @@ if [[ -f "$DR" ]]; then
     # (f) the sentinel search must take the LAST match. The log is verbatim CLI output, and a
     # reviewer echoing this protocol's own text reproduces the string — which in this repo's
     # self-reviews is not hypothetical, the reviewed material contains it (fable-rd2-r4).
-    if grep -qE 'take the \*\*LAST\*\* line' <<<"$wblk"; then
-      ok "the status search takes the last matching line, not the first"
+    if grep -qiF 'final non-empty line' <<<"$wblk"; then
+      ok "the status counts only as the log's final non-empty line"
     else
-      bad "the status line is matched without taking the LAST occurrence — echoed protocol text in the log can spoof it"
+      bad "the status is accepted from anywhere in the log — while the reviewer is still alive the real status does not exist yet, so echoed protocol text is the last match and a live reviewer reads as exited"
     fi
     # (g) a FLIPPED MARKER OUTRANKS the status. A CLI can write its turn, flip, and only then die
     # (teardown, or a post-edit call that exhausts a quota). Quarantining on the status alone
