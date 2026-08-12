@@ -181,6 +181,10 @@ grep -qi 'multi-review skill' <<<"$out" && ok "codex prompt references its skill
 # path may stand in for it.
 protocol_src="$(cd "$(dirname "$SUT")/.." && pwd)/.agents/skills/multi-review/protocol/multi-review.md"
 [[ -f "$protocol_src" ]] || { echo "FIXTURE SETUP FAILED: protocol not at $protocol_src"; exit 1; }
+# Kept as a loop over a POPULATION — "every provider whose contract is inlined" — which today has
+# exactly one member because `shell` is the only dispatch-kind that cannot be sent to a path. A
+# second shell-kind provider joins by being added here, and inherits every assertion below.
+# shellcheck disable=SC2043  # single-element by circumstance, not by mistake
 for p in gemini; do
   out="$(bash "$SUT" prompt "$D" --reviewer "$p" 2>/dev/null)"
   grep -qiE 'read the protocol contract in full' <<<"$out" \
