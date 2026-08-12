@@ -550,6 +550,33 @@ cmd_prompt() { # <doc> --reviewer <id>
   emit_prompt "$(abs_path "$doc")" "$has_skill" "$kind"
 }
 
+# The gemini dispatch argv, built in ONE place. `cmd_command` emits it for the dispatcher; the
+# doctor's live probe RUNS it with a trivial prompt. Two independent builders let doctor and
+# dispatch disagree in BOTH directions — a probe missing `--approval-mode` passes on a CLI that
+# rejects the dispatch, and one missing the autotrust prefix fails on a workspace the dispatch
+# trusts. The prompt is the ONLY deliberate difference between the two callers, so a flag added
+# here reaches both without a second edit.
+#
+# `model` always carries a value (registry default or the env override), so the model is
+# always explicit — we never fall through to the CLI's own default tier.
+#
+# `--approval-mode auto_edit` is the analogue of the codex route's `--write`. Without it
+# `gemini -p` runs at approval mode `default` ("prompt for approval") with nobody there
+# to prompt, so file-modification tools are disabled: observed live, the reviewer emitted
+# its findings as prose and never touched the doc, leaving the marker unflipped. Chosen
+# over `yolo` deliberately — `auto_edit` approves edit tools only, never shell.
+# Opt-in auto-trust (MULTI_REVIEW_GEMINI_AUTOTRUST=1) scopes GEMINI_CLI_TRUST_WORKSPACE=true to
+# THIS dispatch via an `env` prefix, so users needn't set it in their profile. Default
+# (unset/≠1) is byte-identical to before. SECURITY: trusting a workspace lets the CLI honor its
+# .env / settings and auto-edit — opt-in only, never a cloned/untrusted repo (see README).
+gemini_argv() { # <model> <prompt> -> NUL-delimited argv
+  if [[ "${MULTI_REVIEW_GEMINI_AUTOTRUST:-}" == "1" ]]; then
+    printf '%s\0' "env" "GEMINI_CLI_TRUST_WORKSPACE=true" "gemini" "-m" "$1" "--approval-mode" "auto_edit" "-p" "$2"
+  else
+    printf '%s\0' "gemini" "-m" "$1" "--approval-mode" "auto_edit" "-p" "$2"
+  fi
+}
+
 cmd_command() { # <doc> --reviewer <id> -> NUL-delimited argv
   local doc="${1:-}"
   [[ -n "$doc" ]] || die "usage: multi-review-reviewer.sh command <doc-path> --reviewer <id>" 2
@@ -570,24 +597,7 @@ cmd_command() { # <doc> --reviewer <id> -> NUL-delimited argv
   # never re-parse this through a shell. Consumer idiom (bash 3.2 safe, no mapfile):
   #   argv=(); while IFS= read -r -d '' a; do argv+=("$a"); done < <(… command "$doc")
   case "$id" in
-    gemini)
-      # `model` always carries a value (registry default or the env override), so the model is
-      # always explicit — we never fall through to the CLI's own default tier.
-      #
-      # `--approval-mode auto_edit` is the analogue of the codex route's `--write`. Without it
-      # `gemini -p` runs at approval mode `default` ("prompt for approval") with nobody there
-      # to prompt, so file-modification tools are disabled: observed live, the reviewer emitted
-      # its findings as prose and never touched the doc, leaving the marker unflipped. Chosen
-      # over `yolo` deliberately — `auto_edit` approves edit tools only, never shell.
-      # Opt-in auto-trust (MULTI_REVIEW_GEMINI_AUTOTRUST=1) scopes GEMINI_CLI_TRUST_WORKSPACE=true to
-      # THIS dispatch via an `env` prefix, so users needn't set it in their profile. Default
-      # (unset/≠1) is byte-identical to before. SECURITY: trusting a workspace lets the CLI honor its
-      # .env / settings and auto-edit — opt-in only, never a cloned/untrusted repo (see README).
-      if [[ "${MULTI_REVIEW_GEMINI_AUTOTRUST:-}" == "1" ]]; then
-        printf '%s\0' "env" "GEMINI_CLI_TRUST_WORKSPACE=true" "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt"
-      else
-        printf '%s\0' "gemini" "-m" "$model" "--approval-mode" "auto_edit" "-p" "$prompt"
-      fi ;;
+    gemini) gemini_argv "$model" "$prompt" ;;
     *)
       die "no shell command defined for reviewer provider '${id}'" 2 ;;
   esac
@@ -794,11 +804,17 @@ cmd_doctor() {
 # can't hang) and reap direct children.
 GEMINI_PROBE_MSG=""
 gemini_live_probe() {
-  local model out pid waited bound
+  local model out pid waited bound a
   model="$(provider_row gemini | cut -d'|' -f4)"
   bound="${MULTI_REVIEW_PROBE_TIMEOUT:-30}"
   out="$(mktemp)"
-  ( gemini -m "$model" -p "reply with OK" >"$out" 2>&1 ) & pid=$!
+  # The probe RUNS the dispatch argv (G4), so doctor certifies the command dispatch actually
+  # uses rather than a second one that can drift from it. The read loop is deliberately ONE
+  # line: the mutation entry replaces it, and `replace` operates on a single line that has to
+  # parse on its own.
+  local argv=()
+  while IFS= read -r -d '' a; do argv+=("$a"); done < <(gemini_argv "$model" "reply with OK")
+  ( "${argv[@]}" >"$out" 2>&1 ) & pid=$!
   waited=0
   while kill -0 "$pid" 2>/dev/null && (( waited < bound )); do sleep 1; waited=$((waited+1)); done
   if kill -0 "$pid" 2>/dev/null; then
