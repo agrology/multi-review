@@ -1519,6 +1519,11 @@ done
   && ok "G4/T1: doctor's probe carries --approval-mode auto_edit, like dispatch" \
   || bad "G4/T1: probe argv lacks --approval-mode auto_edit: ${probe_argv[*]:-<none>}"
 
+# T1b — with autotrust OFF (this run's setup), the probe carries no trust prefix at all.
+[[ "$(cat "$GA/trust.txt")" == "<unset>" ]] \
+  && ok "G4/T1b: without autotrust the probe carries no trust prefix" \
+  || bad "G4/T1b: probe saw GEMINI_CLI_TRUST_WORKSPACE='$(cat "$GA/trust.txt")' (want unset)"
+
 # T2 — under autotrust the probe gets the `env GEMINI_CLI_TRUST_WORKSPACE=true` prefix.
 # The unset is PART OF THE TEST, not an assumption about the shell: this suite clears only
 # MULTI_REVIEW_REVIEWER_MODEL globally, and an ambient export would make this pass against a probe
@@ -1530,9 +1535,11 @@ ga_doctor MULTI_REVIEW_GEMINI_AUTOTRUST=1
   || bad "G4/T2: probe saw GEMINI_CLI_TRUST_WORKSPACE='$(cat "$GA/trust.txt")' (want true)"
 
 # T3 (anti-drift) — the probe argv IS the dispatch argv, modulo the prompt. Autotrust OFF, so
-# neither stream carries the `env` prefix; `env` execs the binary in any case, so the prefix could
-# never reach the stub's `$@`. T2 covers that direction.
+# neither stream carries the `env` prefix; but `env` execs the binary in place, so ANY leading
+# wrapper — not just this one — is invisible to `$@` and this comparison's fixed offset of one.
+# T1b (absence when autotrust is off) and T2 (presence when it's on) actually pin the prefix.
 unset GEMINI_CLI_TRUST_WORKSPACE MULTI_REVIEW_GEMINI_AUTOTRUST
+: > "$GA/argv.bin"
 ga_doctor
 read_nul "$GA/argv.bin"
 probe_argv=(); (( ${#nulargv[@]} )) && probe_argv=("${nulargv[@]}")

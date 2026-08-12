@@ -133,6 +133,8 @@ refuses to run until you remove it, and `--check-reviewers`/`doctor` will flag t
 1. **`export GEMINI_CLI_TRUST_WORKSPACE=true`** (or trust the folder once). An untrusted workspace
    makes the CLI skip `.env` (so it can't authenticate — the error misleadingly says "set an Auth
    method") *and* disables file edits, so the reviewer can't write the doc.
+   `doctor`'s probe runs the same command line as a real dispatch, including
+   `--approval-mode auto_edit`, so its verdict reflects what dispatch will actually do.
 2. An API key — `export GEMINI_API_KEY=…`, or drop `GEMINI_API_KEY=…` in `~/.gemini/.env` (or your
    repo's `.env`). **It auto-loads once the workspace is trusted.**
 3. `.gemini/settings.json` → `{"context":{"fileFiltering":{"respectGitIgnore":false}}}`. Needed
