@@ -237,11 +237,17 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
     silently restore the wrong basis, and a failed capture is the one place an empty value comes
     from. That is why the capture step above tells you to stop instead of passing it on.
 
-    **Scope: only the codex arm consumes `--session-root` today.** The flag is accepted on every
-    `check` invocation so the command line stays uniform, but the gemini arm still judges against
-    its own cwd repo. So a silent `check` for gemini means "nothing else looked wrong", not "the
-    reviewer can reach this copy" — gemini remains exposed to the same check-cwd-vs-dispatch-cwd
-    drift this fixed for codex (fable-rd2-r2, tracked under #66).
+    **Both external arms consume `--session-root`.** codex is bound to one root per session;
+    gemini's workspace is the cwd of the process at LAUNCH, and the shell branch below pins that
+    to the same `<session-root>`. So for either provider a silent `check` now means "the reviewer
+    can reach this copy", not merely "you happen to be standing next to it".
+
+    That was not always true of gemini: the check judged against its own cwd repo, on the
+    reasoning that gemini "runs as a shell command in the CURRENT cwd". The premise holds only if
+    check and dispatch stand in the same place, and nothing enforced that — so the arm was wrong
+    in BOTH directions, missing a copy outside the dispatch root and falsely hinting on one
+    inside it (fable-rd2-r2, under #66). `fable` needs no basis: it runs in-harness with no
+    workspace of its own.
   - Tell the engineer: "multi-review armed on `<doc>` — secondaries: `<ids>` (round bound `<MAX>`)"
     — and append any dropped-reviewer relay, e.g. "`gemini` dropped: unavailable in this repo".
 
@@ -439,7 +445,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             # argv means the command could not be built — treat it as a dispatch failure for
             # this provider (quarantine it) rather than expanding.
             (( ${#argv[@]} )) || { : quarantine <id> "could not build reviewer command"; }
-            (( ${#argv[@]} )) && "${argv[@]}"
+            # PIN THE LAUNCH CWD. gemini-cli's workspace is the cwd of the process at LAUNCH, and
+            # it refuses to read or write outside it — so without this `cd` the workspace is
+            # whatever directory this Bash call happens to inherit, which is not necessarily the
+            # root holding `<doc>.<id>`. Same drift `--session-root` fixes for codex (#66); the
+            # subshell keeps it scoped to the dispatch and leaves your own cwd alone.
+            (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )
 
    All same-turn subagent dispatches go in the SAME response block as each other.
 5. **Bound the wait, per copy — and never quarantine on the first bound hit.**

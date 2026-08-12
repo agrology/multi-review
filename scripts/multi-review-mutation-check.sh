@@ -323,6 +323,29 @@ mutations() {
     '  local id; id="$(printf '"'"'%s'"'"' "$1" | LC_ALL=C tr '"'"'[:upper:]'"'"' '"'"'[:lower:]'"'"')"' \
     '  local id; id="$1"'
 
+  # ---- G2: gemini's half of #66 ----------------------------------------------------------------
+
+  # The check's BASIS. Reverted to the helper's cwd repo, the arm is wrong in both directions:
+  # it misses a copy outside the root dispatch will inherit, and falsely hints on one inside it.
+  mutate 'reviewer/gemini-session-root-basis' 'scripts/multi-review-reviewer.sh' replace \
+    'the #66 drift is still open for gemini' 'multi-review-reviewer.test.sh' \
+    '        if [[ -n "$session_root" ]]; then gbase="$session_root"; else gbase="$rr"; fi' \
+    '        gbase="$rr"'
+
+  # The DISPATCH cwd. Without the pin, gemini-cli's workspace is whatever directory the Bash call
+  # inherits — so the check can be correct and the dispatch still land somewhere else.
+  mutate 'command/gemini-dispatch-cwd-pinned' 'commands/multi-review.md' replace \
+    'shell dispatch sets no cwd' 'multi-review-packaging.test.sh' \
+    '            (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )' \
+    '            (( ${#argv[@]} )) && "${argv[@]}"'
+
+  # The doc must not re-acquire the stale claim that only codex consumes the flag — that sentence
+  # is how the gap stayed open: documented instead of closed.
+  mutate 'command/session-root-scope-claim' 'commands/multi-review.md' replace \
+    'still says only codex consumes --session-root' 'multi-review-packaging.test.sh' \
+    '    **Both external arms consume `--session-root`.** codex is bound to one root per session;' \
+    '    **Scope: only the codex arm consumes `--session-root` today.** The gemini arm judges by cwd;'
+
   # ---- #66 wiring, the collision gate, and core.sh's first entries ------------------------------
 
   # ensure-skill's root must be the CAPTURED session root. An inline substitution resolves in the
@@ -842,10 +865,13 @@ mutations() {
 
   # The gemini arm must judge against the CWD repo, not codex's sandbox — swapping the basis
   # makes it hint on a doc that is legitimately inside its own workspace.
-  mutate 'reviewer/check-doc-gemini-basis' 'scripts/multi-review-reviewer.sh' replace \
-    "gemini consulted the codex workspace root" 'multi-review-reviewer.test.sh' \
-    '        grr_c="$(canon "$rr")"' \
-    '        grr_c="$(canon "$(codex_workspace_root)")"'
+  # SUPERSEDED by reviewer/gemini-session-root-basis, below in the G2 group. This entry asserted
+  # that the gemini arm must judge against `repo_root()` and not codex's sandbox — half right, and
+  # the wrong half is the bug G2 fixes: the basis is neither, it is the SESSION ROOT the dispatch
+  # will inherit. Its target line no longer exists, and re-pointing it would re-assert the
+  # behaviour that was just removed. The property it protected (gemini must not borrow codex's
+  # basis) is still covered: the replacement pins the basis to `$session_root` with `$rr` as the
+  # fallback, and neither is `codex_workspace_root`.
 
   # ---- readiness must mean DISPATCHABLE (issue #73) -------------------------------------------
 

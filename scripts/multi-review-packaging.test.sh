@@ -544,4 +544,27 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- the shell (gemini) dispatch must pin its launch cwd (G2, the other half of #66) ---
+#
+# gemini-cli's workspace is the cwd of the process at LAUNCH, and it refuses reads and writes
+# outside it. The shell branch set no directory, so the workspace was whatever cwd that Bash call
+# happened to have — which is the same check-cwd-vs-dispatch-cwd drift #66 fixed for codex, and
+# which this file used to DOCUMENT for gemini instead of closing.
+DR="${ROOT}/commands/multi-review.md"
+if [[ -f "$DR" ]]; then
+  n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
+  if [[ -z "$n" ]]; then
+    bad "no shell-kind dispatch branch found in $(basename "$DR")"
+  else
+    blk="$(sed -n "${n},$((n+22))p" "$DR")"
+    grep -qE 'cd "<session-root>"' <<<"$blk" \
+      && ok "shell dispatch pins its launch cwd to <session-root>" \
+      || bad "shell dispatch sets no cwd — gemini's workspace is then whatever directory the call inherits (G2/#66)"
+  fi
+  # ...and the file must stop claiming the gap it no longer has.
+  grep -qiE 'only the codex arm consumes' "$DR" \
+    && bad "multi-review.md still says only codex consumes --session-root — stale now that the gemini arm does too" \
+    || ok "no stale 'only codex consumes --session-root' claim"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
