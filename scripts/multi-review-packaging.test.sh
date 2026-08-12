@@ -552,6 +552,71 @@ fi
 # which this file used to DOCUMENT for gemini instead of closing.
 DR="${ROOT}/commands/multi-review.md"
 if [[ -f "$DR" ]]; then
+  n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
+  ne="$(awk -v s="$n" 'NR>s && /^5\. \*\*/ {print NR; exit}' "$DR")"
+  if [[ -z "$n" || -z "$ne" ]]; then
+    bad "cannot delimit the shell-kind dispatch branch in $(basename "$DR")"
+  else
+    # Bounded by the NEXT numbered step, not a line offset. This window was 22, then 30, and each
+    # time an edit pushed its target onto the last row where the next insertion would silently end
+    # coverage (fable-rd2-r5). A structural bound cannot drift that way.
+    blk="$(sed -n "${n},$((ne-1))p" "$DR")"
+    grep -qE 'cd "<session-root>"' <<<"$blk" \
+      && ok "shell dispatch pins its launch cwd to <session-root>" \
+      || bad "shell dispatch sets no cwd — gemini's workspace is then whatever directory the call inherits (G2/#66)"
+  fi
+  # ...and the file must stop claiming the gap it no longer has.
+  grep -qiE 'only the codex arm consumes' "$DR" \
+    && bad "multi-review.md still says only codex consumes --session-root — stale now that the gemini arm does too" \
+    || ok "no stale 'only codex consumes --session-root' claim"
+fi
+
+# --- the empty-argv guard must DO something a primary can act on ---
+#
+# The guard's action shipped as `{ : quarantine <id> "…"; }`. It reads like an instruction, but `:`
+# is bash's null builtin: a primary that transcribes the block verbatim — which is exactly what the
+# block is for — runs a no-op. No quarantine is recorded, dispatch is (correctly) skipped, and the
+# provider's absence resurfaces at step 5 as exit 9, reported as `no turn taken` — the reason for a
+# reviewer that declined, not one that was never launched. The block must emit an observable signal,
+# and the prose must bind that signal to a quarantine record.
+DR="${ROOT}/commands/multi-review.md"
+if [[ -f "$DR" ]]; then
+  n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
+  ne="$(awk -v s="$n" 'NR>s && /^5\. \*\*/ {print NR; exit}' "$DR")"
+  if [[ -z "$n" || -z "$ne" ]]; then
+    bad "cannot delimit the shell-kind dispatch branch in $(basename "$DR")"
+  else
+    blk="$(sed -n "${n},$((ne-1))p" "$DR")"
+    # The empty-argv guard is the `||` arm; the dispatch line is the `&&` arm. Only the former.
+    eg="$(grep -F '${#argv[@]}' <<<"$blk" | grep -F '||' || true)"
+    if [[ -z "$eg" ]]; then
+      bad "shell dispatch has no empty-argv guard — \"\${argv[@]}\" on a zero-element array is fatal under set -u on bash 3.2"
+    elif grep -qE '\|\|[[:space:]]*\{?[[:space:]]*:[[:space:]]' <<<"$eg"; then
+      bad "the empty-argv guard's action is the ':' null builtin — transcribed verbatim it does nothing, and the miss resurfaces at step 5 as 'no turn taken'"
+    elif grep -qF 'DISPATCH-FAILED' <<<"$eg"; then
+      ok "the empty-argv guard emits an observable DISPATCH-FAILED signal"
+    else
+      bad "the empty-argv guard takes no observable action: ${eg}"
+    fi
+    # ...and the signal must be wired to the quarantine path, or it is just output nobody consumes.
+    win="$(sed -n "${n},$((ne-1))p" "$DR")"
+    if grep -qF 'DISPATCH-FAILED' <<<"$win" && grep -qF -- '--quarantined' <<<"$win"; then
+      ok "the DISPATCH-FAILED signal is bound to a --quarantined record"
+    else
+      bad "nothing tells the primary what to DO with an un-dispatchable shell reviewer — the signal never reaches the quarantine path"
+    fi
+  fi
+fi
+
+# --- a CRASHED shell reviewer must be distinguishable from a SLOW one (G3) ---
+#
+# The shell branch consulted neither exit code nor stderr. A gemini that died on launch — bad flag,
+# expired auth, exhausted quota — left a copy byte-identical to its seed, which is byte-identical to
+# what a reviewer still thinking produces. The primary then spent the grace re-run and the whole
+# retry budget re-waiting on a dead process, and quarantined it as `no turn taken`: the reason for a
+# reviewer that read the doc and declined. The cause was on the process's own stderr the entire time.
+DR="${ROOT}/commands/multi-review.md"
+if [[ -f "$DR" ]]; then
   # Bound both windows by DOCUMENT STRUCTURE, not by a line offset. Two fixed offsets in a row
   # (22, then 30) ended up with the target sitting on the window's last row, where the next
   # insertion silently ends the guard's coverage — fable-rd2-r5 caught the second one. A window
