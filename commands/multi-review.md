@@ -365,6 +365,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    AFTER the header rewrite — a pre-rewrite snapshot differs from the dispatched copy. Retain it
    with the other working files; the terminal gate releases it.
 
+   **And clear the previous round's dispatch log, here, in the same synchronous step:**
+   `rm -f "<doc>.<id>.multi-review.log"`. This is the only place it can be done safely. The
+   `shell` dispatch runs as a background task, so a removal written inside it races your own
+   pre-wait read of the same file — and a lost race means round N-1's status line quarantines a
+   reviewer that launched seconds ago. Removing it before you dispatch anything cannot race.
+
    **Then prove the copy is BLIND, before dispatching it** (issue #39):
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh blind-check "<doc>.<id>"`.
    **Exit 1** — the copy still carries a previous round's findings, your responses, or a
@@ -450,7 +456,21 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             # whatever directory this Bash call happens to inherit, which is not necessarily the
             # root holding `<doc>.<id>`. Same drift `--session-root` fixes for codex (#66); the
             # subshell keeps it scoped to the dispatch and leaves your own cwd alone.
-            (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )
+            # CAPTURE OUTPUT AND STATUS. Nothing else in the round ever hears from this process:
+            # a reviewer that dies on launch leaves a copy byte-identical to its seed, which is
+            # exactly what a reviewer still thinking leaves. The log is the only thing that can
+            # tell those apart. `.multi-review.log` is already a gitignored shape (G3).
+            # The previous round's log is already gone — step 2 removed it synchronously, which is
+            # the only place that can. Removing it HERE would be inside this background task and
+            # could lose the race against your own pre-wait read.
+            if (( ${#argv[@]} )); then
+              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1
+              # printf with a LEADING newline, never a bare `echo`: a process that dies mid-write
+              # leaves no trailing newline, and `echo` would glue the status onto it
+              # (`quota exceededmulti-review: dispatch exited 1`) — unfindable as a line, in
+              # exactly the crash this exists to catch. The blank line a clean exit gains is free.
+              printf '\nmulti-review: dispatch exited %s\n' "$?" >>"<doc>.<id>.multi-review.log"
+            fi
 
      **`DISPATCH-FAILED <id>` on stderr is yours to act on.** The block only reports it; nothing
      downstream reads it for you. Do not dispatch that reviewer this round and record
@@ -468,6 +488,51 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    Pass `--seed` (the snapshot step 2 already took). It is what lets the wait tell a reviewer that
    never took a turn from one that is mid-write — opposite facts that a bare bound hit reports
    identically, and the difference between quarantining a no-op and discarding real findings.
+
+   **For a `shell` reviewer, read `<doc>.<id>.multi-review.log` — before the first wait, and again
+   at every bound hit.** Step 2 removed the previous round's log synchronously, so what you read is
+   this round's. The dispatch appends `multi-review: dispatch exited <rc>` on a line of its own once
+   the process is gone. **It counts only when it is the log's FINAL non-empty line.** A match
+   anywhere earlier is echoed text, not a status: the log is verbatim CLI output, and in this
+   repo's self-reviews the reviewed material contains the sentinel string verbatim. Taking merely
+   the last match is not enough — while the reviewer is still alive the real status does not exist
+   yet, so an echoed one would be the last match and a live reviewer would read as exited. The
+   dispatch writes the real status after the process ends, so being last is exactly what makes it
+   real.
+
+   The status answers exactly one question — *has the process exited?* What to DO is decided by the
+   copy, in this order:
+
+   - **Marker says `awaiting-author`** → the turn completed. Verify it normally (step 6) whatever
+     the status says, and never quarantine. A CLI can write its turn, flip the marker, and only then
+     die — on teardown, or on a post-edit call that exhausts a quota. Quarantining on the status
+     would discard a completed turn and every finding in it, which is a strictly worse failure than
+     the one this log was added to fix. The marker is the handoff; the status is evidence about the
+     process, not about the turn.
+   - **No status line yet** → the process is still running. The bound-hit rules below apply exactly
+     as written. Note the residual honestly: the status appears asynchronously, so a process that
+     dies just after you looked is not noticed until the next bound hit. That costs **one** bound,
+     against the four this mechanism removes — the accepted price of reading the log rather than
+     watching it. Closing it means teaching the wait itself to watch, which is a change to
+     `multi-review-wait.sh`, not to this instruction.
+   - **Status present, marker not flipped, copy CHANGED since its seed** → it wrote something and
+     died before the handoff. Do **not** re-wait. The exit-8 retry path exists for a reviewer that
+     is "demonstrably alive and still writing", and the status has just disproven that premise, so
+     re-waiting spends up to three more bounds on a process that can never flip anything. Run step
+     6's `channel-check` against the seed on what it *did* write: admit the turn if the findings are
+     readable, and only otherwise quarantine, with `died mid-turn after writing; see
+     <doc>.<id>.multi-review.log`. Partial findings are worth more than a discarded round. Note
+     that neither `channel-check` nor `merge` requires the copy's marker to have been flipped —
+     both accept an unflipped copy — so this recovery is runnable exactly when it is needed.
+   - **Status present, marker not flipped, copy byte-identical to its seed** → nothing was written.
+     Quarantine with `dispatch exited <rc>; see <doc>.<id>.multi-review.log`.
+
+     **Name the file; do not paste its text into the reason.** Quarantine reasons are recorded
+     durably in the doc and rendered at the gate, while the log is gitignored and local — and the
+     failure most likely to be sitting on that last line is an authentication error, which is the
+     line most likely to carry a credential. Copying it out would move the one thing the log's
+     containment argument rests on into the one place the protocol publishes. Read the log
+     yourself and say what happened in your own words if the gate needs it.
 
    - **Exit 0** → verify below.
    - **Exit 8** — the copy CHANGED since dispatch but the marker is not flipped. The reviewer is

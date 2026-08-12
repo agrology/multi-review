@@ -367,8 +367,85 @@ mutations() {
   # inherits — so the check can be correct and the dispatch still land somewhere else.
   mutate 'command/gemini-dispatch-cwd-pinned' 'commands/multi-review.md' replace \
     'shell dispatch sets no cwd' 'multi-review-packaging.test.sh' \
-    '            (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )' \
-    '            (( ${#argv[@]} )) && "${argv[@]}"'
+    '              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1' \
+    '              ( "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1'
+
+  # G3. The same dispatch line must also CAPTURE the process. Without the redirect a gemini that
+  # died on launch leaves a copy byte-identical to its seed — indistinguishable from one still
+  # thinking — and the round reports the symptom (`no turn taken`) after spending the full retry
+  # budget re-waiting on a corpse. Same target line as the entry above, different failure.
+  mutate 'command/shell-dispatch-log-capture' 'commands/multi-review.md' replace \
+    "discards the reviewer's stdout/stderr" 'multi-review-packaging.test.sh' \
+    '              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1' \
+    '              ( cd "<session-root>" && "${argv[@]}" )'
+
+  # ...and the EXIT STATUS, which is the only part that says "died" rather than "warned". Output
+  # alone cannot carry that distinction, so losing this line loses the whole signal.
+  #
+  # The mutation is the FORM THIS SHIPPED IN and both secondaries rejected on PR #84: a bare
+  # `echo` appends onto whatever the process last wrote, so a death mid-write (no trailing
+  # newline) yields `quota exceededmulti-review: dispatch exited 1` and the status stops being
+  # findable as a line — disarming the detection in exactly the crash it was built for.
+  mutate 'command/shell-dispatch-exit-status' 'commands/multi-review.md' replace \
+    'appended with a bare echo' 'multi-review-packaging.test.sh' \
+    '              printf '"'"'\nmulti-review: dispatch exited %s\n'"'"' "$?" >>"<doc>.<id>.multi-review.log"' \
+    '              echo "multi-review: dispatch exited $?" >>"<doc>.<id>.multi-review.log"'
+
+  # The log must be THIS round's. The redirect truncates only when the background process opens
+  # the file, so without this removal a pre-wait read can win the race and quarantine a reviewer
+  # that launched seconds ago on the previous round's status line (fable-rd1-r4).
+  mutate 'command/shell-dispatch-log-fresh' 'commands/multi-review.md' replace \
+    'nothing clears the previous round' 'multi-review-packaging.test.sh' \
+    '   `rm -f "<doc>.<id>.multi-review.log"`. This is the only place it can be done safely. The' \
+    '   nothing further. This is the only place it can be done safely. The'
+
+  # ...and it must not drift BACK into the dispatch block, which runs as a background task: a
+  # removal there races the primary's own pre-wait read of the same file. The round-1 fix put it
+  # exactly there, which relocated the race instead of closing it (fable-rd2-r1).
+  mutate 'command/shell-log-clear-not-backgrounded' 'commands/multi-review.md' replace \
+    'races the pre-wait read' 'multi-review-packaging.test.sh' \
+    '            # the only place that can. Removing it HERE would be inside this background task and' \
+    '            rm -f "<doc>.<id>.multi-review.log"'
+
+  # A FLIPPED MARKER OUTRANKS the status. A CLI can write its turn, flip, and only then die on
+  # teardown; quarantining on the status alone discards a completed turn and every finding in it —
+  # strictly worse than the bug the log fixes, and reachable the moment the log exists.
+  mutate 'command/shell-flipped-marker-wins' 'commands/multi-review.md' replace \
+    'quarantined on its exit status alone' 'multi-review-packaging.test.sh' \
+    '   - **Marker says `awaiting-author`** → the turn completed. Verify it normally (step 6) whatever' \
+    '   - **The copy finished early** → the turn may be done. Verify it normally (step 6) whatever'
+
+  # The sentinel counts only as the log's FINAL non-empty line. "Last match" is not enough: while
+  # the reviewer is still alive the real status does not exist yet, so an echoed sentinel IS the
+  # last match and a live reviewer reads as exited (fable-rd2-r4, tightened by fable-rd3-r2).
+  mutate 'command/shell-status-final-line' 'commands/multi-review.md' replace \
+    'accepted from anywhere in the log' 'multi-review-packaging.test.sh' \
+    '   the process is gone. **It counts only when it is the log'"'"'s FINAL non-empty line.** A match' \
+    '   the process is gone. **Take the last line of that form.** A match'
+
+  # A copy that wrote findings and THEN died must be recovered, not re-waited (the exit-8 path
+  # assumes it is alive) and not discarded (the rc-zero case calls the identical state
+  # recoverable). The exit code must not decide opposite fates for one on-disk state
+  # (fable-rd2-r2 / fable-rd2-r3).
+  mutate 'command/shell-partial-turn-recovered' 'commands/multi-review.md' replace \
+    'partial findings discarded' 'multi-review-packaging.test.sh' \
+    '   - **Status present, marker not flipped, copy CHANGED since its seed** → it wrote something and' \
+    '   - **Status present, marker not flipped, whatever the copy holds** → it wrote something and'
+
+  # The reason NAMES the log; it never copies it. Reasons are recorded durably in the doc and
+  # rendered at the gate, while the log is gitignored and local — and the line most likely to end a
+  # failed dispatch is an auth error, the one most likely to carry a credential (fable-rd1-r3).
+  mutate 'command/shell-reason-no-log-text' 'commands/multi-review.md' replace \
+    'pastes log text' 'multi-review-packaging.test.sh' \
+    '     **Name the file; do not paste its text into the reason.** Quarantine reasons are recorded' \
+    '     **Quote the log line in the reason so the gate can read it.** Quarantine reasons are recorded'
+
+  # ...and the log must be READ at the decision point. Written-but-never-consulted evidence is the
+  # exact shape of the bug it was added to fix: the cause was on stderr the whole time.
+  mutate 'command/shell-crash-log-consulted' 'commands/multi-review.md' replace \
+    'never reads the dispatch log' 'multi-review-packaging.test.sh' \
+    '   **For a `shell` reviewer, read `<doc>.<id>.multi-review.log` — before the first wait, and again' \
+    '   **For a `shell` reviewer, give the process the benefit of the doubt — before the first wait, and again'
 
   # The empty-argv guard must take an action a primary can OBSERVE. It shipped as
   # `{ : quarantine <id> "…"; }`, which reads like an instruction but is bash's null builtin: the
