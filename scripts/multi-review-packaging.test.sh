@@ -556,7 +556,9 @@ if [[ -f "$DR" ]]; then
   if [[ -z "$n" ]]; then
     bad "no shell-kind dispatch branch found in $(basename "$DR")"
   else
-    blk="$(sed -n "${n},$((n+22))p" "$DR")"
+    # Widened from 22 when the G3 log capture pushed the dispatch line to the window's last row —
+    # a window with no margin stops covering the moment anything is added above it, silently.
+    blk="$(sed -n "${n},$((n+30))p" "$DR")"
     grep -qE 'cd "<session-root>"' <<<"$blk" \
       && ok "shell dispatch pins its launch cwd to <session-root>" \
       || bad "shell dispatch sets no cwd — gemini's workspace is then whatever directory the call inherits (G2/#66)"
@@ -599,6 +601,55 @@ if [[ -f "$DR" ]]; then
       ok "the DISPATCH-FAILED signal is bound to a --quarantined record"
     else
       bad "nothing tells the primary what to DO with an un-dispatchable shell reviewer — the signal never reaches the quarantine path"
+    fi
+  fi
+fi
+
+# --- a CRASHED shell reviewer must be distinguishable from a SLOW one (G3) ---
+#
+# The shell branch consulted neither exit code nor stderr. A gemini that died on launch — bad flag,
+# expired auth, exhausted quota — left a copy byte-identical to its seed, which is byte-identical to
+# what a reviewer still thinking produces. The primary then spent the grace re-run and the whole
+# retry budget re-waiting on a dead process, and quarantined it as `no turn taken`: the reason for a
+# reviewer that read the doc and declined. The cause was on the process's own stderr the entire time.
+DR="${ROOT}/commands/multi-review.md"
+if [[ -f "$DR" ]]; then
+  n="$(grep -n '\*\*`shell`\*\*' "$DR" | head -1 | cut -d: -f1)"
+  if [[ -z "$n" ]]; then
+    bad "no shell-kind dispatch branch found in $(basename "$DR")"
+  else
+    blk="$(sed -n "${n},$((n+30))p" "$DR")"
+    # (a) the dispatch must capture what the process said. Assert it on the DISPATCH LINE, not
+    # anywhere in the block: the status line below also names the log, so a block-wide grep stays
+    # green with the redirect deleted and proves nothing. Name it `*.multi-review.log`, which
+    # .gitignore already covers — a new artifact shape would leak into every consuming repo.
+    dl="$(grep -F 'cd "<session-root>"' <<<"$blk" || true)"
+    if [[ -z "$dl" ]]; then
+      bad "cannot find the shell dispatch line to check its redirect"
+    elif grep -qE '>[[:space:]]*"<doc>\.<id>\.multi-review\.log"' <<<"$dl" && grep -qF '2>&1' <<<"$dl"; then
+      ok "shell dispatch captures the reviewer's output to a log"
+    else
+      bad "shell dispatch discards the reviewer's stdout/stderr — a crash leaves no trace and reads as slowness (G3)"
+    fi
+    # (b) ...and its EXIT STATUS. Output alone cannot distinguish "wrote a warning and carried on"
+    # from "died"; the status line is the only thing that says which.
+    if grep -qF 'dispatch exited $?' <<<"$blk"; then
+      ok "shell dispatch records its exit status in the log"
+    else
+      bad "shell dispatch records no exit status — the log cannot say whether the process died or merely warned (G3)"
+    fi
+  fi
+  # (c) the log has to be CONSULTED, or it is evidence nobody reads. The bound-hit reasons are the
+  # decision point: that is where `no turn taken` gets chosen over `the process died`.
+  w="$(grep -n 'Bound the wait, per copy' "$DR" | head -1 | cut -d: -f1)"
+  if [[ -z "$w" ]]; then
+    bad "cannot locate the wait step in $(basename "$DR")"
+  else
+    wblk="$(sed -n "${w},$((w+55))p" "$DR")"
+    if grep -qF '.multi-review.log' <<<"$wblk" && grep -qiE 'non-?zero' <<<"$wblk"; then
+      ok "a bound hit consults the dispatch log before choosing a quarantine reason"
+    else
+      bad "the wait step never reads the dispatch log — a dead reviewer still consumes the full retry budget and is reported as 'no turn taken' (G3)"
     fi
   fi
 fi

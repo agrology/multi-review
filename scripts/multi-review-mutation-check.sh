@@ -367,8 +367,31 @@ mutations() {
   # inherits — so the check can be correct and the dispatch still land somewhere else.
   mutate 'command/gemini-dispatch-cwd-pinned' 'commands/multi-review.md' replace \
     'shell dispatch sets no cwd' 'multi-review-packaging.test.sh' \
-    '            (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )' \
-    '            (( ${#argv[@]} )) && "${argv[@]}"'
+    '              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1' \
+    '              ( "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1'
+
+  # G3. The same dispatch line must also CAPTURE the process. Without the redirect a gemini that
+  # died on launch leaves a copy byte-identical to its seed — indistinguishable from one still
+  # thinking — and the round reports the symptom (`no turn taken`) after spending the full retry
+  # budget re-waiting on a corpse. Same target line as the entry above, different failure.
+  mutate 'command/shell-dispatch-log-capture' 'commands/multi-review.md' replace \
+    "discards the reviewer's stdout/stderr" 'multi-review-packaging.test.sh' \
+    '              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1' \
+    '              ( cd "<session-root>" && "${argv[@]}" )'
+
+  # ...and the EXIT STATUS, which is the only part that says "died" rather than "warned". Output
+  # alone cannot carry that distinction, so losing this line loses the whole signal.
+  mutate 'command/shell-dispatch-exit-status' 'commands/multi-review.md' replace \
+    'records no exit status' 'multi-review-packaging.test.sh' \
+    '              echo "multi-review: dispatch exited $?" >>"<doc>.<id>.multi-review.log"' \
+    '              echo "multi-review: dispatch finished" >>"<doc>.<id>.multi-review.log"'
+
+  # ...and the log must be READ at the decision point. Written-but-never-consulted evidence is the
+  # exact shape of the bug it was added to fix: the cause was on stderr the whole time.
+  mutate 'command/shell-crash-log-consulted' 'commands/multi-review.md' replace \
+    'never reads the dispatch log' 'multi-review-packaging.test.sh' \
+    '   **For a `shell` reviewer, read `<doc>.<id>.multi-review.log` first — before the first wait, and' \
+    '   **For a `shell` reviewer, give the process the benefit of the doubt — before the first wait, and'
 
   # The empty-argv guard must take an action a primary can OBSERVE. It shipped as
   # `{ : quarantine <id> "…"; }`, which reads like an instruction but is bash's null builtin: the

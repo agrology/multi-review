@@ -450,7 +450,14 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             # whatever directory this Bash call happens to inherit, which is not necessarily the
             # root holding `<doc>.<id>`. Same drift `--session-root` fixes for codex (#66); the
             # subshell keeps it scoped to the dispatch and leaves your own cwd alone.
-            (( ${#argv[@]} )) && ( cd "<session-root>" && "${argv[@]}" )
+            # CAPTURE OUTPUT AND STATUS. Nothing else in the round ever hears from this process:
+            # a reviewer that dies on launch leaves a copy byte-identical to its seed, which is
+            # exactly what a reviewer still thinking leaves. The log is the only thing that can
+            # tell those apart. `.multi-review.log` is already a gitignored shape (G3).
+            if (( ${#argv[@]} )); then
+              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1
+              echo "multi-review: dispatch exited $?" >>"<doc>.<id>.multi-review.log"
+            fi
 
      **`DISPATCH-FAILED <id>` on stderr is yours to act on.** The block only reports it; nothing
      downstream reads it for you. Do not dispatch that reviewer this round and record
@@ -468,6 +475,20 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    Pass `--seed` (the snapshot step 2 already took). It is what lets the wait tell a reviewer that
    never took a turn from one that is mid-write — opposite facts that a bare bound hit reports
    identically, and the difference between quarantining a no-op and discarding real findings.
+
+   **For a `shell` reviewer, read `<doc>.<id>.multi-review.log` first — before the first wait, and
+   again at every bound hit.** Its last line is `multi-review: dispatch exited <rc>`:
+
+   - **Present, `<rc>` non-zero** → the process is GONE, not slow. Quarantine it now with the
+     reason `dispatch exited <rc>: <the last non-empty line above that one>`, and skip **both** the
+     exit-9 grace re-run and the exit-8 retry budget. Those exist to give a live reviewer more
+     time; against a dead process they spend the full bound — up to ~40 minutes — to learn
+     something the log already said. This is the one place the round gets to name the actual cause
+     rather than the symptom.
+   - **Absent** → the process is still running. The bound-hit rules below apply exactly as written.
+   - **Present, `<rc>` zero, marker never flipped** → the reviewer ran to completion and wrote
+     nothing. That is a genuine `no turn taken`, and now you can record it with evidence instead of
+     inference.
 
    - **Exit 0** → verify below.
    - **Exit 8** — the copy CHANGED since dispatch but the marker is not flipped. The reviewer is
