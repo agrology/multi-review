@@ -381,10 +381,39 @@ mutations() {
 
   # ...and the EXIT STATUS, which is the only part that says "died" rather than "warned". Output
   # alone cannot carry that distinction, so losing this line loses the whole signal.
+  #
+  # The mutation is the FORM THIS SHIPPED IN and both secondaries rejected on PR #84: a bare
+  # `echo` appends onto whatever the process last wrote, so a death mid-write (no trailing
+  # newline) yields `quota exceededmulti-review: dispatch exited 1` and the status stops being
+  # findable as a line — disarming the detection in exactly the crash it was built for.
   mutate 'command/shell-dispatch-exit-status' 'commands/multi-review.md' replace \
-    'records no exit status' 'multi-review-packaging.test.sh' \
-    '              echo "multi-review: dispatch exited $?" >>"<doc>.<id>.multi-review.log"' \
-    '              echo "multi-review: dispatch finished" >>"<doc>.<id>.multi-review.log"'
+    'appended with a bare echo' 'multi-review-packaging.test.sh' \
+    '              printf '"'"'\nmulti-review: dispatch exited %s\n'"'"' "$?" >>"<doc>.<id>.multi-review.log"' \
+    '              echo "multi-review: dispatch exited $?" >>"<doc>.<id>.multi-review.log"'
+
+  # The log must be THIS round's. The redirect truncates only when the background process opens
+  # the file, so without this removal a pre-wait read can win the race and quarantine a reviewer
+  # that launched seconds ago on the previous round's status line (fable-rd1-r4).
+  mutate 'command/shell-dispatch-log-fresh' 'commands/multi-review.md' replace \
+    'stale dispatch log survives' 'multi-review-packaging.test.sh' \
+    '            rm -f "<doc>.<id>.multi-review.log"' \
+    '            : keep any existing log'
+
+  # A FLIPPED MARKER OUTRANKS the status. A CLI can write its turn, flip, and only then die on
+  # teardown; quarantining on the status alone discards a completed turn and every finding in it —
+  # strictly worse than the bug the log fixes, and reachable the moment the log exists.
+  mutate 'command/shell-flipped-marker-wins' 'commands/multi-review.md' replace \
+    'quarantined on its exit status alone' 'multi-review-packaging.test.sh' \
+    '   - **The copy'"'"'s marker already says `awaiting-author`** → the reviewer finished. Verify it' \
+    '   - **The copy finished early** → the reviewer may be done. Verify it'
+
+  # The reason NAMES the log; it never copies it. Reasons are recorded durably in the doc and
+  # rendered at the gate, while the log is gitignored and local — and the line most likely to end a
+  # failed dispatch is an auth error, the one most likely to carry a credential (fable-rd1-r3).
+  mutate 'command/shell-reason-no-log-text' 'commands/multi-review.md' replace \
+    'pastes log text' 'multi-review-packaging.test.sh' \
+    '     **Name the file; do not paste its text into the reason.** Quarantine reasons are recorded' \
+    '     **Quote the log line in the reason so the gate can read it.** Quarantine reasons are recorded'
 
   # ...and the log must be READ at the decision point. Written-but-never-consulted evidence is the
   # exact shape of the bug it was added to fix: the cause was on stderr the whole time.

@@ -454,9 +454,17 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
             # a reviewer that dies on launch leaves a copy byte-identical to its seed, which is
             # exactly what a reviewer still thinking leaves. The log is the only thing that can
             # tell those apart. `.multi-review.log` is already a gitignored shape (G3).
+            # CLEAR THE PREVIOUS ROUND'S LOG FIRST. The redirect below truncates only when the
+            # background process opens the file, so a read that beats it sees round N-1's status
+            # line and quarantines a reviewer that launched seconds ago.
+            rm -f "<doc>.<id>.multi-review.log"
             if (( ${#argv[@]} )); then
               ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1
-              echo "multi-review: dispatch exited $?" >>"<doc>.<id>.multi-review.log"
+              # printf with a LEADING newline, never a bare `echo`: a process that dies mid-write
+              # leaves no trailing newline, and `echo` would glue the status onto it
+              # (`quota exceededmulti-review: dispatch exited 1`) — unfindable as a line, in
+              # exactly the crash this exists to catch. The blank line a clean exit gains is free.
+              printf '\nmulti-review: dispatch exited %s\n' "$?" >>"<doc>.<id>.multi-review.log"
             fi
 
      **`DISPATCH-FAILED <id>` on stderr is yours to act on.** The block only reports it; nothing
@@ -477,18 +485,34 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    identically, and the difference between quarantining a no-op and discarding real findings.
 
    **For a `shell` reviewer, read `<doc>.<id>.multi-review.log` first — before the first wait, and
-   again at every bound hit.** Its last line is `multi-review: dispatch exited <rc>`:
+   again at every bound hit.** The dispatch deletes any previous round's log before launching, so
+   what you read is always this round's. Look for the line `multi-review: dispatch exited <rc>`,
+   which the dispatch writes on a line of its own:
 
-   - **Present, `<rc>` non-zero** → the process is GONE, not slow. Quarantine it now with the
-     reason `dispatch exited <rc>: <the last non-empty line above that one>`, and skip **both** the
-     exit-9 grace re-run and the exit-8 retry budget. Those exist to give a live reviewer more
-     time; against a dead process they spend the full bound — up to ~40 minutes — to learn
-     something the log already said. This is the one place the round gets to name the actual cause
-     rather than the symptom.
+   - **The copy's marker already says `awaiting-author`** → the reviewer finished. Verify it
+     normally (step 6) whatever the log says, and do NOT quarantine. A CLI can write its turn, flip
+     the marker, and only then die — on teardown, or on a post-edit call that exhausts a quota.
+     Quarantining on the status alone would discard a completed turn and every finding in it, which
+     is a strictly worse failure than the one this log was added to fix. The marker is the handoff;
+     the status is evidence about the process, not about the turn.
+   - **`<rc>` non-zero and the marker is NOT flipped** → the process is GONE, not slow. Quarantine
+     it now with the reason `dispatch exited <rc>; see <doc>.<id>.multi-review.log`, and skip
+     **both** the exit-9 grace re-run and the exit-8 retry budget. Those exist to give a live
+     reviewer more time; against a dead process they spend the full bound — up to ~40 minutes — to
+     learn something the log already said.
+
+     **Name the file; do not paste its text into the reason.** Quarantine reasons are recorded
+     durably in the doc and rendered at the gate, while the log is gitignored and local — and the
+     failure most likely to be sitting on that last line is an authentication error, which is the
+     line most likely to carry a credential. Copying it out would move the one thing the log's
+     containment argument rests on into the one place the protocol publishes. Read the log
+     yourself and say what happened in your own words if the gate needs it.
    - **Absent** → the process is still running. The bound-hit rules below apply exactly as written.
-   - **Present, `<rc>` zero, marker never flipped** → the reviewer ran to completion and wrote
-     nothing. That is a genuine `no turn taken`, and now you can record it with evidence instead of
-     inference.
+   - **`<rc>` zero and the marker is NOT flipped** → the process exited cleanly without completing
+     the handoff. Do not name that state yourself — let the wait's `--seed` comparison do it:
+     exit 9 (byte-identical to the seed) is a genuine `no turn taken`; exit 8 (changed) means it
+     wrote findings and never flipped, and those findings are recoverable rather than discardable.
+     The two differ by everything that matters and a clean exit code distinguishes neither.
 
    - **Exit 0** → verify below.
    - **Exit 8** — the copy CHANGED since dispatch but the marker is not flipped. The reviewer is

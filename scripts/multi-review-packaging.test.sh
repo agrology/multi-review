@@ -631,12 +631,28 @@ if [[ -f "$DR" ]]; then
     else
       bad "shell dispatch discards the reviewer's stdout/stderr — a crash leaves no trace and reads as slowness (G3)"
     fi
-    # (b) ...and its EXIT STATUS. Output alone cannot distinguish "wrote a warning and carried on"
-    # from "died"; the status line is the only thing that says which.
-    if grep -qF 'dispatch exited $?' <<<"$blk"; then
-      ok "shell dispatch records its exit status in the log"
-    else
+    # (b) ...and its EXIT STATUS, written so it is findable AS A LINE. A bare `echo` appends onto
+    # whatever the process last wrote, and a process that dies mid-write leaves no trailing
+    # newline — producing `quota exceededmulti-review: dispatch exited 1`, which no line-anchored
+    # read finds. That disarms the detection in precisely the crash it was built for; both
+    # secondaries found it independently on PR #84 (codex-rd1-r1 / fable-rd1-r2).
+    sl="$(grep -F '>>"<doc>.<id>.multi-review.log"' <<<"$blk" || true)"
+    if [[ -z "$sl" ]] || ! grep -qF 'dispatch exited' <<<"$sl"; then
       bad "shell dispatch records no exit status — the log cannot say whether the process died or merely warned (G3)"
+    elif grep -qE '^[[:space:]]*echo ' <<<"$sl"; then
+      bad "the exit status is appended with a bare echo — a process dying without a trailing newline glues it onto the last output line and the status stops being findable as a line"
+    elif grep -qF "printf \"\\n" <<<"$sl" || grep -qF "printf '\\n" <<<"$sl"; then
+      ok "the exit status is written line-anchored (printf with a leading newline)"
+    else
+      bad "the exit status is not guaranteed to start on its own line: ${sl}"
+    fi
+    # (c) a stale log from an earlier round must not survive into this one. The redirect truncates
+    # only when the background process opens the file, so a pre-wait read can beat it and act on
+    # round N-1's status — quarantining a reviewer that launched seconds ago (fable-rd1-r4).
+    if grep -qE '^[[:space:]]*rm -f "<doc>\.<id>\.multi-review\.log"' <<<"$blk"; then
+      ok "the previous round's dispatch log is cleared before launch"
+    else
+      bad "a stale dispatch log survives into the next round — the pre-wait read can quarantine a just-launched reviewer on an old status line"
     fi
   fi
   # (c) the log has to be CONSULTED, or it is evidence nobody reads. The bound-hit reasons are the
@@ -645,11 +661,29 @@ if [[ -f "$DR" ]]; then
   if [[ -z "$w" ]]; then
     bad "cannot locate the wait step in $(basename "$DR")"
   else
-    wblk="$(sed -n "${w},$((w+55))p" "$DR")"
+    wblk="$(sed -n "${w},$((w+75))p" "$DR")"
     if grep -qF '.multi-review.log' <<<"$wblk" && grep -qiE 'non-?zero' <<<"$wblk"; then
       ok "a bound hit consults the dispatch log before choosing a quarantine reason"
     else
       bad "the wait step never reads the dispatch log — a dead reviewer still consumes the full retry budget and is reported as 'no turn taken' (G3)"
+    fi
+    # (d) a FLIPPED MARKER OUTRANKS the status. A CLI can write its turn, flip, and only then die
+    # (teardown, or a post-edit call that exhausts a quota). Quarantining on the status alone
+    # discards a completed turn and every finding in it — strictly worse than the bug the log
+    # fixes, and reachable the moment the log exists (fable-rd1-r1).
+    if grep -qF 'marker already says `awaiting-author`' <<<"$wblk" && grep -qF 'do NOT quarantine' <<<"$wblk"; then
+      ok "a flipped marker outranks a non-zero dispatch status"
+    else
+      bad "a reviewer that finished its turn and then died is quarantined on its exit status alone, discarding a completed turn and its findings"
+    fi
+    # (e) the quarantine reason must NAME the log, not copy it. Reasons are recorded durably in the
+    # doc and rendered at the gate; the log is gitignored and local. The line most likely to sit at
+    # the end of a failed dispatch is an auth error — the one most likely to carry a credential
+    # (fable-rd1-r3).
+    if grep -qF 'do not paste its text into the reason' <<<"$wblk"; then
+      ok "the quarantine reason names the log rather than copying its text"
+    else
+      bad "the quarantine reason pastes log text into a durably-recorded field — an auth error there carries a credential out of the gitignored log and into the doc and gate"
     fi
   fi
 fi
