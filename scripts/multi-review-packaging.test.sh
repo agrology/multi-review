@@ -662,7 +662,10 @@ if [[ -f "$DR" ]]; then
     bad "cannot locate the wait step in $(basename "$DR")"
   else
     wblk="$(sed -n "${w},$((w+75))p" "$DR")"
-    if grep -qF '.multi-review.log' <<<"$wblk" && grep -qiE 'non-?zero' <<<"$wblk"; then
+    # Match the INSTRUCTION to read it, not merely the filename appearing somewhere in the window.
+    # The quarantine-reason line below also names the log, so a bare filename grep here stays green
+    # with the read instruction deleted — it SURVIVED the mutation sweep exactly that way.
+    if grep -qE 'read `<doc>\.<id>\.multi-review\.log`' <<<"$wblk" && grep -qiE 'non-?zero' <<<"$wblk"; then
       ok "a bound hit consults the dispatch log before choosing a quarantine reason"
     else
       bad "the wait step never reads the dispatch log — a dead reviewer still consumes the full retry budget and is reported as 'no turn taken' (G3)"
