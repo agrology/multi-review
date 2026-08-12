@@ -181,7 +181,11 @@ grep -qi 'multi-review skill' <<<"$out" && ok "codex prompt references its skill
 # path may stand in for it.
 protocol_src="$(cd "$(dirname "$SUT")/.." && pwd)/.agents/skills/multi-review/protocol/multi-review.md"
 [[ -f "$protocol_src" ]] || { echo "FIXTURE SETUP FAILED: protocol not at $protocol_src"; exit 1; }
-for p in fable gemini; do
+# Kept as a loop over a POPULATION — "every provider whose contract is inlined" — which today has
+# exactly one member because `shell` is the only dispatch-kind that cannot be sent to a path. A
+# second shell-kind provider joins by being added here, and inherits every assertion below.
+# shellcheck disable=SC2043  # single-element by circumstance, not by mistake
+for p in gemini; do
   out="$(bash "$SUT" prompt "$D" --reviewer "$p" 2>/dev/null)"
   grep -qiE 'read the protocol contract in full' <<<"$out" \
     && ok "prompt($p) instructs reading the protocol" || bad "prompt($p) lacks the read instruction"
@@ -217,6 +221,42 @@ for p in fable gemini; do
     && ok "prompt($p) points the reviewer at the contract it was told to read" \
     || bad "prompt($p) does not name the protocol contract as the mode authority"
 done
+
+# --- fable gets the contract BY PATH, not inlined (C2) ---
+#
+# Inlining exists for ONE reason (issue #22): gemini-cli refuses any read outside its workspace
+# root, and the protocol lives under the plugin cache, always outside the reviewed repo. That
+# constraint is dispatch-kind `shell`; it has never applied to `fable`, which runs in-harness as a
+# subagent and can Read an absolute path. Applying gemini's sandbox to fable cost 14 KB on the
+# MOST-dispatched prompt in the system — fable is the guaranteed floor reviewer, so it is the one
+# provider present in every round of every run.
+#
+# The safety net is what makes this sound rather than merely cheaper: the head+tail still states
+# the operative grammar in full, so a fable turn that never opens the file still emits findings
+# `merge` can read. The file adds the marker/scope detail, not the enforceable shape.
+out="$(bash "$SUT" prompt "$D" --reviewer fable 2>/dev/null)"
+! grep -qF 'BEGIN MULTI-REVIEW PROTOCOL' <<<"$out" \
+  && ok "prompt(fable) does not inline the contract" \
+  || bad "prompt(fable) still inlines the whole contract — 82% of the most-dispatched prompt"
+grep -qF 'protocol/multi-review.md' <<<"$out" \
+  && ok "prompt(fable) names the protocol path to read" \
+  || bad "prompt(fable) neither inlines the contract nor says where to find it"
+grep -qiE 'read it (first|in full)|before (you )?(do anything|editing)' <<<"$out" \
+  && ok "prompt(fable) instructs reading it up front" || bad "prompt(fable) does not say to read the contract first"
+grep -qiE 'cannot read|unable to read' <<<"$out" \
+  && ok "prompt(fable) says what to do if the read fails" \
+  || bad "prompt(fable) has no instruction for an unreadable contract — a silent skip is a malformed turn"
+# the grammar must survive WITHOUT the file, or a failed read costs the round
+for tok in '[finding:<id>|<sev>]' '[no-findings]' '— via' '— risk:' '— evidence:'; do
+  grep -qF "$tok" <<<"$out" \
+    && ok "prompt(fable) states '${tok}' without the inlined contract" \
+    || bad "prompt(fable) lost '${tok}' — a failed read would now produce an unreadable turn"
+done
+fb_b=$(printf '%s' "$out" | wc -c | tr -d ' ')
+gm_b=$(bash "$SUT" prompt "$D" --reviewer gemini 2>/dev/null | wc -c | tr -d ' ')
+(( fb_b * 3 < gm_b )) \
+  && ok "prompt(fable) is far smaller than the inlined one (${fb_b} B vs ${gm_b} B)" \
+  || bad "prompt(fable) is ${fb_b} B against gemini's ${gm_b} B — the inlining was not actually removed"
 
 # --- prompt: never hardcodes the RETIRED asymmetric/peer-review grammar (superseded by star) ---
 for p in codex fable gemini; do
