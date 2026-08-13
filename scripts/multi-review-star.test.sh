@@ -132,23 +132,28 @@ out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" STUB_GEMINI_OK=1 MULTI_REVIEW_REVIEWERS=
 # a full wait bound before quarantining it. Reproduced live with no gemini CLI installed —
 # `check --reviewer gemini` exited 1 while `resolve-set --reviewers gemini` returned the row and
 # exit 0. #73 reports the same shape for codex via its missing dispatch agent.
-err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers gemini 2>&1 >/dev/null)"
-out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --reviewers gemini 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+# A bare fresh ask now refuses outright (exit 4 — covered by the "loud" block below), so the
+# --allow-missing downgrade is what still proves the underlying #73 fix: the check genuinely runs
+# for flag/env sources and the reviewer is dropped rather than resolved-and-armed, regardless of
+# source. The old per-source wording ("named for this run" vs "from MULTI_REVIEW_REVIEWERS") is
+# gone by design — flag and env share one fresh-ask branch now — so the grep is generic.
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --allow-missing --reviewers gemini 2>&1 >/dev/null)"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --allow-missing --reviewers gemini 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
 [[ "$out" == "fable " ]] \
   && ok "resolve-set: a NAMED but undispatchable reviewer is dropped, not armed" \
   || bad "a named undispatchable reviewer still resolved (got '$out') — the run would burn a round (#73)"
-grep -qi 'named for this run' <<<"$err" \
-  && ok "resolve-set: the named-drop notice says the drop was for a named reviewer" \
+grep -qi 'not dispatchable here' <<<"$err" \
+  && ok "resolve-set: the named-drop notice says the reviewer was not dispatchable" \
   || bad "named drop is silent or unattributed: '$err'"
 
-out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
-err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor 2>&1 >/dev/null)"
+out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --allow-missing 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --allow-missing 2>&1 >/dev/null)"
 [[ "$out" == "fable " ]] \
   && ok "resolve-set: an ENV reviewer that cannot be dispatched is dropped too" \
   || bad "an env-sourced undispatchable reviewer still resolved (got '$out')"
-grep -qi 'MULTI_REVIEW_REVIEWERS' <<<"$err" \
-  && ok "resolve-set: the env-drop notice names the variable it came from" \
-  || bad "env drop does not name its source: '$err'"
+grep -qi 'not dispatchable here' <<<"$err" \
+  && ok "resolve-set: the env-drop notice says the reviewer was not dispatchable" \
+  || bad "env drop was silent: '$err'"
 
 # read-path normalization: whitespace, duplicates, a literal 'fable', blank lines
 printf '  codex , codex \n\nfable,gemini\n' > "$PREF"
@@ -2341,6 +2346,179 @@ bash "$SUT" round-stats "$RO_CALLER" >/dev/null 2>&1
 bash "$SUT" gate-summary "$RO_CALLER" 'claude-opus-5[1m]' --flag-independence >/dev/null 2>&1
 [[ $? -ne 0 ]] && ok "gate-summary: a malformed roster aborts rather than reporting an empty one" \
   || bad "gate-summary swallowed _roster's die and carried on with an empty roster"
+
+# --- loud undispatchable reviewers -----------------------------------------------------------
+# gemini is installed and authed on the dev machine now, so "undispatchable" MUST be synthesized:
+# a bin dir holding codex but NOT gemini. `check --reviewer gemini` then dies "gemini CLI not on
+# PATH". Everything below overrides PATH per-invocation; the suite-wide hermetic PATH stays intact.
+LUBIN="${WORK}/lubin"; mkdir -p "$LUBIN"
+printf '#!/usr/bin/env bash\n:\n' > "$LUBIN/codex"; chmod +x "$LUBIN/codex"
+LUPREF="${WORK}/lu.pref"
+
+# 1. flag + undispatchable -> exit 4, reason inline, NO rows
+out="$(PATH="${LUBIN}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>"${WORK}/lu1.err")"; rc=$?
+err="$(cat "${WORK}/lu1.err")"
+[[ $rc -eq 4 && -z "$out" ]] \
+  && ok "loud: flag+undispatchable -> exit 4 with no rows" \
+  || bad "loud: flag case rc=$rc out='$out'"
+grep -qF 'not on PATH' <<<"$err" \
+  && ok "loud: the refusal names the concrete reason inline" \
+  || bad "loud: refusal reason missing: '$err'"
+grep -qF -- '--allow-missing' <<<"$err" \
+  && ok "loud: the refusal names the opt-out" || bad "loud: no opt-out named: '$err'"
+
+# 2. env + undispatchable -> exit 4 as well
+PATH="${LUBIN}:/usr/bin:/bin" MULTI_REVIEW_REVIEWERS=codex,gemini bash "$SUT" resolve-set --fable-floor >/dev/null 2>&1
+[[ $? -eq 4 ]] && ok "loud: env+undispatchable -> exit 4" || bad "loud: env case did not exit 4"
+
+# 3. pref + undispatchable -> PROCEEDS (exit 0) but is still LOUD
+printf 'codex,gemini\n' > "$LUPREF"
+out="$(PATH="${LUBIN}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --pref-file "$LUPREF" 2>"${WORK}/lu3.err" | cut -d'|' -f1 | tr '\n' ' ')"; rc=$?
+[[ $rc -eq 0 && "$out" != *gemini* ]] \
+  && ok "loud: pref+undispatchable still proceeds without it" || bad "loud: pref rc=$rc out='$out'"
+grep -qE '^multi-review-star: UNDISPATCHABLE gemini: ' "${WORK}/lu3.err" \
+  && ok "loud: a pref-sourced drop emits UNDISPATCHABLE" \
+  || bad "loud: pref drop was silent: '$(cat "${WORK}/lu3.err")'"
+
+# 4. --allow-missing downgrades the refusal, and is still loud
+out="$(PATH="${LUBIN}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --allow-missing --reviewers codex,gemini 2>"${WORK}/lu4.err" | cut -d'|' -f1 | tr '\n' ' ')"; rc=$?
+[[ $rc -eq 0 && "$out" == *codex* && "$out" != *gemini* ]] \
+  && ok "loud: --allow-missing proceeds without the undispatchable reviewer" \
+  || bad "loud: allow-missing rc=$rc out='$out'"
+grep -qE '^multi-review-star: UNDISPATCHABLE gemini: ' "${WORK}/lu4.err" \
+  && ok "loud: --allow-missing is still loud" || bad "loud: allow-missing was silent"
+
+# 5. --resume proceeds AND is loud; an unknown id under --resume drops loudly instead of exit 2
+out="$(PATH="${LUBIN}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --resume --reviewers codex,gemini 2>"${WORK}/lu5.err" | cut -d'|' -f1 | tr '\n' ' ')"; rc=$?
+[[ $rc -eq 0 && "$out" != *gemini* ]] \
+  && ok "loud: --resume keeps an in-flight review resumable" || bad "loud: resume rc=$rc out='$out'"
+grep -qE '^multi-review-star: UNDISPATCHABLE gemini: ' "${WORK}/lu5.err" \
+  && ok "loud: a resume-path drop emits UNDISPATCHABLE" || bad "loud: resume drop was silent"
+out="$(PATH="${LUBIN}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --resume --reviewers codex,bogus 2>"${WORK}/lu5b.err" | cut -d'|' -f1 | tr '\n' ' ')"; rc=$?
+[[ $rc -eq 0 && "$out" == *codex* ]] \
+  && ok "loud: --resume drops an unknown id rather than exiting 2" || bad "loud: resume unknown rc=$rc"
+grep -qE '^multi-review-star: UNDISPATCHABLE bogus: ' "${WORK}/lu5b.err" \
+  && ok "loud: an unknown id under --resume is still recorded" \
+  || bad "loud: unknown-id drop was silent: '$(cat "${WORK}/lu5b.err")'"
+
+# 6. two undispatchable reviewers -> ONE exit-4 message naming BOTH, in the ENUMERATION block.
+#    Anchored to the enumeration's own '  <id>: <reason>' shape, NOT a bare grep of stderr: Step 7
+#    already emits an `UNDISPATCHABLE <id>:` line per reviewer, so a whole-stderr grep for the two
+#    ids passes even with the Step 8 block deleted down to `exit 4`, leaving accumulate-then-
+#    enumerate — the thing this test names — completely unpinned (fable-rd1-r4).
+LUBIN2="${WORK}/lubin2"; mkdir -p "$LUBIN2"   # neither codex nor gemini present
+err="$(PATH="${LUBIN2}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 4 ]] \
+  && grep -qE '^  codex: .+' <<<"$err" && grep -qE '^  gemini: .+' <<<"$err" \
+  && [[ "$(grep -cE '^  [a-z]+: .+' <<<"$err")" == "2" ]] \
+  && ok "loud: one refusal enumerates every undispatchable reviewer" \
+  || bad "loud: refusal did not enumerate both (rc=$rc): '$err'"
+
+# 7. the emitted reason survives merge's quarantine-reason grammar: ONE line, no control chars,
+#    no '·', never empty. This is what turns a quarantine into a hard merge abort when wrong.
+#
+#    Driven through the `MULTI_REVIEW_REVIEWER_SH` injection seam the suite already defines, with a
+#    deliberately hostile reason. The PATH stub can only ever produce the single-line "not on PATH"
+#    message, and a test that cannot be HANDED a multi-line reason cannot fail on one. The obvious
+#    shape — grep the anchored line, count its newlines — is unfailable by construction: grep emits
+#    only matching lines, so a reason with an embedded newline has its continuation dropped and the
+#    survivor is always one line (fable-rd1-r3).
+STUB_UGLY="${WORK}/stub-ugly.sh"
+cat > "$STUB_UGLY" <<'STUBEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+sub="${1:-}"; shift || true
+id=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--reviewer" ]] && { id="${2:-}"; shift 2; continue; }; shift; done
+case "$sub" in
+  resolve) case "$id" in codex|fable|gemini) echo "${id}|vendor|kind|model|no"; exit 0;; *) exit 1;; esac ;;
+  check)   case "$id" in
+             codex|fable) exit 0 ;;
+             # Three lines, a CR, and a '·' — every shape merge refuses to store in a record — plus
+             # `£`, a VALID multibyte character that shares its leading 0xC2 byte with '·'. Revert
+             # the strip to `tr -d '·'` and that 0xC2 is deleted too, leaving mojibake: the `£5`
+             # assertion below is what dies (codex-rd4-r1). Everything here is valid UTF-8 on
+             # purpose — see 7c for why the invalid-byte case is kept in a stub of its own.
+             gemini) printf 'gemini CLI not on PATH (£5 quota)\nhint: install it\r\nhint: or trust · the workspace\n' >&2; exit 1 ;;
+             *) exit 1 ;;
+           esac ;;
+  *) exit 2 ;;
+esac
+STUBEOF
+chmod +x "$STUB_UGLY"
+
+MULTI_REVIEW_REVIEWER_SH="$STUB_UGLY" bash "$SUT" resolve-set --fable-floor --pref-file "$LUPREF" \
+  >/dev/null 2>"${WORK}/lu7.err"
+# THE COLLAPSE IS PROVEN BY POSITION, NOT BY COUNTING ANCHOR MATCHES. `grep -c` on the anchor
+# returns 1 whether or not the reason collapsed: an unnormalized reason puts its continuation lines
+# on rows that do not match the anchor, so they are never counted and the count assertion cannot
+# fail — the very class this block's comment warns about, re-introduced one round later
+# (fable-rd2-r4). Asserting that the LAST fragment of the stub's three-line reason sits on the SAME
+# row as the anchor does fail: unnormalized it lands two rows further down.
+anchor_ln="$(grep -n '^multi-review-star: UNDISPATCHABLE gemini: ' "${WORK}/lu7.err" | head -1 | cut -d: -f1)"
+frag_ln="$(grep -n 'the workspace' "${WORK}/lu7.err" | head -1 | cut -d: -f1)"
+[[ -n "$anchor_ln" && "$anchor_ln" == "$frag_ln" ]] \
+  && ok "loud: a multi-line reason is collapsed onto the single UNDISPATCHABLE line" \
+  || bad "loud: reason not collapsed (anchor row ${anchor_ln:-none}, tail fragment row ${frag_ln:-none})"
+line="$(grep '^multi-review-star: UNDISPATCHABLE gemini: ' "${WORK}/lu7.err")"
+reason="${line#multi-review-star: UNDISPATCHABLE gemini: }"
+[[ -n "${reason//[[:space:]]/}" ]] && [[ "$reason" != *·* ]] && [[ "$reason" =~ ^[^[:cntrl:]]+$ ]] \
+  && ok "loud: the reason satisfies merge's quarantine grammar" \
+  || bad "loud: reason would abort merge: '$reason'"
+grep -q 'install it' <<<"$reason" && grep -q 'trust' <<<"$reason" \
+  && ok "loud: normalization folds the hint lines in rather than dropping them" \
+  || bad "loud: normalization lost content: '$reason'"
+# pins the sed-not-tr strip: `tr -d '·'` deletes the 0xC2 that `£` shares, corrupting it
+grep -q '£5' <<<"$reason" \
+  && ok "loud: a multibyte char sharing bytes with '·' survives normalization" \
+  || bad "loud: normalization corrupted a multibyte char: '$reason'"
+
+# 7b. THE REFUSAL RECORD SURVIVES IT TOO — the second consumer of the same reason. Stored raw, the
+#     reason's newlines are record separators in `refuse`, and Step 8's `read` loop parses each hint
+#     line as another reviewer: a refusal that names providers nobody asked for and loses the real
+#     ones (codex-rd1-r2, gemini-rd1-r1). Exactly ONE enumerated row, and it is gemini's.
+err="$(MULTI_REVIEW_REVIEWER_SH="$STUB_UGLY" bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 4 ]] \
+  && [[ "$(grep -cE '^  [a-z]+: .+' <<<"$err")" == "1" ]] && grep -qE '^  gemini: .+' <<<"$err" \
+  && ok "loud: a multi-line reason yields ONE refusal record, not one per hint line" \
+  || bad "loud: refusal record split on the reason's newlines (rc=$rc): '$err'"
+
+# 7c. INVALID UTF-8 MUST NOT TRUNCATE THE REASON — the `LC_ALL=C` pin, in a stub of its own.
+#
+# Under a UTF-8 locale BSD `tr`/`sed` abort at the first invalid byte, so everything after it is
+# lost — including the hint lines the record exists to carry (fable-rd4-r1). It needs a SEPARATE
+# stub because an invalid byte in the reason poisons every other assertion in this block: real
+# `/usr/bin/grep` returns 1 on such input (even with `-a`) and bash's `[[ =~ ]]` dies outright with
+# "regex matching error: illegal byte sequence" — verified on this machine, and NOT visible through
+# an interactive shell whose `grep` is a wrapper function, which is how it first read as passing.
+# So the comparison here is a `LC_ALL=C grep` against a FILE, and only for the tail marker.
+STUB_BADBYTE="${WORK}/stub-badbyte.sh"
+cat > "$STUB_BADBYTE" <<'STUBEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+sub="${1:-}"; shift || true
+id=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--reviewer" ]] && { id="${2:-}"; shift 2; continue; }; shift; done
+case "$sub" in
+  resolve) case "$id" in codex|fable|gemini) echo "${id}|vendor|kind|model|no"; exit 0;; *) exit 1;; esac ;;
+  check)   case "$id" in
+             codex|fable) exit 0 ;;
+             # \243 is a lone 0xA3: invalid UTF-8. The tail marker comes AFTER it deliberately.
+             gemini) printf 'gemini quota \243 exceeded\nhint: or trust the workspace\n' >&2; exit 1 ;;
+             *) exit 1 ;;
+           esac ;;
+  *) exit 2 ;;
+esac
+STUBEOF
+chmod +x "$STUB_BADBYTE"
+MULTI_REVIEW_REVIEWER_SH="$STUB_BADBYTE" bash "$SUT" resolve-set --fable-floor --pref-file "$LUPREF" \
+  >/dev/null 2>"${WORK}/lu7c.err"
+LC_ALL=C grep -q 'the workspace' "${WORK}/lu7c.err" \
+  && ok "loud: an invalid UTF-8 byte does not truncate the reason" \
+  || bad "loud: reason truncated at an invalid byte — LC_ALL=C missing from _norm_reason"
+
+# 8. an emptied set still exits 3, never 0-with-nothing
+PATH="${LUBIN2}:/usr/bin:/bin" MULTI_REVIEW_FABLE=off bash "$SUT" resolve-set --fable-floor --allow-missing --reviewers codex,gemini >/dev/null 2>&1
+[[ $? -eq 3 ]] && ok "loud: --allow-missing that empties the set still exits 3" \
+  || bad "loud: emptied set did not exit 3"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

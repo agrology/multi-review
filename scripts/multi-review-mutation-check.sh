@@ -1016,8 +1016,8 @@ mutations() {
   # dispatches something undispatchable, and pays a full wait bound to discover it.
   mutate 'star/resolve-set-checks-all-sources' 'scripts/multi-review-star.sh' replace \
     'the run would burn a round' 'multi-review-star.test.sh' \
-    '    if ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then' \
-    '    if [[ "$src" == "pref" ]] && ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then'
+    '    if ! why="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then' \
+    '    if [[ "$src" == "pref" ]] && ! why="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then'
   # ---- repo memory files as a reviewer-context channel ---------------------------------------
   # CLAUDE.md/AGENTS.md are auto-loaded into every agent in this repo, including a dispatched
   # secondary. Both entries below are DOC-level guards: the bug they prevent is a documentation
