@@ -2373,10 +2373,21 @@ grep -qF 'not on PATH' <<<"$err" \
   || bad "loud: refusal reason missing: '$err'"
 grep -qF -- '--allow-missing' <<<"$err" \
   && ok "loud: the refusal names the opt-out" || bad "loud: no opt-out named: '$err'"
+# the refusal must name its SOURCE — "named for this run" reads as env-specific and cannot be
+# reached from the flag by an operator who typed nothing into an env var (ENGINEER DECISION).
+grep -qF 'gemini (from --reviewers):' <<<"$err" \
+  && ok "loud: the refusal attributes a flag-named reviewer to --reviewers" \
+  || bad "loud: refusal did not name --reviewers as the source: '$err'"
 
-# 2. env + undispatchable -> exit 4 as well
-PATH="${LUBIN}:/usr/bin:/bin" MULTI_REVIEW_REVIEWERS=codex,gemini bash "$SUT" resolve-set --fable-floor >/dev/null 2>&1
-[[ $? -eq 4 ]] && ok "loud: env+undispatchable -> exit 4" || bad "loud: env case did not exit 4"
+# 2. env + undispatchable -> exit 4 as well, and the message attributes the OTHER source — this is
+# the equivalent of the per-source wording an earlier round of this branch collapsed away (it used
+# to grep MULTI_REVIEW_REVIEWERS to prove the notice named its source); restored here against the
+# new per-reviewer-row format.
+err="$(PATH="${LUBIN}:/usr/bin:/bin" MULTI_REVIEW_REVIEWERS=codex,gemini bash "$SUT" resolve-set --fable-floor 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 4 ]] && ok "loud: env+undispatchable -> exit 4" || bad "loud: env case did not exit 4"
+grep -qF 'gemini (from MULTI_REVIEW_REVIEWERS):' <<<"$err" \
+  && ok "loud: the refusal attributes an env-named reviewer to MULTI_REVIEW_REVIEWERS" \
+  || bad "loud: refusal did not name MULTI_REVIEW_REVIEWERS as the source: '$err'"
 
 # 3. pref + undispatchable -> PROCEEDS (exit 0) but is still LOUD
 printf 'codex,gemini\n' > "$LUPREF"
@@ -2409,15 +2420,16 @@ grep -qE '^multi-review-star: UNDISPATCHABLE bogus: ' "${WORK}/lu5b.err" \
   || bad "loud: unknown-id drop was silent: '$(cat "${WORK}/lu5b.err")'"
 
 # 6. two undispatchable reviewers -> ONE exit-4 message naming BOTH, in the ENUMERATION block.
-#    Anchored to the enumeration's own '  <id>: <reason>' shape, NOT a bare grep of stderr: Step 7
-#    already emits an `UNDISPATCHABLE <id>:` line per reviewer, so a whole-stderr grep for the two
-#    ids passes even with the Step 8 block deleted down to `exit 4`, leaving accumulate-then-
-#    enumerate — the thing this test names — completely unpinned (fable-rd1-r4).
+#    Anchored to the enumeration's own '  <id> (from <source>): <reason>' shape, NOT a bare grep of
+#    stderr: Step 7 already emits an `UNDISPATCHABLE <id>:` line per reviewer, so a whole-stderr
+#    grep for the two ids passes even with the Step 8 block deleted down to `exit 4`, leaving
+#    accumulate-then-enumerate — the thing this test names — completely unpinned (fable-rd1-r4).
+#    Both ids here come from the flag, so both rows attribute to --reviewers.
 LUBIN2="${WORK}/lubin2"; mkdir -p "$LUBIN2"   # neither codex nor gemini present
 err="$(PATH="${LUBIN2}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>&1 >/dev/null)"; rc=$?
 [[ $rc -eq 4 ]] \
-  && grep -qE '^  codex: .+' <<<"$err" && grep -qE '^  gemini: .+' <<<"$err" \
-  && [[ "$(grep -cE '^  [a-z]+: .+' <<<"$err")" == "2" ]] \
+  && grep -qE '^  codex \(from --reviewers\): .+' <<<"$err" && grep -qE '^  gemini \(from --reviewers\): .+' <<<"$err" \
+  && [[ "$(grep -cE '^  [a-z]+ \(from [A-Za-z_-]+\): .+' <<<"$err")" == "2" ]] \
   && ok "loud: one refusal enumerates every undispatchable reviewer" \
   || bad "loud: refusal did not enumerate both (rc=$rc): '$err'"
 
@@ -2485,7 +2497,7 @@ grep -q '£5' <<<"$reason" \
 #     ones (codex-rd1-r2, gemini-rd1-r1). Exactly ONE enumerated row, and it is gemini's.
 err="$(MULTI_REVIEW_REVIEWER_SH="$STUB_UGLY" bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>&1 >/dev/null)"; rc=$?
 [[ $rc -eq 4 ]] \
-  && [[ "$(grep -cE '^  [a-z]+: .+' <<<"$err")" == "1" ]] && grep -qE '^  gemini: .+' <<<"$err" \
+  && [[ "$(grep -cE '^  [a-z]+ \(from [A-Za-z_-]+\): .+' <<<"$err")" == "1" ]] && grep -qE '^  gemini \(from --reviewers\): .+' <<<"$err" \
   && ok "loud: a multi-line reason yields ONE refusal record, not one per hint line" \
   || bad "loud: refusal record split on the reason's newlines (rc=$rc): '$err'"
 

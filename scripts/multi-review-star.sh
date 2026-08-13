@@ -343,7 +343,12 @@ cmd_resolve_set() {
             # On its OWN line, not inlined into the assignment below: the assignment already
             # carries `$'\t'` and `$'\n'`, and a mutation entry has to quote its target literally.
             why="$(_norm_reason "$why")"
-            refuse="${refuse}${id}"$'\t'"${why}"$'\n'
+            # $src carries the record's SOURCE ("flag" or "env" — the only two that reach here) so
+            # the refusal below can name it. Without this the message reads "named for this run"
+            # regardless of where the id actually came from — wrong when it was an exported
+            # MULTI_REVIEW_REVIEWERS the operator never typed and cannot reach from the text
+            # (ENGINEER DECISION).
+            refuse="${refuse}${id}"$'\t'"${src}"$'\t'"${why}"$'\n'
           fi ;;
       esac
       continue
@@ -357,9 +362,16 @@ cmd_resolve_set() {
   # what made the old notice easy to ignore.
   if [[ -n "$refuse" ]]; then
     {
-      echo "multi-review-star: reviewer(s) named for this run are not dispatchable here:"
-      printf '%s' "$refuse" | while IFS="$(printf '\t')" read -r rid rwhy; do
-        [[ -n "$rid" ]] && echo "  ${rid}: ${rwhy}"
+      echo "multi-review-star: reviewer(s) for this run are not dispatchable here:"
+      printf '%s' "$refuse" | while IFS="$(printf '\t')" read -r rid rsrc rwhy; do
+        [[ -n "$rid" ]] || continue
+        # src -> what the operator would type/set to reach this reviewer: "env" is the only
+        # non-flag fresh-ask source, so everything else (just "flag") names --reviewers.
+        case "$rsrc" in
+          env) rlabel="MULTI_REVIEW_REVIEWERS" ;;
+          *)   rlabel="--reviewers" ;;
+        esac
+        echo "  ${rid} (from ${rlabel}): ${rwhy}"
       done
       echo "Fix them, or re-run with --allow-missing to proceed without them."
     } >&2
