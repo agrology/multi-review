@@ -145,6 +145,13 @@ out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" bash "$SUT" resolve-set --fable-floor --
 grep -qi 'not dispatchable here' <<<"$err" \
   && ok "resolve-set: the named-drop notice says the reviewer was not dispatchable" \
   || bad "named drop is silent or unattributed: '$err'"
+# $STUB's `check` fails gemini with NO stderr output (see its definition above), so `_norm_reason`
+# is handed an empty raw reason. Without the "${r:-unavailable}" fallback the emitted line would
+# read "UNDISPATCHABLE gemini: " — an EMPTY reason — which `merge` refuses to store, aborting the
+# round downstream on a doc that never explains why.
+grep -qxF 'multi-review-star: UNDISPATCHABLE gemini: unavailable' <<<"$err" \
+  && ok "resolve-set: a check failure with no stderr falls back to 'unavailable', not empty" \
+  || bad "undispatchable reason fallback missing when check failed silently: '$err'"
 
 out="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --allow-missing 2>/dev/null | cut -d'|' -f1 | tr '\n' ' ')"
 err="$(MULTI_REVIEW_REVIEWER_SH="$STUB" MULTI_REVIEW_REVIEWERS="gemini" bash "$SUT" resolve-set --fable-floor --allow-missing 2>&1 >/dev/null)"

@@ -1186,6 +1186,20 @@ mutations() {
     '  echo "multi-review-star: UNDISPATCHABLE ${1}: $(_norm_reason "${2:-}")" >&2' \
     '  :'
 
+  # THE REASON MUST NEVER BE EMPTY. A `check` that fails without writing to stderr (reproduced by
+  # $STUB's default gemini case, which `exit 1`s silently) hands `_norm_reason` an empty raw reason;
+  # without the "${r:-unavailable}" fallback the emitted line reads "UNDISPATCHABLE gemini: " with
+  # nothing after the colon, and the command document binds that verbatim to `--quarantined
+  # <id>:` — an EMPTY reason `merge` refuses to store ("quarantine reason for '<id>' is empty"),
+  # aborting the round. This is the exact defect class the mutation table exists to prevent, and it
+  # shipped with zero coverage inside the same change that added six sibling entries for this
+  # feature — reproduced by hand (replacing the fallback with the bare `"$r"` form leaves the whole
+  # star suite green) before this entry and its assertion existed.
+  mutate 'star/undispatchable-reason-never-empty' 'scripts/multi-review-star.sh' replace \
+    'undispatchable reason fallback missing' 'multi-review-star.test.sh' \
+    "  printf '%s' \"\${r:-unavailable}\"" \
+    "  printf '%s' \"\$r\""
+
   # REFUSAL. Without the exit, a fresh ask for a reviewer that cannot run proceeds silently — the
   # exact behavior this change replaces.
   mutate 'star/undispatchable-refuses-fresh-ask' 'scripts/multi-review-star.sh' replace \
