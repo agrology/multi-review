@@ -1220,21 +1220,44 @@ mutations() {
     '            why="$(_norm_reason "$why")"' \
     '            :'
 
-  # (c) the LOCALE PIN — recorded as SURVIVES-BY-DESIGN, deliberately, because it CANNOT be caught
-  # on the platform the sweep runs on.
+  # (c) the LOCALE PIN. NEITHER a single `caught` NOR a single `SURVIVES-BY-DESIGN` expectation is
+  # true on both platforms this repo supports, so the entry itself must branch on `uname -s`.
   #
-  # Dropping `LC_ALL=C` is a real defect on macOS: BSD tr/sed abort at the first invalid UTF-8 byte
-  # under a UTF-8 locale and the reason is truncated, which test 7c catches on the macOS suite legs.
-  # It is NOT a defect under GNU coreutils — GNU tr/sed are byte-oriented and never abort on invalid
-  # multibyte input, so the mutated pipeline is behaviorally identical there and 7c stays green.
-  # `.github/workflows/gate.yml` runs the sweep on `ubuntu-latest` ONLY, so asserting a catch would
-  # fail the build forever on the one platform that cannot produce the failure (fable-rd5-r1).
-  # Recorded rather than omitted (§11): a STALE here means either the sweep gained a macOS leg or
-  # someone made the truncation reproducible under GNU — both worth knowing.
-  mutate 'star/undispatchable-reason-locale-pinned' 'scripts/multi-review-star.sh' replace \
-    'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
-    "  r=\"\$(printf '%s' \"\${1:-}\" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\"" \
-    "  r=\"\$(printf '%s' \"\${1:-}\" | tr '[:cntrl:]' ' ' | sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\""
+  # Dropping `LC_ALL=C` is a REAL defect on macOS/BSD: BSD `tr`/`sed` abort at the first invalid
+  # UTF-8 byte under a UTF-8 locale, so the reason is truncated — reproduced by hand while writing
+  # this entry, on a Darwin box, by applying this exact mutation outside the runner and running
+  # `multi-review-star.test.sh` directly: it fails test 7c with
+  # `loud: reason truncated at an invalid byte — LC_ALL=C missing from _norm_reason`. On that
+  # platform the mutation is CAUGHT, and an expectation of `SURVIVES-BY-DESIGN` there is simply
+  # false — which is what happened when this entry first shipped: `--only` on a Darwin dev machine
+  # reported STALE forever, because STALE is exactly the runner's name for "an entry claims
+  # survival but the gate went red" (task-4 fix round 1).
+  #
+  # It is NOT a defect under GNU coreutils: GNU `tr`/`sed` are byte-oriented and never abort on
+  # invalid multibyte input, so the identical mutation is behaviorally inert there and test 7c
+  # stays green — `SURVIVES-BY-DESIGN` is the true expectation on that platform, and asserting a
+  # catch there would fail the build forever on the one platform that cannot produce the failure
+  # (fable-rd5-r1). `.github/workflows/gate.yml` runs the mutation sweep job on `ubuntu-latest`
+  # ONLY (separate from the ubuntu+macos matrix that runs the plain `*.test.sh` suites), so that is
+  # the platform the sweep itself will actually exercise this entry on.
+  #
+  # So: each arm gets the expectation that is TRUE for it, keyed on `uname -s` at run time — not
+  # because the guard differs, but because the observable consequence of removing it does. A STALE
+  # on EITHER arm still means something real changed: on Darwin, that the truncation stopped
+  # reproducing (BSD tr/sed behavior changed, or `_norm_reason` stopped calling them); on
+  # ubuntu-latest, that GNU coreutils started aborting on invalid UTF-8, or some other layer now
+  # catches the drop — either way, update the table, don't reword the branch away.
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    mutate 'star/undispatchable-reason-locale-pinned' 'scripts/multi-review-star.sh' replace \
+      'reason truncated at an invalid byte' 'multi-review-star.test.sh' \
+      "  r=\"\$(printf '%s' \"\${1:-}\" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\"" \
+      "  r=\"\$(printf '%s' \"\${1:-}\" | tr '[:cntrl:]' ' ' | sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\""
+  else
+    mutate 'star/undispatchable-reason-locale-pinned' 'scripts/multi-review-star.sh' replace \
+      'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
+      "  r=\"\$(printf '%s' \"\${1:-}\" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\"" \
+      "  r=\"\$(printf '%s' \"\${1:-}\" | tr '[:cntrl:]' ' ' | sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\""
+  fi
 
   # (d) the SED-NOT-TR strip, pinning test 7's `£5` assertion. Platform-INDEPENDENT, unlike (c):
   # GNU `tr` is byte-oriented too, so `tr -d '·'` deletes the 0xC2 and 0xB7 bytes wherever they
