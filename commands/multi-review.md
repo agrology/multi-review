@@ -126,7 +126,9 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    - Prints `star` (exit 0) → `<doc>` is **already** a star review in flight. Read the
      `reviewers: <ids>` suffix off that header line and feed it back into
      `multi-review-star.sh resolve-set --fable-floor --resume --reviewers <ids,comma,joined>` to rebuild
-     the `id|vendor|kind|model|has-skill` rows. Go to §3.
+     the `id|vendor|kind|model|has-skill` rows. Capture every `multi-review-star: UNDISPATCHABLE
+     <id>: <reason>` line this rebuild prints and carry it into every round's `merge` as
+     `--quarantined <id>:<reason>`, exactly as step 2's bullet below requires. Go to §3.
 
      `--resume` is required. Without it these header-derived ids look like a fresh ask, so a
      provider that became undispatchable between sessions exits 4 and the review becomes

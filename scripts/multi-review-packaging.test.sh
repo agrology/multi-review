@@ -763,6 +763,23 @@ else
     || bad "command: resume rebuild lacks --resume (line $n): $(sed -n "${n}p" "$CMD")"
 fi
 
+# The resume branch is the one path a dropped reviewer PROCEEDS by design (`--resume` proceeds
+# where a fresh ask would refuse), which makes it the one path where silently skipping the
+# quarantine-binding rule is most damaging. Step 2's bullet list carries that rule, and the resume
+# branch bypasses step 2 entirely ("Go to §3") — so the rebuild's OWN block must repeat it.
+#
+# ANCHORED TO THE RESUME-REBUILD LINE'S IMMEDIATE BLOCK, NOT A FILE-WIDE GREP. A file-wide
+# `grep -q 'UNDISPATCHABLE' "$CMD"` already passes today — the string appears elsewhere in the doc
+# (step 2's own bullet) — so it would stay green even with this branch's block silent on the rule.
+n="$(grep -n '<ids,comma,joined>' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: resume-rebuild anchor '<ids,comma,joined>' not found — the guard's anchor is gone"
+else
+  sed -n "${n},$((n+3))p" "$CMD" | grep -q 'UNDISPATCHABLE' \
+    && ok "command: the resume-rebuild block captures UNDISPATCHABLE lines" \
+    || bad "command: resume-rebuild block never mentions UNDISPATCHABLE — the quarantine-binding rule routes past this path"
+fi
+
 # EXTRACTING the flag is not FORWARDING it. §2's fresh-request call is the only place --allow-missing
 # reaches resolve-set, and resolve-set is the only thing that acts on it — so without this the
 # engineer types the documented opt-out, §1 dutifully parses it off the positional, and the run
