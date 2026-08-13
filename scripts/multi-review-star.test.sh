@@ -2425,11 +2425,19 @@ grep -qE '^multi-review-star: UNDISPATCHABLE bogus: ' "${WORK}/lu5b.err" \
 #    grep for the two ids passes even with the Step 8 block deleted down to `exit 4`, leaving
 #    accumulate-then-enumerate — the thing this test names — completely unpinned (fable-rd1-r4).
 #    Both ids here come from the flag, so both rows attribute to --reviewers.
+#    COUNT `^  ` (any enumerated row), not a shape-specific pattern: the header/trailer are
+#    unindented and UNDISPATCHABLE lines start at column 0, so two leading spaces uniquely
+#    identify an enumerated row regardless of its shape. A count regex baked to one exact row
+#    shape stops seeing a MALFORMED row (e.g. one produced by a raw, un-normalized reason whose
+#    embedded newline is misread as a record separator) — the count then silently undercounts
+#    while a per-shape `grep -q` still finds the two well-formed rows, so the assertion passes
+#    with the underlying guard gone (caught live: `star/undispatchable-refuse-record-normalized`
+#    SURVIVED behind this exact disease in test 7b below).
 LUBIN2="${WORK}/lubin2"; mkdir -p "$LUBIN2"   # neither codex nor gemini present
 err="$(PATH="${LUBIN2}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>&1 >/dev/null)"; rc=$?
 [[ $rc -eq 4 ]] \
   && grep -qE '^  codex \(from --reviewers\): .+' <<<"$err" && grep -qE '^  gemini \(from --reviewers\): .+' <<<"$err" \
-  && [[ "$(grep -cE '^  [a-z]+ \(from [A-Za-z_-]+\): .+' <<<"$err")" == "2" ]] \
+  && [[ "$(grep -cE '^  ' <<<"$err")" == "2" ]] \
   && ok "loud: one refusal enumerates every undispatchable reviewer" \
   || bad "loud: refusal did not enumerate both (rc=$rc): '$err'"
 
@@ -2495,9 +2503,16 @@ grep -q '£5' <<<"$reason" \
 #     reason's newlines are record separators in `refuse`, and Step 8's `read` loop parses each hint
 #     line as another reviewer: a refusal that names providers nobody asked for and loses the real
 #     ones (codex-rd1-r2, gemini-rd1-r1). Exactly ONE enumerated row, and it is gemini's.
+#     COUNT `^  ` (any enumerated row), not a shape-specific pattern. Under the raw (un-normalized)
+#     reason a continuation line like "hint: install it" — no tab — is misread by the `read -r rid
+#     rsrc rwhy` loop as `rid="hint: install it"`, `rsrc=""`, `rwhy=""`, printing
+#     `  hint: install it (from --reviewers):` — a row that does NOT match a `\(from …\): .+`
+#     pattern (no " (from" after the id, no trailing `.+`), so a shape-specific count stays at 1
+#     and the assertion passes with the guard removed. Two leading spaces is the thing that is
+#     true of every enumerated row regardless of shape (header/trailer are unindented).
 err="$(MULTI_REVIEW_REVIEWER_SH="$STUB_UGLY" bash "$SUT" resolve-set --fable-floor --reviewers codex,gemini 2>&1 >/dev/null)"; rc=$?
 [[ $rc -eq 4 ]] \
-  && [[ "$(grep -cE '^  [a-z]+ \(from [A-Za-z_-]+\): .+' <<<"$err")" == "1" ]] && grep -qE '^  gemini \(from --reviewers\): .+' <<<"$err" \
+  && [[ "$(grep -cE '^  ' <<<"$err")" == "1" ]] && grep -qE '^  gemini \(from --reviewers\): .+' <<<"$err" \
   && ok "loud: a multi-line reason yields ONE refusal record, not one per hint line" \
   || bad "loud: refusal record split on the reason's newlines (rc=$rc): '$err'"
 
