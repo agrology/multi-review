@@ -73,12 +73,16 @@ unless a named test catches it — because a green suite is not by itself eviden
 /multi-review docs/specs/2026-01-01-my-design.md        # local doc, fable only
 /multi-review docs/specs/2026-01-01-my-design.md --reviewers codex   # + codex (cross-vendor)
 /multi-review https://github.com/owner/repo/pull/42 --reviewers codex,gemini
+/multi-review docs/specs/2026-01-01-my-design.md --reviewers gemini --allow-missing   # proceed even if gemini can't run here
 ```
 
 - **You don't have to type the path.** Just say "multi-review the spec / the plan / this PR" —
   it resolves to the doc in context, or the newest dated doc under `MULTI_REVIEW_DOC_DIRS`.
 - **Name reviewers in plain language.** "multi-review the spec with codex and gemini" is
   equivalent to `--reviewers codex,gemini`.
+- **A reviewer named with `--reviewers` that isn't dispatchable here refuses the run** (exit 4,
+  no round armed) rather than silently proceeding without it. Add `--allow-missing` to proceed
+  anyway.
 - **The combo is remembered per repo.** The last explicitly-named set is saved to
   `.multi-review/reviewers.pref`; a later bare run reuses it (self-healing — a reviewer that
   isn't set up is dropped for that run with a notice, not an error). Say "forget the reviewers"
