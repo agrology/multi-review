@@ -133,3 +133,17 @@ jobs:
         run: scripts/multi-review-mutation-check.sh --verify-table
       - name: Mutation sweep
         run: scripts/multi-review-mutation-check.sh
+
+  mutation-macos-locale:
+    # `star/undispatchable-reason-locale-pinned`'s `caught` arm is Darwin-only (BSD tr/sed abort on
+    # an invalid UTF-8 byte under a UTF-8 locale; GNU coreutils do not) — the `mutation` job above
+    # runs ubuntu-latest only, so that arm had no CI proof, just a maintainer's laptop. One entry,
+    # seconds, not the 25-minute sweep — the full sweep stays ubuntu-only by design (see `mutation`).
+    name: mutation coverage (macos locale pin)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install jq if absent
+        run: command -v jq >/dev/null || brew install jq
+      - name: Locale-pin mutation
+        run: scripts/multi-review-mutation-check.sh --only star/undispatchable-reason-locale-pinned
