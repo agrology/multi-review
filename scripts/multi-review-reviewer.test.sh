@@ -1466,6 +1466,112 @@ HOME="${CD_}/home" PATH="${CD_}/bin:$PATH" bash "$SUT" check --reviewer codex --
 [[ $? -eq 2 ]] && ok "check: --doc with no value exits 2" \
   || bad "--doc with no value did not exit 2"
 
+# --- G4: doctor's live probe must run the DISPATCH argv, not a second one ---------------------
+# The probe and cmd_command built their argv independently, so they could disagree in BOTH
+# directions: a probe without `--approval-mode auto_edit` passes on a CLI that rejects the
+# dispatch, and one without the autotrust `env` prefix fails on a workspace the dispatch trusts.
+# Same "green signal, broken dispatch" class as #73/#80.
+GA="${WORK}/gargv"; mkdir -p "$GA/bin" "$GA/repo/home"
+( cd "$GA/repo" && git init -q )
+# The stub records the argv it was invoked with (NUL-delimited) plus whether the trust variable
+# reached its environment. `$@` never contains `$0`, so the recorded stream begins at `-m`.
+cat > "$GA/bin/gemini" <<'STUB'
+#!/usr/bin/env bash
+: > "$GA_ARGV"
+for a in "$@"; do printf '%s\0' "$a" >> "$GA_ARGV"; done
+printf '%s' "${GEMINI_CLI_TRUST_WORKSPACE-<unset>}" > "$GA_TRUST"
+echo OK
+STUB
+chmod +x "$GA/bin/gemini"
+# Pre-create both sinks: if the probe never launches, the assertions must fail on their own
+# message rather than on a redirect against a missing file.
+: > "$GA/argv.bin"; : > "$GA/trust.txt"
+
+# bash 3.2 has no mapfile. Populates the global array `nulargv`.
+read_nul() { nulargv=(); local a; while IFS= read -r -d '' a; do nulargv+=("$a"); done < "$1"; }
+
+# Run doctor in the fixture with the stub on PATH. Extra assignments come from the caller and
+# MUST go through `env`: a bare `VAR=x "$@" bash …` would not treat an assignment arriving via
+# "$@" as an assignment at all — the parser fixes the assignment prefixes before "$@" expands,
+# so bash would look for a command literally named `MULTI_REVIEW_GEMINI_AUTOTRUST=1`.
+ga_doctor() {
+  ( cd "$GA/repo" && env HOME="$GA/repo/home" PATH="${GA}/bin:$PATH" \
+      GA_ARGV="$GA/argv.bin" GA_TRUST="$GA/trust.txt" MULTI_REVIEW_PROBE_TIMEOUT=5 \
+      "$@" bash "$SUT" doctor >/dev/null 2>&1 )
+}
+
+# T1 — the probe carries the dispatch's `--approval-mode auto_edit`.
+unset GEMINI_CLI_TRUST_WORKSPACE MULTI_REVIEW_GEMINI_AUTOTRUST
+ga_doctor
+read_nul "$GA/argv.bin"
+probe_argv=(); (( ${#nulargv[@]} )) && probe_argv=("${nulargv[@]}")
+# Arithmetic for-loop, NOT `for i in $(seq 0 $(( len - 1 )))`. BSD seq counts DOWN when the end
+# is below the start, so an empty array yields `seq 0 -1` -> "0 -1" and the body runs against an
+# unbound index: under `set -u` on /bin/bash 3.2 that aborts the whole test FILE with exit 127,
+# masking every assertion after it. GNU seq prints nothing there, so the Ubuntu leg would pass
+# straight through and only the macOS leg would break. The `i + 1 < len` bound also keeps both
+# indices in range, so neither needs a `:-` default.
+t1_appr=0
+for (( i = 0; i + 1 < ${#probe_argv[@]}; i++ )); do
+  [[ "${probe_argv[$i]}" == "--approval-mode" && "${probe_argv[$((i+1))]}" == "auto_edit" ]] && t1_appr=1
+done
+(( t1_appr )) \
+  && ok "G4/T1: doctor's probe carries --approval-mode auto_edit, like dispatch" \
+  || bad "G4/T1: probe argv lacks --approval-mode auto_edit: ${probe_argv[*]:-<none>}"
+
+# T1b — with autotrust OFF (this run's setup), the probe carries no trust prefix at all.
+[[ "$(cat "$GA/trust.txt")" == "<unset>" ]] \
+  && ok "G4/T1b: without autotrust the probe carries no trust prefix" \
+  || bad "G4/T1b: probe saw GEMINI_CLI_TRUST_WORKSPACE='$(cat "$GA/trust.txt")' (want unset)"
+
+# T2 — under autotrust the probe gets the `env GEMINI_CLI_TRUST_WORKSPACE=true` prefix.
+# The unset is PART OF THE TEST, not an assumption about the shell: this suite clears only
+# MULTI_REVIEW_REVIEWER_MODEL globally, and an ambient export would make this pass against a probe
+# that carries no prefix at all — green for a reason unrelated to the fix.
+unset GEMINI_CLI_TRUST_WORKSPACE
+ga_doctor MULTI_REVIEW_GEMINI_AUTOTRUST=1
+[[ "$(cat "$GA/trust.txt")" == "true" ]] \
+  && ok "G4/T2: autotrust reaches the probe's environment, like dispatch" \
+  || bad "G4/T2: probe saw GEMINI_CLI_TRUST_WORKSPACE='$(cat "$GA/trust.txt")' (want true)"
+
+# T3 (anti-drift) — the probe argv IS the dispatch argv, modulo the prompt. Autotrust OFF, so
+# neither stream carries the `env` prefix; but `env` execs the binary in place, so ANY leading
+# wrapper — not just this one — is invisible to `$@` and this comparison's fixed offset of one.
+# T1b (absence when autotrust is off) and T2 (presence when it's on) actually pin the prefix.
+unset GEMINI_CLI_TRUST_WORKSPACE MULTI_REVIEW_GEMINI_AUTOTRUST
+: > "$GA/argv.bin"
+ga_doctor
+read_nul "$GA/argv.bin"
+probe_argv=(); (( ${#nulargv[@]} )) && probe_argv=("${nulargv[@]}")
+# `command` needs no marker in the doc (cmd_command checks only that the file exists, then builds
+# the prompt from the path) and the path is absolute, so this is cwd-independent — a failure here
+# is a real one, not fixture drift.
+printf '# t\n' > "$GA/repo/d.md"
+bash "$SUT" command "$GA/repo/d.md" --reviewer gemini > "$GA/cmd.bin" 2>/dev/null
+read_nul "$GA/cmd.bin"
+cmd_argv=(); (( ${#nulargv[@]} )) && cmd_argv=("${nulargv[@]}")
+
+# The stub records `$@`, which never contains `$0`, while the builder stream starts at `gemini`.
+# Drop that element before comparing, and assert separately that it IS `gemini`.
+[[ "${cmd_argv[0]:-}" == "gemini" ]] \
+  && ok "G4/T3a: dispatch argv element 0 is the gemini binary" \
+  || bad "G4/T3a: dispatch argv element 0 is '${cmd_argv[0]:-<none>}' (want gemini)"
+
+drift=""
+if (( ${#probe_argv[@]} != ${#cmd_argv[@]} - 1 )); then
+  drift="length: probe ${#probe_argv[@]} vs dispatch $(( ${#cmd_argv[@]} - 1 ))"
+else
+  # Arithmetic for-loop for the same reason as T1's, and bounded at len-1 so the trailing -p
+  # payload — the one deliberate difference — is simply never compared.
+  for (( i = 0; i < ${#probe_argv[@]} - 1; i++ )); do
+    [[ "${probe_argv[$i]}" == "${cmd_argv[$((i+1))]}" ]] \
+      || drift="element $i: probe '${probe_argv[$i]}' vs dispatch '${cmd_argv[$((i+1))]}'"
+  done
+fi
+[[ -z "$drift" ]] \
+  && ok "G4/T3: doctor's probe argv is the dispatch argv, modulo the prompt" \
+  || bad "G4/T3: probe and dispatch argv have drifted — $drift"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

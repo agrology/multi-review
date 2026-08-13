@@ -133,6 +133,8 @@ refuses to run until you remove it, and `--check-reviewers`/`doctor` will flag t
 1. **`export GEMINI_CLI_TRUST_WORKSPACE=true`** (or trust the folder once). An untrusted workspace
    makes the CLI skip `.env` (so it can't authenticate — the error misleadingly says "set an Auth
    method") *and* disables file edits, so the reviewer can't write the doc.
+   `doctor`'s probe runs the same command line as a real dispatch, including
+   `--approval-mode auto_edit`, so its verdict reflects what dispatch will actually do.
 2. An API key — `export GEMINI_API_KEY=…`, or drop `GEMINI_API_KEY=…` in `~/.gemini/.env` (or your
    repo's `.env`). **It auto-loads once the workspace is trusted.**
 3. `.gemini/settings.json` → `{"context":{"fileFiltering":{"respectGitIgnore":false}}}`. Needed
@@ -156,7 +158,7 @@ Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a 
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.6-terra`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |
 | `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` | where bare-name local docs are resolved. Covers the plain and `superpowers` layouts out of the box. Bare-name resolution **warns** when a newer dated doc sits in a directory it did not search — the egress guard cannot catch that, since the doc it picked is legitimately inside the configured dirs. |
-| `MULTI_REVIEW_GEMINI_AUTOTRUST` | *(off)* | `=1` scopes `GEMINI_CLI_TRUST_WORKSPACE=true` to the gemini dispatch (no profile edit needed). **Security:** trusting a workspace lets gemini honor its `.env`/settings and auto-edit — enable only for repos you trust, never a freshly-cloned one. |
+| `MULTI_REVIEW_GEMINI_AUTOTRUST` | *(off)* | `=1` scopes `GEMINI_CLI_TRUST_WORKSPACE=true` to the gemini dispatch **and to `doctor`'s live probe, which runs the same argv** (no profile edit needed). **Security:** trusting a workspace lets gemini honor its `.env`/settings and auto-edit — enable only for repos you trust, never a freshly-cloned one. |
 
 The last explicitly-named reviewer combo is remembered per repo in **`.multi-review/reviewers.pref`**
 (gitignored). It is written when reviewers are named (flag or prose) — **except** when
