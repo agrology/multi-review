@@ -2520,6 +2520,64 @@ PATH="${LUBIN2}:/usr/bin:/bin" MULTI_REVIEW_FABLE=off bash "$SUT" resolve-set --
 [[ $? -eq 3 ]] && ok "loud: --allow-missing that empties the set still exits 3" \
   || bad "loud: emptied set did not exit 3"
 
+# --- end to end: an undispatchable reviewer is VISIBLE AT THE GATE ----------------------------
+# The observed symptom this whole change exists to remove: the engineer asked for gemini, gemini
+# could not run, and the gate reported "1 finding across 2 secondaries" with no mention of it.
+# Asserting resolve-set's exit code is NOT enough — the round-1 design passed that bar and still
+# shrank the panel silently, because the roster listed the provider, nothing quarantined it, and
+# `admitted = raisers ∪ (roster − quarantined)` counted it as present.
+# THE FIXTURE'S VENDOR SHAPE IS LOAD-BEARING — get it wrong and the last assertion can never pass.
+# `gate-summary --flag-independence` resolves the vendor of each ADMITTED PROVIDER ID (via
+# `resolve --reviewer <id>`), not the model string in its `— via` line. If `codex` were the raiser it
+# would be admitted and cross-vendor to the primary, the warning would correctly NOT fire, and the
+# assertion would be permanently red.
+#
+# An earlier draft used codex as the raiser with roster `codex gemini`. That fixture is unsatisfiable:
+# codex resolves to openai, which IS cross-vendor to the primary, so `admitted_xvendor` is 1 and the
+# warning is correctly suppressed — the assertion would have been permanently red at GREEN
+# (fable-rd1-r1). It also omitted the fable floor the roster rule mandates (fable-rd1-r7).
+# MERGE NEEDS AN ADMITTED COPY, not just a quarantine. `merge` treats a round with zero admitted
+# copies as the all-quarantined anomaly stop and exits 2 BEFORE it ever validates the quarantine
+# reason — so passing the doc alone makes "merge accepts the reason" red no matter how clean the
+# reason is, testing nothing about the grammar. Reproduced: `merge --round 1 --quarantined
+# 'gemini:...' <doc>` → rc=2, "no admitted copies for round 1". The fable copy below is what makes
+# the quarantine path reachable, and it doubles as the same-vendor admitted secondary the
+# independence assertion needs.
+E2E="$(mkstar e2e.md)"
+perl -0pi -e 's{<!-- multi-review-mode: star -->}{<!-- multi-review-mode: star · reviewers: gemini fable -->}' "$E2E"
+# the admitted secondary's copy: local ids, namespaced by merge into fable-rd1-r1
+# the `— evidence:` line is not optional padding: `med` requires it, so a fixture without one models
+# a malformed finding inside a core suite and shows up in `evidence-gaps` as permanent noise
+# (gemini-rd3-r2)
+{ cat "$E2E"; echo; echo '> [finding:r1|med] something'; echo '> — via claude-fable-5'; echo '> — risk: r'; echo '> — evidence: synthesized fixture finding'; } > "${E2E}.fable"
+
+# the reason comes from resolve-set, exactly as the command would capture it
+line="$(PATH="${LUBIN}:/usr/bin:/bin" bash "$SUT" resolve-set --fable-floor --allow-missing --reviewers gemini 2>&1 >/dev/null \
+        | grep -E '^multi-review-star: UNDISPATCHABLE gemini: ')"
+reason="${line#multi-review-star: UNDISPATCHABLE gemini: }"
+
+bash "$SUT" merge --round 1 --quarantined "gemini:${reason}" "$E2E" "${E2E}.fable" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 0 ]] && ok "e2e: merge accepts the reason resolve-set produced" \
+  || bad "e2e: merge REJECTED the generated reason (rc=$rc) — '$reason'"
+
+# the primary responds AFTER the merge — appending the agree into the pre-merge fixture would
+# duplicate the finding the copy carries
+printf '\n> [agree:fable-rd1-r1]\n> — via claude-opus-5\n' >> "$E2E"
+
+gs="$(bash "$SUT" gate-summary "$E2E" claude-opus-5 --flag-independence 2>&1)"
+grep -q 'gemini' <<<"$gs" \
+  && ok "e2e: the gate names the reviewer that could not run" \
+  || bad "e2e: the gate is silent about gemini — the original defect: '$gs'"
+grep -qi 'quarantin' <<<"$gs" \
+  && ok "e2e: the gate shows it as quarantined, not merely absent" || bad "e2e: no quarantine line"
+# the specific branch matters: "attempted but quarantined" is the one that proves the run KNOWS a
+# cross-vendor secondary was asked for. The generic "only same-vendor secondaries" wording would
+# also match a bare `⚠ Independence` grep while saying nothing about gemini at all.
+grep -q '⚠ Independence' <<<"$gs" && grep -q 'attempted but quarantined' <<<"$gs" \
+  && grep -q 'gemini' <<<"$gs" \
+  && ok "e2e: losing the only cross-vendor secondary trips the independence warning" \
+  || bad "e2e: independence warning did not fire on the quarantined branch: '$gs'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
