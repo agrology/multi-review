@@ -1162,6 +1162,91 @@ mutations() {
     '  while IFS= read -r -d '"'"''"'"' a; do argv+=("$a"); done < <(gemini_argv "$model" "reply with OK")' \
     '  argv=(gemini -m "$model" -p "reply with OK")'
 
+  # ---- loud undispatchable reviewers ------------------------------------------------------------
+
+  # `expect` below is a substring of the `bad(...)` FAIL text for the assertion that actually dies,
+  # NOT the paired `ok(...)` label — the two read almost as opposites (e.g. "a pref-sourced drop
+  # emits UNDISPATCHABLE" is the ok label; "pref drop was silent" is what `bad` prints when it
+  # doesn't). Targeting the ok label MISCREDITS every entry here, caught live while adding this
+  # table (task-4).
+
+  # VISIBILITY. Silence the emitter and a dropped reviewer vanishes from the durable record again:
+  # no quarantine, no gate line, and `roster − quarantined` counts a reviewer that never spoke.
+  # Replaced rather than deleted: the line is the sole body of the helper, and deleting it leaves a
+  # function with an empty body, which is a parse error the runner correctly rejects.
+  #
+  # THE TARGET MUST BE THE EMITTER AS STEP 5 ACTUALLY WRITES IT. An earlier draft of this entry
+  # targeted `${r:-unavailable}` inline, which was the round-1 design; once the normalization moved
+  # into `_norm_reason`, that literal existed nowhere in the file at any point and `--verify-table`
+  # would have reported the entry stale — the exact staleness `--verify-table` exists to catch,
+  # shipped in the same change that adds it (codex-rd2-r1, gemini-rd2-mutation-target-mismatch,
+  # fable-rd2-r2).
+  mutate 'star/undispatchable-emitted' 'scripts/multi-review-star.sh' replace \
+    'pref drop was silent' 'multi-review-star.test.sh' \
+    '  echo "multi-review-star: UNDISPATCHABLE ${1}: $(_norm_reason "${2:-}")" >&2' \
+    '  :'
+
+  # REFUSAL. Without the exit, a fresh ask for a reviewer that cannot run proceeds silently — the
+  # exact behavior this change replaces.
+  mutate 'star/undispatchable-refuses-fresh-ask' 'scripts/multi-review-star.sh' replace \
+    'flag case rc=' 'multi-review-star.test.sh' \
+    '    exit 4' \
+    '    :'
+
+  # NORMALIZATION, both consumers. The plan calls `_norm_reason` load-bearing, and §11 says every
+  # new guard gets an entry — so the two things that can silently un-normalize a reason each get
+  # one, credited to the assertion that actually dies (fable-rd2-r3).
+  #
+  # (a) the normalization pipeline itself.
+  #
+  # CREDITED TO THE ROW-POSITION ASSERTION, NOT THE GRAMMAR ONE. Under this mutation the emitter
+  # prints the stub's raw three-line reason — but test 7 extracts `$reason` with
+  # `grep '^multi-review-star: UNDISPATCHABLE gemini: '`, which returns only the anchor-matching
+  # FIRST line: `gemini CLI not on PATH`, which is non-empty, `·`-free and cntrl-free, so the
+  # grammar assertion stays GREEN and the entry would come back MISCREDITED. The assertion that
+  # actually dies is the collapse check, which compares the anchor's row to the tail fragment's
+  # row (codex-rd3-r1, fable-rd3-r1). It is the same grep-drops-continuations mechanism test 7's
+  # own comment documents — third appearance of it in this review.
+  mutate 'star/undispatchable-reason-normalized' 'scripts/multi-review-star.sh' replace \
+    'reason not collapsed' 'multi-review-star.test.sh' \
+    "  r=\"\$(printf '%s' \"\${1:-}\" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\"" \
+    '  r="${1:-}"'
+
+  # (b) the REFUSE-PATH call. Storing the raw reason re-opens the record-splitting defect: the
+  # newlines become record separators and Step 8 reads each hint line as another reviewer. Test 7b
+  # counts enumerated rows, so it is the one that dies — not test 7, which only reads the emitter.
+  mutate 'star/undispatchable-refuse-record-normalized' 'scripts/multi-review-star.sh' replace \
+    "refusal record split on the reason's newlines" 'multi-review-star.test.sh' \
+    '            why="$(_norm_reason "$why")"' \
+    '            :'
+
+  # (c) the LOCALE PIN — recorded as SURVIVES-BY-DESIGN, deliberately, because it CANNOT be caught
+  # on the platform the sweep runs on.
+  #
+  # Dropping `LC_ALL=C` is a real defect on macOS: BSD tr/sed abort at the first invalid UTF-8 byte
+  # under a UTF-8 locale and the reason is truncated, which test 7c catches on the macOS suite legs.
+  # It is NOT a defect under GNU coreutils — GNU tr/sed are byte-oriented and never abort on invalid
+  # multibyte input, so the mutated pipeline is behaviorally identical there and 7c stays green.
+  # `.github/workflows/gate.yml` runs the sweep on `ubuntu-latest` ONLY, so asserting a catch would
+  # fail the build forever on the one platform that cannot produce the failure (fable-rd5-r1).
+  # Recorded rather than omitted (§11): a STALE here means either the sweep gained a macOS leg or
+  # someone made the truncation reproducible under GNU — both worth knowing.
+  mutate 'star/undispatchable-reason-locale-pinned' 'scripts/multi-review-star.sh' replace \
+    'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
+    "  r=\"\$(printf '%s' \"\${1:-}\" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\"" \
+    "  r=\"\$(printf '%s' \"\${1:-}\" | tr '[:cntrl:]' ' ' | sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\""
+
+  # (d) the SED-NOT-TR strip, pinning test 7's `£5` assertion. Platform-INDEPENDENT, unlike (c):
+  # GNU `tr` is byte-oriented too, so `tr -d '·'` deletes the 0xC2 and 0xB7 bytes wherever they
+  # occur and `£` (0xC2 0xA3) loses its lead byte on Linux exactly as on macOS — the assertion dies
+  # on both. Only the strip mechanism is swapped, so the collapse, grammar and content assertions
+  # all still pass and the credit lands unambiguously (fable-rd5-r2; without this entry the `£`
+  # guard's failability rested on a single interactive check by the author).
+  mutate 'star/undispatchable-reason-multibyte-safe' 'scripts/multi-review-star.sh' replace \
+    'normalization corrupted a multibyte char' 'multi-review-star.test.sh' \
+    "  r=\"\$(printf '%s' \"\${1:-}\" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *\$//')\"" \
+    "  r=\"\$(printf '%s' \"\${1:-}\" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C tr -d '·' | LC_ALL=C sed 's/  */ /g; s/^ *//; s/ *\$//')\""
+
   # ---- convergence integrity ------------------------------------------------------------------
 
   # THE SELF-RESPONSE GUARD. This is what makes the review a review rather than a self-review: it
