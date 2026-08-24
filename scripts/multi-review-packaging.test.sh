@@ -58,6 +58,26 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- codex dispatch must request a REASONING EFFORT explicitly ---
+# codex defaults to `reasoning effort: none` for `gpt-5.6-terra`. Observed live: 32-second review
+# turns in which the model never opened the document it was pointed at — it read the skill, the
+# protocol contract and repo source, then reported `[no-findings]`. Three consecutive worthless
+# clean verdicts came from that pairing, and a clean verdict from a turn that read nothing is
+# indistinguishable at the gate from a real one. `--effort` is a runtime control the rescue
+# wrapper parses out of the task text exactly like `--model`/`--write`/`--background`
+# (codex-companion.mjs `valueOptions`), so requesting it costs nothing but the flag.
+# Prose-level for the same reason as the guard above: the dispatch itself is prose.
+if [[ -f "$f" ]]; then
+  n="$(grep -n 'codex:codex-rescue' "$f" | head -1 | cut -d: -f1)"
+  if [[ -z "$n" ]]; then
+    bad "no codex:codex-rescue dispatch instruction in $(basename "$f")"
+  elif sed -n "${n},$((n+2))p" "$f" | grep -q -- '--effort high'; then
+    ok "codex dispatch requests high reasoning effort"
+  else
+    bad "codex dispatch lacks --effort high — codex defaults to effort none, and a 32s turn reviews the protocol instead of the document"
+  fi
+fi
+
 # --- scripts self-locate from a FOREIGN cwd (spec §2 regression guard for the plugin move) ---
 # multi-review-pr.sh's publish resolves its sibling multi-review-star.sh via
 # "$(dirname "$0")", not the caller's cwd — this is the live self-locating call now that

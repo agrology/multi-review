@@ -498,6 +498,11 @@ emit_prompt() { # <abs-doc-path> <has-skill> <dispatch-kind>
 Review EXACTLY this document — its canonical absolute path:
   ${abs}
 
+READ THAT DOCUMENT IN FULL, FIRST — end to end, before you open any repo file and before any
+other exploration. Reading *about* the review — the protocol, this prompt, repo source — is not
+reading the document under review, and a turn that never opened it cannot raise a finding: the
+\`[no-findings]\` it reports is indistinguishable at the gate from a real clean review.
+
 Do ONE reviewer turn, following ${authority}.
 You are a secondary: read the document, then append your findings under its \`## Review\`
 heading as:
