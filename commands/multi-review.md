@@ -437,9 +437,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      - **`fable`** → agent `general-purpose`, with the Agent tool's own `model` parameter set to
        `fable`.
      - **`codex`** → agent `codex:codex-rescue`, with the Agent tool's `model` parameter **left
-       unset**, and `--model <model> --write --background` appended to the END of the task text.
-       The rescue wrapper parses those three out of the text as runtime controls; they are not
-       instructions to the reviewer.
+       unset**, and `--model <model> --effort high --write --background` appended to the END of
+       the task text. The rescue wrapper parses those four out of the text as runtime controls;
+       they are not instructions to the reviewer.
+
+     **`--effort high` is not optional either.** codex defaults to `reasoning effort: none` for
+     `gpt-5.6-terra`, and at that effort the turn does not read the document it was pointed at:
+     observed across four dispatches, three referenced the review doc in zero commands and the
+     fourth ran only `wc -l` on it, each burning a 32-second turn on the skill, the protocol and
+     repo source before reporting `[no-findings]`. Three consecutive worthless clean verdicts came
+     from that, and a clean verdict from a turn that read nothing looks exactly like a real one at
+     the gate. The prompt now demands the read (`READ THAT DOCUMENT IN FULL, FIRST`); the effort
+     is what buys the turn enough room to obey it.
 
      **Do not put the resolved `model` in the Agent tool's `model` parameter for codex.** That
      parameter takes a fixed set of harness aliases (`sonnet`/`opus`/`haiku`/`fable`), so a codex

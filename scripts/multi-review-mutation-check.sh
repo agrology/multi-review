@@ -370,6 +370,15 @@ mutations() {
     '              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1' \
     '              ( "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1'
 
+  # The codex arm's reasoning effort. Dropped, the wrapper forwards no `--effort` and codex runs at
+  # its `reasoning effort: none` default for `gpt-5.6-terra` — 32-second turns that never open the
+  # document and still return a well-formed `[no-findings]`. The prompt-level demand
+  # (`reviewer/prompt-read-doc-in-full`) is the other half; neither one alone was enough.
+  mutate 'command/codex-dispatch-effort' 'commands/multi-review.md' replace \
+    'lacks --effort high' 'multi-review-packaging.test.sh' \
+    '       unset**, and `--model <model> --effort high --write --background` appended to the END of' \
+    '       unset**, and `--model <model> --write --background` appended to the END of'
+
   # G3. The same dispatch line must also CAPTURE the process. Without the redirect a gemini that
   # died on launch leaves a copy byte-identical to its seed — indistinguishable from one still
   # thinking — and the round reports the symptom (`no turn taken`) after spending the full retry
@@ -1046,6 +1055,16 @@ mutations() {
     'never mentions repo memory files' 'multi-review-packaging.test.sh' \
     'Ignore repository memory files for this turn — \`CLAUDE.md\`, \`AGENTS.md\`, \`GEMINI.md\` and the' \
     'Ignore unrelated repository documentation for this turn. Additionally, the'
+
+  # The document itself is the one instruction the prompt cannot afford to leave implied. Softened
+  # back to a plain "read the document" — which is what the prompt said before this guard — codex
+  # spends the turn on the protocol, its skill and repo source and then reports `[no-findings]`:
+  # a clean verdict from a turn that reviewed nothing, indistinguishable at the human gate from a
+  # real one. Observed across four dispatches; three referenced the doc in zero commands.
+  mutate 'reviewer/prompt-read-doc-in-full' 'scripts/multi-review-reviewer.sh' replace \
+    'never demands the document be read' 'multi-review-reviewer.test.sh' \
+    'READ THAT DOCUMENT IN FULL, FIRST — end to end, before you open any repo file and before any' \
+    'Read the document, end to end, before you open any repo file and before any'
   # ---- the wait bound's quarantine inputs (#71, #47) ------------------------------------------
   # wait.sh had NO entries before this group. Its exit code is the sole input to the quarantine
   # decision, so a guard lost here does not fail loudly — it silently discards reviewer turns.

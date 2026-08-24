@@ -167,6 +167,26 @@ for p in codex fable gemini; do
     || bad "prompt($p) missing the absolute doc path"
 done
 
+# --- prompt: the DOCUMENT must be read, in full, BEFORE anything else ---
+#
+# Diagnosed live across four codex dispatches: three referenced the review doc in ZERO commands
+# and the fourth ran only `wc -l` on it. Each turn was spent on the skill, the protocol contract
+# and repo SOURCE, and then reported "no issue tied to a changed hunk" — three consecutive
+# `[no-findings]` verdicts, byte-identical at the gate to a real clean review, from turns that had
+# reviewed nothing. Carrying the path is evidently not instructing the read: every one of those
+# prompts already carried it, and the assertion above only proves the path is present.
+#
+# The skill-bearing head block actively works against it — the first thing it says is "use your
+# multi-review skill (it reads docs/multi-review.md)", which reads as an invitation to go read
+# everything except the document under review. So the demand is stated for every provider, in the
+# prompt body, next to the path it applies to.
+for p in codex fable gemini; do
+  out="$(bash "$SUT" prompt "$D" --reviewer "$p" 2>/dev/null)"
+  grep -qF 'READ THAT DOCUMENT IN FULL, FIRST' <<<"$out" \
+    && ok "prompt($p) demands the document itself be read in full, first" \
+    || bad "prompt($p) never demands the document be read — a turn that opened only the protocol can still report [no-findings]"
+done
+
 # --- prompt: skill-bearing provider points at the skill; skill-less ones do NOT ---
 out="$(bash "$SUT" prompt "$D" --reviewer codex 2>/dev/null)"
 grep -qi 'multi-review skill' <<<"$out" && ok "codex prompt references its skill" || bad "codex skill reference missing"

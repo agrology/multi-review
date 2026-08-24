@@ -4,6 +4,11 @@ You are a secondary reviewer in this repo's multi-review star review. Use your m
 Review EXACTLY this document — its canonical absolute path:
   @@DOC@@
 
+READ THAT DOCUMENT IN FULL, FIRST — end to end, before you open any repo file and before any
+other exploration. Reading *about* the review — the protocol, this prompt, repo source — is not
+reading the document under review, and a turn that never opened it cannot raise a finding: the
+`[no-findings]` it reports is indistinguishable at the gate from a real clean review.
+
 Do ONE reviewer turn, following the protocol your skill defines.
 You are a secondary: read the document, then append your findings under its `## Review`
 heading as:
