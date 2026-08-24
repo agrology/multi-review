@@ -141,6 +141,15 @@ jobs:
     # seconds, not the 25-minute sweep — the full sweep stays ubuntu-only by design (see `mutation`).
     name: mutation coverage (macos locale pin)
     runs-on: macos-latest
+    # PIN THE LOCALE THIS JOB'S EXPECTATION DEPENDS ON. The `caught` arm works because BSD tr/sed
+    # abort on an invalid UTF-8 byte *under a UTF-8 locale*; under C/POSIX the same un-pinned
+    # pipeline passes the byte through, the mutation is behaviourally inert, the named assertion
+    # stays green, and the entry reports SURVIVED — a red job caused by the runner's environment
+    # rather than by the code. It passed until now only because macos-latest happens to default to
+    # UTF-8, which is a property of the image, not a guarantee of this workflow (fable-rd1-r1, #91).
+    env:
+      LC_ALL: en_US.UTF-8
+      LANG: en_US.UTF-8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install jq if absent

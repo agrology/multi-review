@@ -853,4 +853,35 @@ else
     || bad "command: roster is still the resolved set only"
 fi
 
+# --- the macOS locale-pin job must PIN the locale it depends on ---
+# `star/undispatchable-reason-locale-pinned` expects `caught` on Darwin because BSD tr/sed abort on
+# an invalid UTF-8 byte UNDER A UTF-8 LOCALE. That precondition is the runner's ambient locale, and
+# nothing pinned it: under a C/POSIX environment the un-pinned pipeline passes the byte through
+# intact, the mutation is behaviourally inert, the named assertion stays green, and the entry
+# reports SURVIVED — the job fails for a reason that has nothing to do with the code.
+# It passed only because macos-latest happens to default to UTF-8 (fable-rd1-r1 on PR #91).
+W="${ROOT}/.github/workflows/gate.yml"
+if [[ ! -f "$W" ]]; then
+  bad "gate.yml missing"
+else
+  n="$(grep -n 'mutation-macos-locale:' "$W" | head -1 | cut -d: -f1)"
+  if [[ -z "$n" ]]; then
+    bad "gate.yml: the mutation-macos-locale job is gone — the Darwin arm has no CI proof again"
+  else
+    ne="$(awk -v s="$n" 'NR>s && /^  [a-z]/ {print NR; exit}' "$W")"
+    [[ -n "$ne" ]] || ne="$(( $(wc -l < "$W") + 1 ))"
+    blk="$(sed -n "${n},$((ne-1))p" "$W")"
+    grep -qE 'LC_ALL:|LANG:' <<<"$blk" \
+      && ok "gate.yml: the macos locale-pin job pins its locale" \
+      || bad "gate.yml: the macos locale-pin job pins no LC_ALL/LANG — its 'caught' expectation rides on the runner's ambient locale, and goes SURVIVED under C/POSIX"
+    # STRIP COMMENTS FIRST. The job's own comment explains the UTF-8 precondition, so a bare
+    # grep for UTF-8 over the block matches the prose and passes with no pin present at all —
+    # verified: it reported ok while the job pinned nothing.
+    pin="$(grep -vE '^[[:space:]]*#' <<<"$blk" | grep -E 'LC_ALL:|LANG:')"
+    grep -qE 'UTF-8' <<<"$pin" \
+      && ok "gate.yml: the pinned locale is a UTF-8 one" \
+      || bad "gate.yml: the job pins a locale that is not UTF-8 — the mutation is inert without it"
+  fi
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

@@ -365,6 +365,16 @@ mutations() {
 
   # The DISPATCH cwd. Without the pin, gemini-cli's workspace is whatever directory the Bash call
   # inherits — so the check can be correct and the dispatch still land somewhere else.
+  # The macOS locale-pin job's own locale. Removed, the job's `caught` expectation rides on the
+  # runner's ambient locale: demonstrated with the real pipeline on an invalid byte — under UTF-8
+  # BSD tr aborts ("Illegal byte sequence") and the reason truncates, under C the byte passes
+  # through intact and the mutation is behaviourally inert, so the entry reports SURVIVED and the
+  # job goes red for an environment reason (fable-rd1-r1, #91).
+  mutate 'ci/macos-locale-job-pinned' '.github/workflows/gate.yml' replace \
+    'pins no LC_ALL/LANG' 'multi-review-packaging.test.sh' \
+    '      LC_ALL: en_US.UTF-8' \
+    '      MULTI_REVIEW_UNUSED: 1'
+
   mutate 'command/gemini-dispatch-cwd-pinned' 'commands/multi-review.md' replace \
     'shell dispatch sets no cwd' 'multi-review-packaging.test.sh' \
     '              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1' \
