@@ -732,4 +732,105 @@ if [[ -f "$DR" ]]; then
   fi
 fi
 
+# --- loud undispatchable reviewer: the command must bind resolve-set's new contract ------------
+CMD="${ROOT}/commands/multi-review.md"
+
+grep -q -- '`--allow-missing`' "$CMD" \
+  && ok "command: --allow-missing is documented" || bad "command: --allow-missing absent"
+
+# §1 must EXTRACT it, or `/multi-review <doc> --allow-missing` folds the flag into the doc path
+n="$(grep -n 'Extract `--reviewers`' "$CMD" | head -1 | cut -d: -f1)"
+[[ -n "$n" ]] && sed -n "${n}p" "$CMD" | grep -q -- '--allow-missing' \
+  && ok "command: §1 extracts --allow-missing alongside --reviewers" \
+  || bad "command: §1 does not extract --allow-missing (line $n)"
+
+# The resume rebuild must pass --resume, or a review goes unresumable on exit 4.
+#
+# ANCHOR ON THE PART STEP 4 DOES NOT TOUCH. The obvious anchor — the whole pre-edit call string
+# `resolve-set --fable-floor --reviewers <ids,comma,joined>` — is exactly what Step 4 rewrites, by
+# inserting `--resume` between `--fable-floor` and `--reviewers`. So the grep matches BEFORE the
+# implementation and never again: `n` comes back empty and the guard reports
+# `resume rebuild lacks --resume (line )` — with the empty line number — permanently red at GREEN.
+# Reproduced by applying Step 4's substitution to a copy of the command file and re-running the
+# grep (gemini-rd2-test-anchor-mismatch, fable-rd2-r1). `<ids,comma,joined>` is the stable part.
+n="$(grep -n '<ids,comma,joined>' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: resume-rebuild anchor '<ids,comma,joined>' not found — the guard's anchor is gone"
+else
+  sed -n "${n}p" "$CMD" | grep -q -- 'resolve-set' \
+    && sed -n "${n}p" "$CMD" | grep -q -- '--resume' \
+    && ok "command: the resume rebuild passes --resume" \
+    || bad "command: resume rebuild lacks --resume (line $n): $(sed -n "${n}p" "$CMD")"
+fi
+
+# The resume branch is the one path a dropped reviewer PROCEEDS by design (`--resume` proceeds
+# where a fresh ask would refuse), which makes it the one path where silently skipping the
+# quarantine-binding rule is most damaging. Step 2's bullet list carries that rule, and the resume
+# branch bypasses step 2 entirely ("Go to §3") — so the rebuild's OWN block must repeat it.
+#
+# ANCHORED TO THE RESUME-REBUILD LINE'S IMMEDIATE BLOCK, NOT A FILE-WIDE GREP. A file-wide
+# `grep -q 'UNDISPATCHABLE' "$CMD"` already passes today — the string appears elsewhere in the doc
+# (step 2's own bullet) — so it would stay green even with this branch's block silent on the rule.
+n="$(grep -n '<ids,comma,joined>' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: resume-rebuild anchor '<ids,comma,joined>' not found — the guard's anchor is gone"
+else
+  sed -n "${n},$((n+3))p" "$CMD" | grep -q 'UNDISPATCHABLE' \
+    && ok "command: the resume-rebuild block captures UNDISPATCHABLE lines" \
+    || bad "command: resume-rebuild block never mentions UNDISPATCHABLE — the quarantine-binding rule routes past this path"
+fi
+
+# EXTRACTING the flag is not FORWARDING it. §2's fresh-request call is the only place --allow-missing
+# reaches resolve-set, and resolve-set is the only thing that acts on it — so without this the
+# engineer types the documented opt-out, §1 dutifully parses it off the positional, and the run
+# still exits 4 with the flag sitting in a variable nobody passes on (codex-rd1-r1).
+n="$(grep -n 'resolve-set --fable-floor --pref-file' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: §2 invocation anchor not found — the guard's window is gone"
+else
+  # END THE WINDOW BEFORE THE EXIT-CODE BULLETS. Step 6 writes "Re-run with \`--allow-missing\`"
+  # into §2's Exit-4 bullet, and those bullets live inside the SAME numbered step as the invocation
+  # — verified against the real file: anchor at line 128, next numbered step at 156, `- **Exit N**`
+  # bullets in between. A window reaching them is satisfied by Step 6's prose alone, so the guard
+  # would pass with Step 5's forwarding edit reverted: a later step feeding an earlier guard the
+  # string it greps for, which is precisely the class round 2 caught (fable-rd3-r2).
+  ne="$(awk -v s="$n" 'NR>s && (/^ *- \*\*Exit/ || /^[0-9]+\. / || /^#### / || /^### / || /^## /) {print NR; exit}' "$CMD")"
+  # No terminator at all -> bound at EOF rather than routing to `bad`, so a structural collapse
+  # never reads as a prose failure (gemini-rd3-r1; same rule as the roster guard below).
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  grep -q -- '--allow-missing' <<<"$(sed -n "${n},$((ne-1))p" "$CMD")" \
+    && ok "command: §2 forwards --allow-missing to resolve-set" \
+    || bad "command: --allow-missing is extracted but never forwarded (window ${n}..$((ne-1)))"
+fi
+
+grep -q 'Exit 4' "$CMD" && ok "command: exit 4 is routed" || bad "command: exit 4 unrouted"
+grep -q 'UNDISPATCHABLE' "$CMD" \
+  && ok "command: the UNDISPATCHABLE binding is documented" || bad "command: no UNDISPATCHABLE binding"
+
+# the roster must be asked-for ∪ floor, not the resolved set — a resolved-only roster drops a
+# quarantined provider out of `admitted` accounting AND drops a clean floored fable out of it too
+#
+# Window bounds must be checked, not assumed. If the anchor moves, `n` comes back empty and
+# `awk -v s=""` compares against a string; if no following heading exists, `ne` is empty and
+# `$((ne-1))` is `-1`, so `sed -n "n,-1p"` errors out and the guard reports `bad` for a structural
+# reason rather than the prose it checks (fable-rd1-r8). Bound to EOF when no heading follows, and
+# fail loudly when the anchor itself is gone — a guard whose window collapsed must not read as a
+# prose failure.
+# ANCHOR ON 'multi-review-mode: star', NOT 'reviewers: <ids>'. The latter also matches §2 step 1's
+# unrelated "Read the `reviewers: <ids>` suffix off that header line" (pre-existing, outside this
+# task's edits) — earlier in the file, so `head -1` locks onto it and the window closes at the next
+# `- **` bullet inside §2, long before reaching §3's roster line. That anchor is permanently
+# unsatisfiable no matter what §3 says: the window it opens never contains the roster prose.
+n="$(grep -n 'multi-review-mode: star' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: roster anchor 'multi-review-mode: star' not found — the guard's window is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^ *- \*\*|^#### |^### / {print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"   # no following heading -> bound at EOF
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -q 'UNDISPATCHABLE' <<<"$blk" \
+    && ok "command: the roster includes ids dropped as UNDISPATCHABLE" \
+    || bad "command: roster is still the resolved set only"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

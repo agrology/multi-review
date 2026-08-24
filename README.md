@@ -73,12 +73,16 @@ unless a named test catches it — because a green suite is not by itself eviden
 /multi-review docs/specs/2026-01-01-my-design.md        # local doc, fable only
 /multi-review docs/specs/2026-01-01-my-design.md --reviewers codex   # + codex (cross-vendor)
 /multi-review https://github.com/owner/repo/pull/42 --reviewers codex,gemini
+/multi-review docs/specs/2026-01-01-my-design.md --reviewers gemini --allow-missing   # proceed even if gemini can't run here
 ```
 
 - **You don't have to type the path.** Just say "multi-review the spec / the plan / this PR" —
   it resolves to the doc in context, or the newest dated doc under `MULTI_REVIEW_DOC_DIRS`.
 - **Name reviewers in plain language.** "multi-review the spec with codex and gemini" is
   equivalent to `--reviewers codex,gemini`.
+- **A reviewer named with `--reviewers` that isn't dispatchable here refuses the run** (exit 4,
+  no round armed) rather than silently proceeding without it. Add `--allow-missing` to proceed
+  anyway.
 - **The combo is remembered per repo.** The last explicitly-named set is saved to
   `.multi-review/reviewers.pref`; a later bare run reuses it (self-healing — a reviewer that
   isn't set up is dropped for that run with a notice, not an error). Say "forget the reviewers"
@@ -153,7 +157,7 @@ Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a 
 
 | env | default | meaning |
 |---|---|---|
-| `MULTI_REVIEW_REVIEWERS` | *(empty)* | comma set of extra secondaries, e.g. `codex,gemini` (per-run: `--reviewers`) |
+| `MULTI_REVIEW_REVIEWERS` | *(empty)* | comma set of extra secondaries, e.g. `codex,gemini` (per-run: `--reviewers`). A reviewer named here that is not dispatchable **refuses the run** (exit 4) rather than being dropped; re-run with `--allow-missing` to proceed without it. |
 | `MULTI_REVIEW_FABLE` | `on` | `off`/`0`/`false` drops the default in-harness `fable` secondary, so a run spends no Claude tokens on review. Naming `fable` explicitly (`--reviewers fable`) still includes it. With no other secondary available the run **refuses to arm** rather than self-reviewing. An unrecognised value is a hard error. |
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.6-terra`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |

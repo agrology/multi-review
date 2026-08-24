@@ -19,10 +19,15 @@ checklist to the engineer, and STOP — do not resolve a doc or arm anything (a 
 standalone revoke). Use it to answer "why isn't `<reviewer>` working" before a real run.
 
 **Split first.** `$ARGUMENTS` may carry `--reviewers <csv>` (a comma-separated provider set,
-e.g. `codex,gemini`) in addition to the doc path or PR ref, in any order. Extract `--reviewers`
-(consumed in §2). Everything else is `<positional>` (empty if flags-only, or absent).
-Classification and doc resolution below use `<positional>` only — never the raw `$ARGUMENTS` —
-so a trailing flag can never corrupt PR-ref matching or a doc path.
+e.g. `codex,gemini`) in addition to the doc path or PR ref, in any order.
+Extract `--reviewers` and `--allow-missing` (consumed in §2). Everything else is `<positional>`
+(empty if flags-only, or absent). Classification and doc resolution below use `<positional>` only
+— never the raw `$ARGUMENTS` — so a trailing flag can never corrupt PR-ref matching or a doc path.
+
+`--allow-missing` is **flag-only — never inferred from prose.** It *tolerates* a reviewer that
+cannot run; it never *subtracts* one that can. "Without gemini" said of a healthy gemini would
+still dispatch it, inverting the request, and exclusion phrasing already belongs to the one-off
+override lane below.
 
 ### Reviewers named in prose (natural language)
 
@@ -120,14 +125,23 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh mode "<doc>"`.
    - Prints `star` (exit 0) → `<doc>` is **already** a star review in flight. Read the
      `reviewers: <ids>` suffix off that header line and feed it back into
-     `multi-review-star.sh resolve-set --fable-floor --reviewers <ids,comma,joined>` to rebuild
-     the `id|vendor|kind|model|has-skill` rows. Go to §3.
+     `multi-review-star.sh resolve-set --fable-floor --resume --reviewers <ids,comma,joined>` to rebuild
+     the `id|vendor|kind|model|has-skill` rows. Capture every `multi-review-star: UNDISPATCHABLE
+     <id>: <reason>` line this rebuild prints and carry it into every round's `merge` as
+     `--quarantined <id>:<reason>`, exactly as step 2's bullet below requires. Go to §3.
+
+     `--resume` is required. Without it these header-derived ids look like a fresh ask, so a
+     provider that became undispatchable between sessions exits 4 and the review becomes
+     permanently unresumable — with a message blaming the engineer for ids they never typed.
    - Exits 1 (no star hint yet — a fresh local doc, or a just-ingested PR scratch) → fall
      through to step 2.
 2. **Fresh-request check:** run
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-set --fable-floor --pref-file
    .multi-review/reviewers.pref`, appending `--reviewers <csv>` when §1 extracted a set (flag or
-   prose). Precedence is flag/prose → `MULTI_REVIEW_REVIEWERS` → the pref → the fable floor
+   prose), **and appending `--allow-missing` when §1 extracted that flag.** Without forwarding it
+   the documented opt-out does nothing: §1 parses it off the positional, nobody passes it on, and
+   the run still exits 4 — the engineer's escape hatch silently absent (codex-rd1-r1). Precedence
+   is flag/prose → `MULTI_REVIEW_REVIEWERS` → the pref → the fable floor
    (suppressed when `MULTI_REVIEW_FABLE=off`, in which case an otherwise-empty set is a refusal,
    not a fallback); the pref is consulted **only** when neither a named set nor the env supplied
    one.
@@ -144,6 +158,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      providers that are unusable and any that are ready but simply were not selected. **Relay it
      and STOP — arm nothing.** A star review with no independent secondary is not a cheaper
      review; do not proceed as a primary-only self-review.
+   - **Exit 4** → at least one reviewer named for THIS run is not dispatchable. The message names
+     every one of them and each concrete reason. **Relay it verbatim and STOP — arm nothing.**
+     Re-run with `--allow-missing` only if the engineer asks to proceed without them.
+   - **Capture every `multi-review-star: UNDISPATCHABLE <id>: <reason>` line**, from any exit code.
+     Each one becomes `--quarantined <id>:<reason>` at **every** round's `merge` — not just the
+     round that armed. Nothing else records these reviewers, and a resumed session re-derives them
+     from a fresh `resolve-set` run rather than from memory it does not have.
    - **Exit 2 naming `MULTI_REVIEW_FABLE`** → the operator's env value is not a recognised
      on/off spelling. Relay it and STOP.
    - **Capture `resolve-set`'s stderr.** When it prints a `pref reviewer '<id>' … dropping` line
@@ -192,9 +213,15 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
         <!-- multi-review-mode: star · reviewers: <ids> -->
 
     `<MAX>` is `${MULTI_REVIEW_MAX_ROUNDS:-5}` — a **cost ceiling, not a target** (each round
-    fans out to N secondaries). `<ids>` is the resolved set's ids from §2, **space**-joined in
-    resolved order (e.g. `codex fable`). This one insertion covers local and PR docs alike —
-    `pr.sh` ingest deliberately writes no mode hint, so there is never a duplicate.
+    fans out to N secondaries). `<ids>` is the resolved set's ids **union every id dropped with an
+    `UNDISPATCHABLE` line**, space-joined in resolved order (e.g. `codex fable`). The roster is
+    what was ASKED FOR, not what resolved: `gate-summary` computes `admitted = raisers ∪ (roster −
+    quarantined)`, so a dropped provider must be in the roster to be subtracted by its quarantine
+    record. Omit it and the provider is silently absent instead of visibly quarantined. The
+    implicit `fable` floor is in the roster too — a reviewer that raises nothing and is never
+    quarantined is counted ONLY by the roster term, so leaving it out re-opens issue #59's
+    clean-reviewer undercount. This one insertion covers local and PR docs alike — `pr.sh` ingest
+    deliberately writes no mode hint, so there is never a duplicate.
   - **If `<doc>` has no `## Review` heading yet** (a fresh local spec/plan doc; PR scratch files
     already have one), append one now, with nothing under it — `merge` appends findings after the
     LAST `## Review` heading, so a doc with none would silently lose every merged finding.

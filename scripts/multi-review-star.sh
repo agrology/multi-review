@@ -210,17 +210,68 @@ _no_secondaries_notice() {
   echo "  MULTI_REVIEW_FABLE=on     re-enable fable (spends Claude tokens)" >&2
 }
 
-# resolve-set [--fable-floor] [--reviewers csv] [--pref-file path]
+# The one machine-readable drop line, in the grammar `commands/multi-review.md` binds to
+# `--quarantined <id>:<reason>` — mirroring the shell dispatch branch's `DISPATCH-FAILED <id>`.
+#
+# NORMALIZATION IS LOAD-BEARING, not cosmetic. `merge` validates a quarantine reason and DIES on
+# anything it cannot store as one field of a one-line record: the whole `[:cntrl:]` class (not just
+# newline and tab — CR and ESC reach here from a CLI writing to a pipe), the `·` field separator,
+# and an empty reason. `check` stderr is routinely multi-line — gemini emits three hint lines today
+# — so an unnormalized reason would abort the very merge this line exists to reach.
+#
+# It is a SEPARATE function because there are two consumers, and the second one is easy to miss:
+# the emitter below, and the `refuse` accumulator in the refusal path. `refuse` is a newline-
+# delimited, tab-separated record list, so a raw multi-line reason stored there does not merely
+# look untidy — its embedded newlines ARE record separators, and the reader in Step 8 parses each
+# continuation line as a new `<id>\t<reason>` pair. The refusal then names reviewers that do not
+# exist and drops the real reasons (codex-rd1-r2, gemini-rd1-r1). Normalize at every boundary that
+# stores or prints a reason; never store what `check` handed you.
+# `·` is stripped with sed, NOT `tr -d`. `tr` operates on BYTES, and `·` is two bytes (0xC2 0xB7),
+# so `tr -d '·'` deletes those bytes wherever they appear — including as parts of OTHER characters.
+# Verified: `printf 'cost is £5' | tr -d '·'` strips the 0xC2 from `£` and leaves a lone 0xA3, an
+# invalid UTF-8 sequence in the recorded reason. Any provider stderr carrying non-ASCII text hits
+# this (fable-rd3-r3). Substituting a space also keeps words apart rather than fusing them.
+# `LC_ALL=C` IS NOT COSMETIC EITHER. Under a UTF-8 locale — `LANG=en_US.UTF-8`, what this repo's
+# machine and CI actually run — BSD `tr` and `sed` treat an invalid UTF-8 byte in the input as a
+# fatal error: they print `tr: Illegal byte sequence` and STOP, so everything after the first bad
+# byte is silently dropped. Provider stderr is arbitrary bytes, so this is reachable. Reproduced:
+# the pipeline on `gemini failed: cost \243 5 exceeded\nhint: raise the cap` returns just
+# `gemini failed: cost` — the visibility record loses its tail, which is the one thing this whole
+# feature exists to produce (fable-rd4-r1). Under `LC_ALL=C` the same input returns the full
+# collapsed line, `·` still strips (sed matches the 0xC2 0xB7 byte pair), and `£` still survives.
+_norm_reason() { # <raw-reason> -> one clean line on stdout, never empty
+  local r
+  r="$(printf '%s' "${1:-}" | LC_ALL=C tr '[:cntrl:]' ' ' | LC_ALL=C sed 's/·/ /g; s/  */ /g; s/^ *//; s/ *$//')"
+  printf '%s' "${r:-unavailable}"
+}
+
+_undispatchable() { # <id> <raw-reason>
+  echo "multi-review-star: UNDISPATCHABLE ${1}: $(_norm_reason "${2:-}")" >&2
+}
+
+# resolve-set [--fable-floor] [--reviewers csv] [--pref-file path] [--allow-missing] [--resume]
 # Source precedence: --reviewers(non-empty) > MULTI_REVIEW_REVIEWERS(non-empty) > pref-file(non-empty).
-# Pref source ONLY: strip literal fable, drop unknown/unavailable ids with a notice (degrade, never
-# hard-fail, never rewrite the pref). Flag/env: unknown id is a hard exit-2 usage error.
+#
+# TWO ORTHOGONAL RULES (the round-1 design fused them and reintroduced the defect it was closing):
+#   VISIBILITY is unconditional — every dropped reviewer, every source, every reason, emits
+#     `UNDISPATCHABLE <id>: <reason>`. No source is exempt and no flag suppresses it.
+#   REFUSAL is conditional — only a FRESH ASK (flag/prose or env) refuses, with exit 4.
+#     `pref` is a remembered convenience and `resume` is an in-flight roster: both proceed.
 cmd_resolve_set() {
   local fable_floor=0 csv="" pref_file="" src="" raw="" seen="" id row out=""
+  local allow_missing=0 resume=0 refuse="" why=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --fable-floor) fable_floor=1; shift ;;
       --reviewers)   [[ $# -ge 2 ]] || die "--reviewers requires a value" 2; csv="$2"; shift 2 ;;
       --pref-file)   [[ $# -ge 2 ]] || die "--pref-file requires a value" 2; pref_file="$2"; shift 2 ;;
+      # Downgrades a REFUSAL to a proceed. It does not touch visibility, because nothing does.
+      --allow-missing) allow_missing=1; shift ;;
+      # The caller declares an in-flight roster. resolve-set cannot infer it — `--reviewers` looks
+      # identical whether the ids came from the engineer or from the doc header — and without it a
+      # provider that went missing between sessions would exit 4 on every resume, making the review
+      # permanently unresumable.
+      --resume)        resume=1; shift ;;
       # Reject unknown args (parity with remember-set) so a typo'd flag can't silently disable the
       # pref feature instead of surfacing (fable-rd2-r2).
       *) die "resolve-set: unexpected argument: $1" 2 ;;
@@ -233,7 +284,8 @@ cmd_resolve_set() {
   # Every source is comma-OR-space tolerant: `tr ',' ' '` on all three, so a csv env value
   # ("codex,gemini") splits the same as the flag and pref (fable-rd1-r1).
   if [[ -n "$csv" ]]; then
-    raw="$(printf '%s' "$csv" | tr ',' ' ')"; src="flag"
+    raw="$(printf '%s' "$csv" | tr ',' ' ')"
+    if (( resume )); then src="resume"; else src="flag"; fi
   elif [[ -n "${MULTI_REVIEW_REVIEWERS:-}" ]]; then
     raw="$(printf '%s' "${MULTI_REVIEW_REVIEWERS}" | tr ',' ' ')"; src="env"
   elif [[ -n "$pref_file" && -s "$pref_file" ]]; then
@@ -247,10 +299,16 @@ cmd_resolve_set() {
     [[ "$src" == "pref" && "$id" == "fable" ]] && continue
     case " $seen " in *" $id "*) continue ;; esac
     if ! row="$("$REVIEWER_SH" resolve --reviewer "$id" 2>/dev/null)"; then
-      if [[ "$src" == "pref" ]]; then
-        # Record the dropped id so a duplicate in the pref is skipped, not re-dropped (one notice).
+      # `resume` joins `pref` here: a roster naming a provider a later plugin version removed would
+      # otherwise be unresumable through this gate — the same hole the source row closes, one step
+      # earlier (fable-rd2-r5). Both are LOUD, because visibility never depends on the source: left
+      # quiet, the id stays in the roster, is never quarantined, and `roster − quarantined` counts a
+      # reviewer that never spoke (codex-rd3-r1, gemini-rd3-r1, fable-rd3-r4).
+      if [[ "$src" == "pref" || "$src" == "resume" ]]; then
         seen="$seen $id"
-        echo "multi-review-star: pref reviewer '$id' unknown — dropping" >&2; continue
+        echo "multi-review-star: ${src} reviewer '$id' unknown — dropping" >&2
+        _undispatchable "$id" "unknown reviewer id"
+        continue
       fi
       set +f; die "unknown reviewer provider in set: ${id}" 2
     fi
@@ -263,16 +321,35 @@ cmd_resolve_set() {
     # shape for codex and attributes it to the missing dispatch agent; the agent is one instance,
     # and this is the hole.
     #
-    # Dropping, not erroring, on every source. The alternative — refusing to arm because one named
-    # provider is unusable — costs the whole review to protect one reviewer, and a review with the
-    # remaining secondaries is worth more than no review. The notice names the source so a NAMED
-    # drop reads differently from a remembered one, and the command relays it at arm time.
-    if ! "$REVIEWER_SH" check --reviewer "$id" >/dev/null 2>&1; then
+    # Visibility first, unconditionally: whatever we decide to DO about this reviewer, the fact
+    # that it is not being dispatched is recorded the same way every time.
+    if ! why="$("$REVIEWER_SH" check --reviewer "$id" 2>&1 >/dev/null)"; then
       seen="$seen $id"
+      _undispatchable "$id" "$why"
       case "$src" in
-        pref) echo "multi-review-star: pref reviewer '$id' unavailable in this repo — dropping (pref unchanged)" >&2 ;;
-        env)  echo "multi-review-star: reviewer '$id' from MULTI_REVIEW_REVIEWERS is not dispatchable here — dropping; run '/multi-review --check-reviewers' for the reason" >&2 ;;
-        *)    echo "multi-review-star: reviewer '$id' was named for this run but is not dispatchable here — dropping; run '/multi-review --check-reviewers' for the reason" >&2 ;;
+        pref)   echo "multi-review-star: pref reviewer '$id' unavailable in this repo — dropping (pref unchanged)" >&2 ;;
+        resume) echo "multi-review-star: roster reviewer '$id' is not dispatchable here — dropping (the review stays resumable)" >&2 ;;
+        *)
+          # A FRESH ASK. Refusing costs one re-run; proceeding costs a review the engineer did not
+          # ask for and cannot see. Accumulate rather than dying here, so ONE message names every
+          # unusable reviewer instead of revealing them one re-run at a time (fable-rd1-r4).
+          if (( allow_missing )); then
+            echo "multi-review-star: reviewer '$id' is not dispatchable here — proceeding without it (--allow-missing)" >&2
+          else
+            # NORMALIZE BEFORE STORING. `refuse` is newline-delimited and tab-separated, so a raw
+            # multi-line `$why` would inject record boundaries and Step 8 would read each hint
+            # line as another reviewer (codex-rd1-r2, gemini-rd1-r1). gemini emits three hint lines
+            # today, so this is the common case, not the edge one.
+            # On its OWN line, not inlined into the assignment below: the assignment already
+            # carries `$'\t'` and `$'\n'`, and a mutation entry has to quote its target literally.
+            why="$(_norm_reason "$why")"
+            # $src carries the record's SOURCE ("flag" or "env" — the only two that reach here) so
+            # the refusal below can name it. Without this the message reads "named for this run"
+            # regardless of where the id actually came from — wrong when it was an exported
+            # MULTI_REVIEW_REVIEWERS the operator never typed and cannot reach from the text
+            # (ENGINEER DECISION).
+            refuse="${refuse}${id}"$'\t'"${src}"$'\t'"${why}"$'\n'
+          fi ;;
       esac
       continue
     fi
@@ -280,6 +357,26 @@ cmd_resolve_set() {
     out="${out}${row}"$'\n'
   done
   set +f
+  # After the loop, so the message is complete. The reason is printed inline: it is what `check`
+  # already told us, and sending the engineer to a second command for information this one had is
+  # what made the old notice easy to ignore.
+  if [[ -n "$refuse" ]]; then
+    {
+      echo "multi-review-star: reviewer(s) for this run are not dispatchable here:"
+      printf '%s' "$refuse" | while IFS="$(printf '\t')" read -r rid rsrc rwhy; do
+        [[ -n "$rid" ]] || continue
+        # src -> what the operator would type/set to reach this reviewer: "env" is the only
+        # non-flag fresh-ask source, so everything else (just "flag") names --reviewers.
+        case "$rsrc" in
+          env) rlabel="MULTI_REVIEW_REVIEWERS" ;;
+          *)   rlabel="--reviewers" ;;
+        esac
+        echo "  ${rid} (from ${rlabel}): ${rwhy}"
+      done
+      echo "Fix them, or re-run with --allow-missing to proceed without them."
+    } >&2
+    exit 4
+  fi
   # floor_on comes from MULTI_REVIEW_FABLE. The floor is the IMPLICIT union only — a fable named
   # by flag/env/prose was already resolved by the loop above and is untouched here.
   if (( fable_floor && floor_on )); then
