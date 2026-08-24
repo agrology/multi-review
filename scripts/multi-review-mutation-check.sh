@@ -365,6 +365,19 @@ mutations() {
 
   # The DISPATCH cwd. Without the pin, gemini-cli's workspace is whatever directory the Bash call
   # inherits — so the check can be correct and the dispatch still land somewhere else.
+  # `--resume` without a roster. Removed, the flag silently degrades to a fresh ask: `src` becomes
+  # "resume" only inside the `[[ -n "$csv" ]]` branch, so an empty value falls through to
+  # env -> pref -> floor and an undispatchable reviewer then refuses with exit 4 — the outcome
+  # `--resume` exists to prevent, reached from the command's own resume path on a suffix-less
+  # doc header (fable-rd1-r2, #91).
+  # `replace` with a false condition, never `delete`: deleting the `if` line orphans its `die` and
+  # `fi`, so `bash -n` rejects the mutated file and the runner aborts the entry for a syntax
+  # reason instead of proving the guard.
+  mutate 'star/resume-requires-roster' 'scripts/multi-review-star.sh' replace \
+    'silently degraded to a fresh ask' 'multi-review-star.test.sh' \
+    '  if (( resume )) && [[ -z "$csv" ]]; then' \
+    '  if false; then'
+
   # The macOS locale-pin job's own locale. Removed, the job's `caught` expectation rides on the
   # runner's ambient locale: demonstrated with the real pipeline on an invalid byte — under UTF-8
   # BSD tr aborts ("Illegal byte sequence") and the reason truncates, under C the byte passes
