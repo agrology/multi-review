@@ -2698,6 +2698,56 @@ out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers fable 2>&1)"; 
   && ok "resolve-set: --resume with a real roster still resolves" \
   || bad "resolve-set: --resume --reviewers fable broke (rc=$rc): '$out'"
 
+## --- gate-summary: cross-reference pass coverage (#90 Task 6) ---
+# "not applicable", "complete" and "incomplete" must not render alike: the whole point of the
+# pass is that an unchecked relation is visible rather than silent.
+D="$(mkstar xr-gate.md '> [crossref-coverage: 12/14 rows verdicted]')"
+out="$(bash "$SUT" gate-summary "$D" claude-opus-5 2>/dev/null)"
+grep -qF '12/14' <<<"$out" \
+  && ok "gate-summary: incomplete crossref coverage is reported with counts" \
+  || bad "gate-summary: crossref coverage absent from the gate"
+grep -qF -- '— INCOMPLETE' <<<"$out" \
+  && ok "gate-summary: incomplete crossref coverage is flagged INCOMPLETE" \
+  || bad "gate-summary: incomplete crossref coverage not flagged"
+
+XR_NA="$(mkstar xr-na.md '> [crossref-coverage: not applicable]')"
+out="$(bash "$SUT" gate-summary "$XR_NA" claude-opus-5 2>/dev/null)"
+grep -qF 'Cross-reference pass: not applicable' <<<"$out" \
+  && ok "gate-summary: not-applicable crossref coverage reported" \
+  || bad "gate-summary: not-applicable crossref coverage missing"
+
+XR_COMPLETE="$(mkstar xr-complete.md '> [crossref-coverage: 14/14 rows verdicted]')"
+out="$(bash "$SUT" gate-summary "$XR_COMPLETE" claude-opus-5 2>/dev/null)"
+grep -qF '14/14 rows verdicted' <<<"$out" && ! grep -qF 'INCOMPLETE' <<<"$out" \
+  && ok "gate-summary: complete crossref coverage reported without an INCOMPLETE flag" \
+  || bad "gate-summary: complete crossref coverage rendering wrong (got: $out)"
+
+# a doc with no crossref-coverage line recorded -> the line is absent (dormant/additive)
+out_noxr="$(bash "$SUT" gate-summary "$G" claude-opus-4-8 2>/dev/null)"
+printf '%s' "$out_noxr" | grep -q 'Cross-reference pass' \
+  && bad "gate-summary: crossref line leaked with no coverage recorded" \
+  || ok "gate-summary: crossref line absent when nothing was recorded (dormant)"
+
+## --- gate-summary: STAR_PASSES excluded from the secondary count (spec criterion 9 / #90) ---
+# A merged pass copy's findings get raiser "crossref" (its namespace prefix) the same way any
+# other copy's raiser is its provider prefix. A pass is not a secondary: it must not inflate the
+# admitted count or the independence check, but its OWN findings must still show up and still
+# count in the ratio — only the raiser identity used for the secondary math is excluded.
+PASSDOC="$(mkstar xr-passcount.md \
+  '> [finding:codex-rd1-r1|high] sql injection' '> — via gpt-5.5' '> — risk: rce' \
+  '> [agree:codex-rd1-r1]' '> — via claude-opus-4-8' \
+  '> [finding:gemini-rd1-r1|low] nit naming' '> — via gemini' '> — risk: minor' \
+  '> [agree:gemini-rd1-r1]' '> — via claude-opus-4-8' \
+  '> [finding:crossref-rd1-c1|med] shared file mismatch' '> — via gpt-5.5' '> — risk: rc' \
+  '> [agree:crossref-rd1-c1]' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" gate-summary "$PASSDOC" claude-opus-4-8 2>/dev/null)"
+echo "$out" | head -1 | grep -qE 'of 3 across 2 secondaries' \
+  && ok "gate-summary: a merged pass copy does not raise the secondary count" \
+  || bad "gate-summary: pass copy inflated the secondary count (got: $(echo "$out" | head -1))"
+echo "$out" | grep -q 'shared file mismatch' \
+  && ok "gate-summary: the pass's own finding is still present and counted" \
+  || bad "gate-summary: pass finding suppressed along with its raiser"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

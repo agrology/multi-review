@@ -185,6 +185,17 @@ _quarantines() { # <doc> -> provider<TAB>reason<TAB>round per record
     || true
 }
 
+# _crossref_coverage <doc> -> "not applicable" | "N/M rows verdicted", or empty if the
+# cross-reference pass never recorded a durable line for this doc. One line per round, written
+# by commands/multi-review.md step 8 alongside the round's quarantine records (#90); the gate
+# shows the LAST one, same "most recent round wins" read the rest of gate-summary uses.
+_crossref_coverage() { # <doc> -> "not applicable" | "N/M rows verdicted"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -oE '^> \[crossref-coverage: (not applicable|[0-9]+/[0-9]+ rows verdicted)\]' \
+    | sed -E 's/^> \[crossref-coverage: (.*)\]$/\1/' \
+    | tail -1
+}
+
 STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
 REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
@@ -1321,13 +1332,19 @@ cmd_gate_summary() {
   # chamber. Derived here, once, and used for BOTH the secondary count and the independence check
   # below, so there is one notion of "admitted" rather than two.
   #
-  #   admitted = finding-raisers ∪ (roster − quarantined)
+  #   admitted = (finding-raisers ∪ (roster − quarantined)) − STAR_PASSES
   #
   # The bracketing is load-bearing (codex-rd1-r1). Quarantine is ROUND-SCOPED — a later round does
   # not shrink the set (commands/multi-review.md:232) and _quarantines emits one record per
   # provider per round — so subtracting from the whole union would drop a provider whose round-1
   # findings are sitting in this very document. A provider that raised an admitted finding is
   # admitted by observation; only the roster term is filtered.
+  #
+  # The STAR_PASSES subtraction is separate and comes last (spec criterion 9): a pass (e.g.
+  # crossref) namespaces its findings through the SAME raiser mechanism a provider uses, so it
+  # would otherwise count as a secondary and skew the independence check. Its findings are NOT
+  # removed from $t — only its raiser identity is excluded from this admitted set, so the pass's
+  # findings still appear and still count in the ratio/agreed/dispute output below.
   #
   # The `|| die` is what makes _roster's refusal reach here. NOT the absence of a pipe: this
   # script sets `pipefail` (:23), so a pipeline propagates the first non-zero status and piping
@@ -1341,6 +1358,10 @@ cmd_gate_summary() {
   ga_rmq="$(LC_ALL=C comm -23 <(printf '%s\n' "$ga_roster" | grep -v '^$' || true) \
                               <(printf '%s\n' "$ga_quar"   | grep -v '^$' || true))"
   admitted="$(printf '%s\n%s\n' "$ga_raisers" "$ga_rmq" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u || true)"
+  local ga_pass
+  for ga_pass in $STAR_PASSES; do
+    admitted="$(printf '%s\n' "$admitted" | grep -vFx "$ga_pass" || true)"
+  done
   nsec="$(printf '%s\n' "$admitted" | grep -c . || true)"
 
   # ratio + disputes + agreed, from the table
@@ -1376,6 +1397,24 @@ cmd_gate_summary() {
   if [[ -n "$qlist" ]]; then
     echo "Quarantined secondaries (findings excluded):"
     printf '%s\n' "$qlist" | awk -F'\t' 'NF{ printf "  - %s · %s · round %s\n", $1, $2, $3 }'
+    echo
+  fi
+
+  # cross-reference pass coverage (#90), readability channel — the durable per-round line, via
+  # the shared parser. Three renderings so "not applicable", "complete" and "incomplete" cannot
+  # be confused: an unchecked relation must be visible at the gate, not silent. Dormant (no line
+  # printed) when the pass never recorded anything for this doc.
+  local xr; xr="$(_crossref_coverage "$doc")"
+  if [[ -n "$xr" ]]; then
+    if [[ "$xr" == "not applicable" ]]; then
+      echo "Cross-reference pass: not applicable (no sectioned structure)"
+    elif [[ "$xr" =~ ^([0-9]+)/([0-9]+)\ rows\ verdicted$ ]]; then
+      if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+        echo "Cross-reference pass: ${xr}"
+      else
+        echo "Cross-reference pass: ${xr} — INCOMPLETE"
+      fi
+    fi
     echo
   fi
 
