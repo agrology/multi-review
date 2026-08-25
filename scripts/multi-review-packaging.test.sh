@@ -871,13 +871,16 @@ else
     ne="$(awk -v s="$n" 'NR>s && /^  [a-z]/ {print NR; exit}' "$W")"
     [[ -n "$ne" ]] || ne="$(( $(wc -l < "$W") + 1 ))"
     blk="$(sed -n "${n},$((ne-1))p" "$W")"
-    grep -qE 'LC_ALL:|LANG:' <<<"$blk" \
-      && ok "gate.yml: the macos locale-pin job pins its locale" \
-      || bad "gate.yml: the macos locale-pin job pins no LC_ALL/LANG — its 'caught' expectation rides on the runner's ambient locale, and goes SURVIVED under C/POSIX"
+    # LC_ALL SPECIFICALLY, not "LC_ALL or LANG". The alternation made this guard unfalsifiable:
+    # with both pinned, deleting LC_ALL still matched LANG and the assertion stayed green — the
+    # mutation sweep reported `ci/macos-locale-job-pinned` SURVIVED, which is how it was found.
+    grep -qE '^[[:space:]]*LC_ALL:' <<<"$(grep -vE '^[[:space:]]*#' <<<"$blk")" \
+      && ok "gate.yml: the macos locale-pin job pins LC_ALL" \
+      || bad "gate.yml: the macos locale-pin job pins no LC_ALL — its 'caught' expectation rides on the runner's ambient locale, and goes SURVIVED under C/POSIX"
     # STRIP COMMENTS FIRST. The job's own comment explains the UTF-8 precondition, so a bare
     # grep for UTF-8 over the block matches the prose and passes with no pin present at all —
     # verified: it reported ok while the job pinned nothing.
-    pin="$(grep -vE '^[[:space:]]*#' <<<"$blk" | grep -E 'LC_ALL:|LANG:')"
+    pin="$(grep -vE '^[[:space:]]*#' <<<"$blk" | grep -E '^[[:space:]]*LC_ALL:')"
     grep -qE 'UTF-8' <<<"$pin" \
       && ok "gate.yml: the pinned locale is a UTF-8 one" \
       || bad "gate.yml: the job pins a locale that is not UTF-8 — the mutation is inert without it"

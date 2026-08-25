@@ -147,9 +147,11 @@ jobs:
     # stays green, and the entry reports SURVIVED — a red job caused by the runner's environment
     # rather than by the code. It passed until now only because macos-latest happens to default to
     # UTF-8, which is a property of the image, not a guarantee of this workflow (fable-rd1-r1, #91).
+    # LC_ALL only: it overrides LANG and every LC_*, so a second pin adds nothing — and pinning
+    # both made the guard below unfalsifiable, since it passed on either one (caught by the sweep:
+    # `ci/macos-locale-job-pinned` SURVIVED).
     env:
       LC_ALL: en_US.UTF-8
-      LANG: en_US.UTF-8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install jq if absent

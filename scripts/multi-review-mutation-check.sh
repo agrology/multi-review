@@ -395,7 +395,7 @@ mutations() {
   # through intact and the mutation is behaviourally inert, so the entry reports SURVIVED and the
   # job goes red for an environment reason (fable-rd1-r1, #91).
   mutate 'ci/macos-locale-job-pinned' '.github/workflows/gate.yml' replace \
-    'pins no LC_ALL/LANG' 'multi-review-packaging.test.sh' \
+    'pins no LC_ALL' 'multi-review-packaging.test.sh' \
     '      LC_ALL: en_US.UTF-8' \
     '      MULTI_REVIEW_UNUSED: 1'
 
