@@ -1008,6 +1008,26 @@ n="$(grep -n 'is not a secondary' "$CMD" | head -1 | cut -d: -f1)"
 [[ -n "$n" ]] && ok "command: the pass is excluded from the secondary count" \
   || bad "command: nothing says the crossref pass is not a secondary — it would inflate the roster and skew the independence warning"
 
+# --- final review, B4: commands/multi-review.md must say the crossref pass runs ROUND 1 ONLY,
+# matching docs/multi-review.md ("dispatched alongside the secondaries in round 1") and spec §7
+# ("This also means the pass costs one dispatch per review, not one per round"). Two shipped files
+# disagreed on this in the same branch — nothing checked it. Windowed to step 2's crossref
+# paragraph, the same style as the other step-scoped guards above.
+n="$(grep -nF 'Derive the crossref worklist here too' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 2's crossref-worklist derivation is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^3\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qiE 'round 1 only' <<<"$blk" \
+    && ok "command: step 2 states the crossref pass is round 1 only" \
+    || bad "command: step 2 never says the crossref pass is round 1 only (spec §7: one dispatch per review, not one per round)"
+  grep -qiF 'every round' <<<"$blk" \
+    && bad "command: step 2 still says the crossref worklist is derived every round — contradicts docs/multi-review.md and spec §7 (R13: round 1 only)" \
+    || ok "command: step 2 does not say the crossref worklist is derived every round"
+fi
+
 # --- Task 7: the crossref pass's defects must actually reach adjudication ---------------------
 # Spec §0 claimed the pass's findings "merge through the existing finding channel" with no other
 # change needed. False as written (see task-7-brief.md): merge dies on `<doc>.crossref` unless

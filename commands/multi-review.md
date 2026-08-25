@@ -416,8 +416,14 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    get the truncation wrong and nothing downstream notices — `merge` accepts the copy, `verify`
    passes, `check-converged` passes, and the gate reports N *independent* secondaries.
 
-   **Derive the crossref worklist here too, every round** — it is never diff-scoped like the
-   round-N provider copies above, so there is nothing round-dependent about deriving it:
+   **Derive the crossref worklist here too, but ROUND 1 ONLY** (spec §7): the pass runs once per
+   review, against the full document, never on a round N≥2 scoped copy — the pairs it needs to
+   compare mostly live in unedited text, which a diff-scoped copy would not contain. This also
+   means it costs one dispatch per review, not one per round. **On round N ≥ 2, skip this
+   sub-step entirely** — do not run `rows`, do not seed or dispatch `<doc>.crossref`; steps 4, 5,
+   7 and 8's crossref clauses below then have nothing to act on this round.
+
+   In round 1:
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh rows "<doc>" > "<doc>.crossref.rows"`.
    It is a mechanical cross-reference sweep over the document's own internal consistency
    (declared `Files:` vs. paths named in its steps, matching pairs shared across sections,
@@ -697,13 +703,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    not "fix" the omission.
 7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
    <id>:<reason> ...] [--pass "<doc>.crossref"] "<doc>" <admitted copies...>`. Pass `--pass
-   "<doc>.crossref"` only on a round where step 2 derived a worklist (exit 0) — omit it on the
-   exit-3 not-applicable round, when there is no `<doc>.crossref` to merge.
+   "<doc>.crossref"` only in round 1, and only when step 2 derived a worklist (exit 0) — omit it
+   on the exit-3 not-applicable round and on every round N ≥ 2, when step 2 did not run and there
+   is no `<doc>.crossref` from this round to merge. Findings the pass already merged in round 1
+   persist in `<doc>` like any other finding; no later round re-merges them.
 8. **Crossref coverage.** The worklist, seed, dispatch and wait for this pass all already
    happened above (steps 2, 4 and 5) — concurrently with the secondaries, so its copy exists in
    time for step 7's merge. This step only checks and records the outcome — in ONE place, after
    merge, so every branch (not-applicable, complete, incomplete) shares one recording point and a
    round that aborts before reaching here (and later re-runs step 2) cannot duplicate it.
+
+   **On round N ≥ 2, skip this step entirely** — step 2 did not run this round, there is nothing
+   to check, and the round-1 coverage line already recorded stands.
 
    **If step 2 exited 3 (not applicable) this round**, under `<doc>`'s `## Review` heading,
    alongside this round's quarantine records (written by step 7's merge, so they exist by now),
