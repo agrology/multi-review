@@ -429,8 +429,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    **Exit 3** → not applicable — the doc has no sectioned structure to cross-reference (the
    message names why). **State that out loud** — a pass that silently does not run is
    indistinguishable at the gate from one that ran and found nothing — and do NOT seed or
-   dispatch it this round: continue to step 3. Append `> [crossref-coverage: not applicable]`
-   under `<doc>`'s `## Review` heading, alongside this round's quarantine records.
+   dispatch it this round: continue to step 3. **Do not record the durable coverage line here.**
+   It is written once, in step 8, alongside this pass's other coverage outcomes — recording it
+   here too would duplicate it if this round aborts before step 7 (an anomaly stop, say) and a
+   later turn re-runs this fan-out for the same round: step 2 would run again and, if the record
+   were written here, append a second identical line.
    **Exit 0** → seed it exactly as a round-1 secondary copy would be: `cp "<doc>.baseline"
    "<doc>.crossref"`, rewrite its header the way above, then snapshot it as `<doc>.crossref.seed`
    the same way. It is now ready to dispatch alongside the secondaries, in step 4.
@@ -698,10 +701,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    exit-3 not-applicable round, when there is no `<doc>.crossref` to merge.
 8. **Crossref coverage.** The worklist, seed, dispatch and wait for this pass all already
    happened above (steps 2, 4 and 5) — concurrently with the secondaries, so its copy exists in
-   time for step 7's merge. This step only checks and records the outcome.
+   time for step 7's merge. This step only checks and records the outcome — in ONE place, after
+   merge, so every branch (not-applicable, complete, incomplete) shares one recording point and a
+   round that aborts before reaching here (and later re-runs step 2) cannot duplicate it.
 
-   If step 2 exited 3 (not applicable) this round, there is nothing further to do here — that
-   round's coverage state is already recorded by step 2. Otherwise, run
+   **If step 2 exited 3 (not applicable) this round**, under `<doc>`'s `## Review` heading,
+   alongside this round's quarantine records (written by step 7's merge, so they exist by now),
+   append: `> [crossref-coverage: not applicable]`. Otherwise, run
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref"`.
       - **Exit 0** → every row was verdicted. Let `<M>` be the worklist's row count (the number
         of lines in `<doc>.crossref.rows` from step 2). Under `<doc>`'s `## Review` heading,

@@ -921,9 +921,15 @@ else
     && ok "command: the not-applicable coverage state is recorded" \
     || bad "command: the not-applicable coverage state is never recorded — an exit-3 round announces the fact in prose but leaves no durable line for the gate, so Task 6 has nothing to render for this state"
 
+  # NOTE: this window now spans steps 2-8 (the pass's pieces are dispatched/seeded/waited on
+  # inside the round-1 fan-out proper, by design — see the three placement-specific guards
+  # below), so this assertion only proves the check is invoked SOMEWHERE in the fan-out, not
+  # that it still lives in one contiguous "crossref step". Placement of the dispatch, the seed,
+  # and the wait each have their OWN windowed guard below; this one is deliberately weaker now,
+  # and its message says so.
   grep -qF 'multi-review-crossref.sh check' <<<"$blk" \
-    && ok "command: the coverage check is run inside the crossref step" \
-    || bad "command: the crossref copy is never coverage-checked, or the check moved outside the crossref step where it no longer runs after this pass specifically"
+    && ok "command: the coverage check is invoked somewhere in the fan-out" \
+    || bad "command: the crossref copy is never coverage-checked anywhere in the fan-out"
 
   # Split from a single 'rows verdicted]' pattern (round 1, F3): that pattern is satisfied by
   # EITHER the complete or the incomplete line alone, so deleting just one of them left it green.
@@ -953,6 +959,51 @@ else
     || bad "command: nothing says an incomplete crossref turn must NOT be quarantined — the rows it DID verdict could be silently discarded"
 fi
 
+# --- fix round 1, F1: the pass's seed/dispatch/wait are now INSIDE the round-1 fan-out proper
+# (steps 2, 4, 5), not a self-contained "crossref step" — the big window above proves the check
+# still runs SOMEWHERE, but nothing proved the seed/dispatch/wait survived the move. Each got its
+# own guard, windowed to the exact step it now lives in, so deleting any one of the three reds on
+# its own without needing to delete the others.
+
+# the exit-0 seeding (`<doc>.crossref` + `<doc>.crossref.seed`) must live in step 2.
+n="$(grep -nF 'Derive the crossref worklist here too' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 2's crossref-worklist derivation is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^3\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF '<doc>.crossref.seed' <<<"$blk" \
+    && ok "command: the crossref pass is seeded (incl. .seed) in step 2" \
+    || bad "command: step 2 no longer seeds <doc>.crossref/<doc>.crossref.seed — the pass would have no copy to dispatch in step 4"
+fi
+
+# the dispatch (the actual Agent task text) must live in step 4, with the secondaries.
+n="$(grep -nF 'If step 2 derived a crossref worklist' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 4's crossref dispatch is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^5\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF 'prompt "<doc>.crossref" --crossref' <<<"$blk" \
+    && ok "command: the crossref pass is actually dispatched in step 4, alongside the secondaries" \
+    || bad "command: step 4 no longer dispatches <doc>.crossref — its copy would never get a turn"
+fi
+
+# the wait-with-the-secondaries paragraph must live in step 5.
+n="$(grep -nF 'Wait on the crossref pass here too' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 5's crossref wait is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^6\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF '<doc>.crossref.seed' <<<"$blk" \
+    && ok "command: step 5 waits on the crossref pass with the secondaries" \
+    || bad "command: step 5 no longer waits on <doc>.crossref — merge could run before the pass ever writes anything"
+fi
+
 n="$(grep -n 'is not a secondary' "$CMD" | head -1 | cut -d: -f1)"
 [[ -n "$n" ]] && ok "command: the pass is excluded from the secondary count" \
   || bad "command: nothing says the crossref pass is not a secondary — it would inflate the roster and skew the independence warning"
@@ -961,7 +1012,7 @@ n="$(grep -n 'is not a secondary' "$CMD" | head -1 | cut -d: -f1)"
 # Spec §0 claimed the pass's findings "merge through the existing finding channel" with no other
 # change needed. False as written (see task-7-brief.md): merge dies on `<doc>.crossref` unless
 # given --pass, which bypasses the reviewer-registry check a bare `<doc>` positional would fail.
-CMD="${ROOT}/commands/multi-review.md"
+# ($CMD is already set above, to the same path — no need to re-assign it.)
 
 # merge must be invoked with --pass "<doc>.crossref" — windowed to the Merge step only (through
 # the line before step 8), the same style as the crossref-step window above.
@@ -979,6 +1030,16 @@ fi
 
 # the crossref copy must be explicitly exempted from verify-vendor — windowed to the Verify
 # identity step only (through the line before step 7).
+#
+# fix round 1, F2: the ORIGINAL guard required 'not run through' AND 'verify-vendor' as two
+# independent greps over the same window. `verify-vendor` alone has FOUR matches in this window
+# (two of them the PRE-EXISTING ordinary-copy verify-vendor invocation, unrelated to the crossref
+# exemption), so that half of the conjunct is inert — only 'not run through' ever does any work.
+# Proof: rewriting the exemption sentence to name `channel-check` instead of `verify-vendor` left
+# this guard green (the exemption was gone, but 'verify-vendor' was still present two paragraphs
+# up). Fixed by matching the pair as ONE phrase, normalized across the markdown line-wrap between
+# "through" and the backtick (`tr` collapses the block to one line first, so a rewrap can't break
+# this the way it broke nothing here yet).
 n="$(grep -nF 'Verify identity, per copy' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
   bad "command: the Verify identity step is gone"
@@ -986,21 +1047,32 @@ else
   ne="$(awk -v s="$n" 'NR>s && /^7\. /{print NR; exit}' "$CMD")"
   [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
   blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
-  grep -qF 'not run through' <<<"$blk" && grep -qF 'verify-vendor' <<<"$blk" \
+  norm="$(tr '\n' ' ' <<<"$blk" | tr -s ' ')"
+  grep -qF 'not run through `verify-vendor`' <<<"$norm" \
     && ok "command: the crossref copy is explicitly exempted from verify-vendor" \
     || bad "command: nothing says the crossref pass skips verify-vendor — a later editor could 'fix' this into checking a pass that has no vendor to verify"
 fi
 
 # the terminal gate must release the crossref pass's working files — stated by purpose (R10), not
 # a fourth enumerated entry a future working-file kind can miss the same way twice already.
-n="$(grep -nF '### Terminal gate' "$CMD" | head -1 | cut -d: -f1)"
+#
+# fix round 1, F4: a bare 'crossref' grep from "### Terminal gate" to EOF is falsifiable TODAY,
+# but is vacuous by construction against any future 'crossref' mention anywhere after that
+# heading (e.g. in Guardrails, below it) — it would never again test the release rule
+# specifically. Windowed to the release-rule PARAGRAPH itself (between "human gate" and the
+# `<doc>.manifest` carve-out that follows it), and asserting the two file shapes that paragraph
+# actually names (`<doc>.crossref.seed` — the provider-or-pass shape; `<doc>.crossref.rows` — the
+# one shape that does not fit that pattern and needed naming explicitly).
+n="$(grep -nF 'This is the **human gate**:' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
-  bad "command: the Terminal gate section is gone"
+  bad "command: the Terminal gate's human-gate paragraph is gone"
 else
-  blk="$(sed -n "${n},\$p" "$CMD")"
-  grep -qF 'crossref' <<<"$blk" \
+  ne="$(awk -v s="$n" 'NR>s && /\*\*Keep `<doc>\.manifest`\.\*\*/{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF '<doc>.crossref.seed' <<<"$blk" && grep -qF '<doc>.crossref.rows' <<<"$blk" \
     && ok "command: the terminal gate's release rule covers the crossref working files" \
-    || bad "command: the terminal gate never mentions crossref — <doc>.crossref/<doc>.crossref.seed/<doc>.crossref.rows are never released (R10)"
+    || bad "command: the terminal gate's release-rule paragraph never names <doc>.crossref.seed/<doc>.crossref.rows — they are never released (R10)"
 fi
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
