@@ -112,7 +112,7 @@ n="$(awk -F'\t' '$2=="pair"' <<<"$out" | wc -l | tr -d ' ')"
 D="$(mkdoc fenced.md \
   '# Plan' '' \
   '### Task 1: real' '' '**Files:**' '- Modify: `scripts/real.sh`' '' \
-  'Expected output:' '' '```' 'wrote scripts/fenced-only.sh' '```' '' \
+  'Expected output:' '' '```' 'wrote `scripts/fenced-only.sh`' '```' '' \
   '### Task 2: also real' '' '**Files:**' '- Modify: `scripts/other.sh`' '' \
   'Mentions `scripts/fenced-only.sh` in prose.' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
