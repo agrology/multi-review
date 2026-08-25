@@ -365,6 +365,63 @@ mutations() {
 
   # The DISPATCH cwd. Without the pin, gemini-cli's workspace is whatever directory the Bash call
   # inherits — so the check can be correct and the dispatch still land somewhere else.
+  # The clause that reconciles the demand with the head block's own ordering. Removed, the prompt
+  # is back to two competing FIRSTs: the head orders a protocol/skill read and the demand forbids
+  # opening any repo file first. Two vendors found that independently on PR #92, each having
+  # violated one of the two instructions in the same turn, and the same prompt produced
+  # document-first on one PR and skill-first on the next — so the ordering was not merely
+  # ambiguous on paper, it was observably unpredictable.
+  mutate 'reviewer/prompt-names-allowed-first-read' 'scripts/multi-review-reviewer.sh' replace \
+    'drops the absolute ban without saying what MAY precede' 'multi-review-reviewer.test.sh' \
+    'that defines this turn'"'"'s own grammar and handoff may be read before it — the protocol contract and' \
+    'about this turn may be read before it — the protocol contract and'
+
+  # The locale VALUE, not merely the presence of a pin. The entry below replaces the whole
+  # `LC_ALL:` line, which the presence assertion catches — so the "pinned locale is a UTF-8 one"
+  # assertion had NO entry and the sweep never proved it could fail. A drift to `LC_ALL: C` keeps
+  # `^[[:space:]]*LC_ALL:` matching, so only that un-exercised assertion would fire — and `C` is
+  # the exact value under which this job's mutation goes inert (fable-rd2-r2, #93).
+  mutate 'ci/macos-locale-value-utf8' '.github/workflows/gate.yml' replace \
+    'pins a locale that is not UTF-8' 'multi-review-packaging.test.sh' \
+    '      LC_ALL: en_US.UTF-8' \
+    '      LC_ALL: C'
+
+  # `--resume` without a roster. Removed, the flag silently degrades to a fresh ask: `src` becomes
+  # "resume" only inside the `[[ -n "$csv" ]]` branch, so an empty value falls through to
+  # env -> pref -> floor and an undispatchable reviewer then refuses with exit 4 — the outcome
+  # `--resume` exists to prevent, reached from the command's own resume path on a suffix-less
+  # doc header (fable-rd1-r2, #91).
+  # `replace` with a false condition, never `delete`: deleting the `if` line orphans its `die` and
+  # `fi`, so `bash -n` rejects the mutated file and the runner aborts the entry for a syntax
+  # reason instead of proving the guard.
+  mutate 'star/resume-requires-roster' 'scripts/multi-review-star.sh' replace \
+    'silently degraded to a fresh ask' 'multi-review-star.test.sh' \
+    '  if (( resume )) && [[ -z "${_resume_ids//[[:space:]]/}" ]]; then' \
+    '  if false; then'
+
+  # The whitespace TRIM in the resume-roster guard, distinct from the guard's existence above.
+  # Reverted to a bare `-z "$csv"`, a whitespace-only roster is not empty and passes straight
+  # through to the floor — the silent degrade the guard exists to close, reintroduced inside it
+  # (fable-rd1-r1, #93).
+  # The SEPARATOR NORMALIZATION, distinct from the guard's existence above. Reverted to testing
+  # the raw value, a comma-only roster is non-empty and passes straight through to the floor —
+  # the third hole this guard has had, each from enumerating characters instead of asking whether
+  # an id survives normalization (codex-rd2-r1, #93).
+  mutate 'star/resume-roster-normalized' 'scripts/multi-review-star.sh' replace \
+    'separators alone are not a roster' 'multi-review-star.test.sh' \
+    '  _resume_ids="$(printf '"'"'%s'"'"' "$csv" | tr '"'"','"'"' '"'"' '"'"')"' \
+    '  _resume_ids="$csv"'
+
+  # The macOS locale-pin job's own locale. Removed, the job's `caught` expectation rides on the
+  # runner's ambient locale: demonstrated with the real pipeline on an invalid byte — under UTF-8
+  # BSD tr aborts ("Illegal byte sequence") and the reason truncates, under C the byte passes
+  # through intact and the mutation is behaviourally inert, so the entry reports SURVIVED and the
+  # job goes red for an environment reason (fable-rd1-r1, #91).
+  mutate 'ci/macos-locale-job-pinned' '.github/workflows/gate.yml' replace \
+    'pins no LC_ALL' 'multi-review-packaging.test.sh' \
+    '      LC_ALL: en_US.UTF-8' \
+    '      MULTI_REVIEW_UNUSED: 1'
+
   mutate 'command/gemini-dispatch-cwd-pinned' 'commands/multi-review.md' replace \
     'shell dispatch sets no cwd' 'multi-review-packaging.test.sh' \
     '              ( cd "<session-root>" && "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1' \
@@ -1063,8 +1120,8 @@ mutations() {
   # real one. Observed across four dispatches; three referenced the doc in zero commands.
   mutate 'reviewer/prompt-read-doc-in-full' 'scripts/multi-review-reviewer.sh' replace \
     'never demands the document be read' 'multi-review-reviewer.test.sh' \
-    'READ THAT DOCUMENT IN FULL, FIRST — end to end, before you open any repo file and before any' \
-    'Read the document, end to end, before you open any repo file and before any'
+    'READ THAT DOCUMENT IN FULL, FIRST — end to end, before any other exploration. Only the material' \
+    'Read the document, end to end, before any other exploration. Only the material'
   # ---- the wait bound's quarantine inputs (#71, #47) ------------------------------------------
   # wait.sh had NO entries before this group. Its exit code is the sole input to the quarantine
   # decision, so a guard lost here does not fail loudly — it silently discards reviewer turns.

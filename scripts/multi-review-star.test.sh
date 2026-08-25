@@ -2612,6 +2612,51 @@ grep -q '⚠ Independence' <<<"$gs" && grep -q 'attempted but quarantined' <<<"$
   && ok "e2e: losing the only cross-vendor secondary trips the independence warning" \
   || bad "e2e: independence warning did not fire on the quarantined branch: '$gs'"
 
+# --- `--resume` without a roster must FAIL, not silently become a fresh ask ---
+# `--resume` declares an in-flight roster; resolve-set cannot infer one. But `src` became "resume"
+# only inside the `[[ -n "$csv" ]]` branch, so `--resume` with no `--reviewers` fell through to
+# env -> pref -> floor as an ordinary fresh ask — and a fresh ask REFUSES an undispatchable
+# reviewer with exit 4, which is precisely what `--resume` exists to prevent. Reachable whenever a
+# doc header carries no `reviewers:` suffix, which `_roster` treats as legitimate (a doc armed
+# before the suffix existed), so the resume path can hand this an empty value (fable-rd1-r2, #91).
+out="$(bash "$SUT" resolve-set --fable-floor --resume 2>&1)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "resolve-set: --resume with no --reviewers exits 2" \
+  || bad "resolve-set: --resume with no --reviewers exited $rc — it silently degraded to a fresh ask, the exit-4 refusal --resume exists to prevent"
+grep -qF -- '--reviewers' <<<"$out" \
+  && ok "resolve-set: the --resume refusal names the missing flag" \
+  || bad "resolve-set: --resume refusal does not name --reviewers: '$out'"
+out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers '' 2>&1)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "resolve-set: --resume with an EMPTY --reviewers also exits 2" \
+  || bad "resolve-set: --resume --reviewers '' exited $rc — an empty roster is exactly what a suffix-less doc header produces"
+# WHITESPACE-ONLY too. `[[ -z "$csv" ]]` is false for ' ', so the guard passed it straight through
+# to the floor — the same silent degrade the guard was added to close, reintroduced by its own
+# fix. Reproduced: rc=0 with a fable-only roster (fable-rd1-r1, #93).
+out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers '   ' 2>&1)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "resolve-set: --resume with a WHITESPACE-only --reviewers exits 2" \
+  || bad "resolve-set: --resume --reviewers '   ' exited $rc — whitespace slipped past the -z guard and silently degraded to the floor"
+out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers $'\t' 2>&1)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "resolve-set: --resume with a TAB-only --reviewers exits 2" \
+  || bad "resolve-set: --resume --reviewers '<tab>' exited $rc — the trim must cover tabs, not just spaces"
+# SEPARATOR-ONLY, as a CLASS. Three holes shipped here by testing raw characters one at a time:
+# `-z` missed whitespace, the whitespace trim missed commas (codex-rd2-r1, #93). The guard must
+# test the value the way the code CONSUMES it — after the same `tr ',' ' '` normalization applied
+# below — so a separator nobody enumerated cannot slip through as a fourth hole.
+for _v in ',' ',,' ' , ' ',	,'; do
+  out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers "$_v" 2>&1)"; rc=$?
+  [[ $rc == 2 ]] \
+    && ok "resolve-set: --resume with a separator-only roster '$_v' exits 2" \
+    || bad "resolve-set: --resume --reviewers '$_v' exited $rc — separators alone are not a roster, and this silently ran the floor"
+done
+# The real resume path must keep working.
+out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers fable 2>&1)"; rc=$?
+[[ $rc == 0 ]] && grep -q '^fable|' <<<"$out" \
+  && ok "resolve-set: --resume with a real roster still resolves" \
+  || bad "resolve-set: --resume --reviewers fable broke (rc=$rc): '$out'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

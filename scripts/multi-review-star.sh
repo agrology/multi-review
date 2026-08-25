@@ -277,6 +277,24 @@ cmd_resolve_set() {
       *) die "resolve-set: unexpected argument: $1" 2 ;;
     esac
   done
+  # `--resume` DECLARES the in-flight roster; resolve-set cannot infer one. Reject it without a
+  # roster rather than proceeding, because the fall-through was SILENT and inverted the flag's
+  # purpose: `src` became "resume" only inside the `[[ -n "$csv" ]]` branch below, so `--resume`
+  # with an empty value dropped through to env -> pref -> floor as an ordinary fresh ask — and a
+  # fresh ask REFUSES an undispatchable reviewer with exit 4, the exact outcome `--resume` exists
+  # to prevent. Reachable from the command's own resume path whenever a doc header carries no
+  # `reviewers:` suffix, which `_roster` treats as legitimate (fable-rd1-r2, #91).
+  # TEST THE VALUE THE WAY THE CODE CONSUMES IT — after the same `tr ',' ' '` separator
+  # normalization applied below — never by enumerating raw characters. Three holes shipped here
+  # doing the latter: `-z "$csv"` missed whitespace-only (fable-rd1-r1), and the whitespace trim
+  # that replaced it missed comma-only (codex-rd2-r1), each reproduced at rc=0 with a silent
+  # fable-only roster. A fourth separator nobody has thought of cannot open a fourth hole, because
+  # the check now asks the only question that matters: after normalization, is there an id left?
+  local _resume_ids
+  _resume_ids="$(printf '%s' "$csv" | tr ',' ' ')"
+  if (( resume )) && [[ -z "${_resume_ids//[[:space:]]/}" ]]; then
+    die "resolve-set: --resume requires --reviewers <ids> (it declares the in-flight roster and cannot infer one; a doc header with no 'reviewers:' suffix must be resumed by naming the set explicitly)" 2
+  fi
   # Validate BEFORE any source selection, and regardless of --fable-floor: a typo'd value must
   # fail on every path, not only the one that happens to consult the floor.
   local floor_on=1

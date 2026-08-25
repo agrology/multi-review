@@ -130,6 +130,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      <id>: <reason>` line this rebuild prints and carry it into every round's `merge` as
      `--quarantined <id>:<reason>`, exactly as step 2's bullet below requires. Go to §3.
 
+     **If the header carries no `reviewers:` suffix, the rebuild exits 2** naming `--reviewers`.
+     `--resume` declares the in-flight roster and cannot infer one, and an empty value used to
+     drop through to env/pref as a fresh ask — the exit-4 refusal `--resume` exists to prevent
+     (fable-rd1-r2, #91). A suffix-less header is legitimate (a doc armed before the suffix
+     existed), so resume it by naming the set explicitly: ask the engineer which reviewers this
+     review is running with rather than guessing, then pass them.
+
      `--resume` is required. Without it these header-derived ids look like a fresh ask, so a
      provider that became undispatchable between sessions exits 4 and the review becomes
      permanently unresumable — with a message blaming the engineer for ids they never typed.
