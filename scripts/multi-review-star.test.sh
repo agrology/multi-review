@@ -2641,6 +2641,16 @@ out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers $'\t' 2>&1)"; 
 [[ $rc == 2 ]] \
   && ok "resolve-set: --resume with a TAB-only --reviewers exits 2" \
   || bad "resolve-set: --resume --reviewers '<tab>' exited $rc — the trim must cover tabs, not just spaces"
+# SEPARATOR-ONLY, as a CLASS. Three holes shipped here by testing raw characters one at a time:
+# `-z` missed whitespace, the whitespace trim missed commas (codex-rd2-r1, #93). The guard must
+# test the value the way the code CONSUMES it — after the same `tr ',' ' '` normalization applied
+# below — so a separator nobody enumerated cannot slip through as a fourth hole.
+for _v in ',' ',,' ' , ' ',	,'; do
+  out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers "$_v" 2>&1)"; rc=$?
+  [[ $rc == 2 ]] \
+    && ok "resolve-set: --resume with a separator-only roster '$_v' exits 2" \
+    || bad "resolve-set: --resume --reviewers '$_v' exited $rc — separators alone are not a roster, and this silently ran the floor"
+done
 # The real resume path must keep working.
 out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers fable 2>&1)"; rc=$?
 [[ $rc == 0 ]] && grep -q '^fable|' <<<"$out" \

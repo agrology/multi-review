@@ -284,11 +284,15 @@ cmd_resolve_set() {
   # fresh ask REFUSES an undispatchable reviewer with exit 4, the exact outcome `--resume` exists
   # to prevent. Reachable from the command's own resume path whenever a doc header carries no
   # `reviewers:` suffix, which `_roster` treats as legitimate (fable-rd1-r2, #91).
-  # `${csv//[[:space:]]/}`, not `-z "$csv"`: a whitespace-only value is not empty, so `-z` passed
-  # '   ' straight through to the floor — the same silent degrade this guard was added to close,
-  # reintroduced by the guard itself. Reproduced at rc=0 with a fable-only roster (fable-rd1-r1,
-  # #93). The class covers tabs, which a hand-edited header suffix can easily carry.
-  if (( resume )) && [[ -z "${csv//[[:space:]]/}" ]]; then
+  # TEST THE VALUE THE WAY THE CODE CONSUMES IT — after the same `tr ',' ' '` separator
+  # normalization applied below — never by enumerating raw characters. Three holes shipped here
+  # doing the latter: `-z "$csv"` missed whitespace-only (fable-rd1-r1), and the whitespace trim
+  # that replaced it missed comma-only (codex-rd2-r1), each reproduced at rc=0 with a silent
+  # fable-only roster. A fourth separator nobody has thought of cannot open a fourth hole, because
+  # the check now asks the only question that matters: after normalization, is there an id left?
+  local _resume_ids
+  _resume_ids="$(printf '%s' "$csv" | tr ',' ' ')"
+  if (( resume )) && [[ -z "${_resume_ids//[[:space:]]/}" ]]; then
     die "resolve-set: --resume requires --reviewers <ids> (it declares the in-flight roster and cannot infer one; a doc header with no 'reviewers:' suffix must be resumed by naming the set explicitly)" 2
   fi
   # Validate BEFORE any source selection, and regardless of --fable-floor: a typo'd value must

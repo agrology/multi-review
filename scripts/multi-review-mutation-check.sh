@@ -376,6 +376,16 @@ mutations() {
     'that defines this turn'"'"'s own grammar and handoff may be read before it — the protocol contract and' \
     'about this turn may be read before it — the protocol contract and'
 
+  # The locale VALUE, not merely the presence of a pin. The entry below replaces the whole
+  # `LC_ALL:` line, which the presence assertion catches — so the "pinned locale is a UTF-8 one"
+  # assertion had NO entry and the sweep never proved it could fail. A drift to `LC_ALL: C` keeps
+  # `^[[:space:]]*LC_ALL:` matching, so only that un-exercised assertion would fire — and `C` is
+  # the exact value under which this job's mutation goes inert (fable-rd2-r2, #93).
+  mutate 'ci/macos-locale-value-utf8' '.github/workflows/gate.yml' replace \
+    'pins a locale that is not UTF-8' 'multi-review-packaging.test.sh' \
+    '      LC_ALL: en_US.UTF-8' \
+    '      LC_ALL: C'
+
   # `--resume` without a roster. Removed, the flag silently degrades to a fresh ask: `src` becomes
   # "resume" only inside the `[[ -n "$csv" ]]` branch, so an empty value falls through to
   # env -> pref -> floor and an undispatchable reviewer then refuses with exit 4 — the outcome
@@ -386,17 +396,21 @@ mutations() {
   # reason instead of proving the guard.
   mutate 'star/resume-requires-roster' 'scripts/multi-review-star.sh' replace \
     'silently degraded to a fresh ask' 'multi-review-star.test.sh' \
-    '  if (( resume )) && [[ -z "${csv//[[:space:]]/}" ]]; then' \
+    '  if (( resume )) && [[ -z "${_resume_ids//[[:space:]]/}" ]]; then' \
     '  if false; then'
 
   # The whitespace TRIM in the resume-roster guard, distinct from the guard's existence above.
   # Reverted to a bare `-z "$csv"`, a whitespace-only roster is not empty and passes straight
   # through to the floor — the silent degrade the guard exists to close, reintroduced inside it
   # (fable-rd1-r1, #93).
-  mutate 'star/resume-roster-trims-space' 'scripts/multi-review-star.sh' replace \
-    'whitespace slipped past the -z guard' 'multi-review-star.test.sh' \
-    '  if (( resume )) && [[ -z "${csv//[[:space:]]/}" ]]; then' \
-    '  if (( resume )) && [[ -z "$csv" ]]; then'
+  # The SEPARATOR NORMALIZATION, distinct from the guard's existence above. Reverted to testing
+  # the raw value, a comma-only roster is non-empty and passes straight through to the floor —
+  # the third hole this guard has had, each from enumerating characters instead of asking whether
+  # an id survives normalization (codex-rd2-r1, #93).
+  mutate 'star/resume-roster-normalized' 'scripts/multi-review-star.sh' replace \
+    'separators alone are not a roster' 'multi-review-star.test.sh' \
+    '  _resume_ids="$(printf '"'"'%s'"'"' "$csv" | tr '"'"','"'"' '"'"' '"'"')"' \
+    '  _resume_ids="$csv"'
 
   # The macOS locale-pin job's own locale. Removed, the job's `caught` expectation rides on the
   # runner's ambient locale: demonstrated with the real pipeline on an invalid byte — under UTF-8
