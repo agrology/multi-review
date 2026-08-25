@@ -1684,6 +1684,40 @@ out="$(bash "$SUT" prompt "$D" --crossref "$RF" extra-junk 2>/dev/null)"; rc=$?
   && ok "prompt(crossref): trailing arguments after the rows file are rejected" \
   || bad "prompt(crossref): trailing arguments after the rows file are silently ignored (rc=$rc)"
 
+# --- crossref prompt: B1 (final review) — the crossref pass is dispatched as a general-purpose
+# agent with full tool access, so it must carry the SAME scope guardrails as the ordinary
+# reviewer prompt: bounded to the document, stopped at the human gate, and independent of
+# repository memory files. Byte-for-byte reuse of emit_prompt's tail, not new phrasing. ---
+out="$(bash "$SUT" prompt "$D" --crossref "$RF" 2>/dev/null)"
+grep -qF 'Read only that document. Do not implement, commit, or open a PR — stop at the human gate.' <<<"$out" \
+  && ok "prompt(crossref) carries the scope-to-the-document / stop-at-the-gate guardrail" \
+  || bad "prompt(crossref) is missing the scope-to-the-document / stop-at-the-gate guardrail"
+grep -qF 'Ignore repository memory files for this turn' <<<"$out" \
+  && grep -qF 'CLAUDE.md' <<<"$out" && grep -qF 'AGENTS.md' <<<"$out" \
+  && ok "prompt(crossref) carries the ignore-repository-memory-files independence clause" \
+  || bad "prompt(crossref) is missing the ignore-repository-memory-files independence clause"
+
+# --- crossref prompt: B2 (final review) — a `defect` verdict must ALSO raise an ordinary
+# finding, but the prompt never stated the grammar that finding has to follow: the severity
+# tag, the required `— via`/`— risk:`/`— evidence:` continuation lines, and where to append
+# (under `## Review`). Missing `|sev` or `— risk:` fails _table and kills merge AFTER the doc
+# is written. ---
+grep -qF '[finding:<id>|<sev>]' <<<"$out" \
+  && ok "prompt(crossref) states the finding severity tag" \
+  || bad "prompt(crossref) never states the \`|<sev>\` finding grammar"
+grep -qF '— via <your-model-id>' <<<"$out" \
+  && ok "prompt(crossref) states the — via disclosure line" \
+  || bad "prompt(crossref) never states the — via disclosure line for the ordinary finding"
+grep -qF '— risk:' <<<"$out" \
+  && ok "prompt(crossref) states the — risk: line" \
+  || bad "prompt(crossref) never states the required — risk: line"
+grep -qF '— evidence:' <<<"$out" \
+  && ok "prompt(crossref) states the — evidence: line" \
+  || bad "prompt(crossref) never states the — evidence: line"
+grep -qF '## Review' <<<"$out" \
+  && ok "prompt(crossref) states where to append the finding (## Review)" \
+  || bad "prompt(crossref) never says where to append the ordinary finding"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
