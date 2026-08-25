@@ -154,6 +154,56 @@ awk -F'\t' '$2=="iface" && $3=="Task 3"' <<<"$out" | grep -q 'omega' \
   && ok "rows: an unmatched Consumes still produces a row for the reviewer to verdict" \
   || bad "rows: the unmatched Consumes entry produced no row — the defect would be invisible"
 
+# --- check: coverage is enforced, not assumed ---
+# mkcopy <name> <doc> <review-line...> : a copy carrying the doc's sections plus a ## Review block
+mkcopy() { local p="${WORK}/$1"; local src="$2"; shift 2
+  { cat "$src"; echo; echo '## Review'; echo; printf '%s\n' "$@"; } > "$p"; echo "$p"; }
+
+D="$(mkdoc cov.md \
+  '# Plan' '' \
+  '### Task 1: one' '' '**Files:**' '- Modify: `scripts/a.sh`' '' 'Edit `scripts/a.sh`.' '' \
+  '### Task 2: two' '' '**Files:**' '- Modify: `scripts/a.sh`' '' 'Edit `scripts/a.sh`.' '')"
+rows="$(bash "$SUT" rows "$D" 2>/dev/null)"
+allrows="$(awk -F'\t' '{print $1}' <<<"$rows")"
+
+# complete coverage -> exit 0
+lines=('> [crossref] — via test-model')
+while IFS= read -r r; do [[ -n "$r" ]] && lines+=("> [crossref:${r}|ok]"); done <<<"$allrows"
+C="$(mkcopy cov-ok.md "$D" "${lines[@]}")"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && ok "check: a copy verdicting every row exits 0" || bad "check: complete coverage rejected"
+
+# clause 1: a missing row is an incomplete turn
+C="$(mkcopy cov-missing.md "$D" '> [crossref] — via test-model' "${lines[1]}")"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && bad "check: a copy missing rows passed — coverage is not enforced" \
+  || ok "check: a copy missing rows fails"
+
+# clause 2: a defect naming a finding that is not present
+# NOTE: every other row must still be verdicted here — otherwise clause 1 (missing rows) fires
+# first and the defect-anchoring check under test is never reached. Reproduced: with only row 1
+# verdicted, check exits on "incomplete turn: no verdict for row(s): ..." and never mentions r9.
+C="$(mkcopy cov-ghost.md "$D" '> [crossref] — via test-model' \
+      "$(sed -n 1p <<<"$allrows" | sed 's/.*/> [crossref:&|defect:r9] ghost/')" \
+      "${lines[@]:2}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'r9' <<<"$err" \
+  && ok "check: a defect naming an absent finding fails, and names the id" \
+  || bad "check: an unanchored defect passed (rc=$rc err='$err')"
+
+# clause 3: a verdict for a row that was never emitted
+C="$(mkcopy cov-extra.md "$D" '> [crossref] — via test-model' "${lines[@]:1}" \
+      '> [crossref:P99|ok]')"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && bad "check: a verdict for an unemitted row passed" \
+  || ok "check: a verdict naming an unemitted row fails"
+
+# the disclosure header is required, exactly as on a [no-findings] turn
+C="$(mkcopy cov-nodisc.md "$D" "${lines[@]:1}")"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && bad "check: a table with no disclosure passed" \
+  || ok "check: a table with no '> [crossref] — via' header fails"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

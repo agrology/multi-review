@@ -176,10 +176,64 @@ cmd_rows() { # <doc>
   done <<< "$secs"
 }
 
+# Verdict lines live under the LAST '## Review' heading and outside fences — the same channel
+# discipline the finding grammar uses. A PR description can legally contain a '> [crossref:...]'
+# blockquote, and a fenced example of the grammar is documentation, not a verdict.
+_review_verdicts() { # <copy> -> the fence-stripped review section
+  awk '{ a[NR] = $0 } /^## Review[[:space:]]*$/ { last = NR }
+       END { if (last) for (i = last + 1; i <= NR; i++) print a[i] }' "$1" > "${TMPD}/rv.$$"
+  strip_fences "${TMPD}/rv.$$"
+  rm -f "${TMPD}/rv.$$"
+}
+
+cmd_check() { # <doc> <copy>
+  local doc="${1:?usage: multi-review-crossref.sh check <doc> <copy>}"
+  local copy="${2:?usage: multi-review-crossref.sh check <doc> <copy>}"
+  [[ -f "$doc"  ]] || die "doc not found: $doc" 2
+  [[ -f "$copy" ]] || die "copy not found: $copy" 2
+
+  local rows rc=0
+  rows="$(cmd_rows "$doc")" || {
+    rc=$?
+    # Not applicable is not a failure: there was nothing to cover.
+    (( rc == 3 )) && return 0
+    die "cannot derive rows for $doc" 1
+  }
+  awk -F'\t' '{ print $1 }' <<< "$rows" | LC_ALL=C sort -u > "${TMPD}/want"
+
+  local rv; rv="$(_review_verdicts "$copy")"
+
+  printf '%s\n' "$rv" | grep -qE '^>[[:space:]]*\[crossref\][[:space:]]*—[[:space:]]*via[[:space:]]+[^[:space:]]' \
+    || die "crossref table carries no '> [crossref] — via <model>' disclosure" 1
+
+  printf '%s\n' "$rv" \
+    | sed -n 's/^>[[:space:]]*\[crossref:\([A-Za-z][0-9A-Za-z]*\)|.*/\1/p' \
+    | LC_ALL=C sort -u > "${TMPD}/got"
+
+  local missing extra
+  missing="$(LC_ALL=C comm -23 "${TMPD}/want" "${TMPD}/got" | tr '\n' ' ')"
+  [[ -z "${missing// /}" ]] \
+    || die "incomplete turn: no verdict for row(s): ${missing% }" 1
+  extra="$(LC_ALL=C comm -13 "${TMPD}/want" "${TMPD}/got" | tr '\n' ' ')"
+  [[ -z "${extra// /}" ]] \
+    || die "verdict names row(s) that were never emitted: ${extra% }" 1
+
+  # Every defect must name a finding present in the SAME copy. A defect recorded only in the table
+  # is a finding that bypasses adjudication and never reaches the human gate's accounting.
+  local fid
+  while IFS= read -r fid; do
+    [[ -n "$fid" ]] || continue
+    printf '%s\n' "$rv" | grep -qE "^>[[:space:]]*\[finding:${fid}\|" \
+      || die "crossref defect names finding '${fid}', which is not in this copy" 1
+  done < <(printf '%s\n' "$rv" | sed -n 's/^>[[:space:]]*\[crossref:[^|]*|defect:\([^]]*\)\].*/\1/p')
+  return 0
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     rows)  cmd_rows "$@" ;;
+    check) cmd_check "$@" ;;
     *)     die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }
