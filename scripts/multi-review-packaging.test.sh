@@ -911,6 +911,16 @@ else
     && ok "command: the not-applicable case is announced" \
     || bad "command: exit 3 is not announced — a pass that silently does not run reads as a clean one"
 
+  # Round 2, F9: the not-applicable STATE must actually be recorded, symmetric with the <M>/<M>
+  # and <N>/<M> guards below. This guard was present before round 1's F1/F3 restructuring and got
+  # dropped, unreplaced, when that restructuring landed — the suite stayed green the whole time,
+  # which is the exact failure class this feature exists to catch. Pattern is the bracketed
+  # blockquote text, NOT a bare 'not applicable' (that also matches the prose trigger above, which
+  # is what made the ORIGINAL F1 guard vacuous) — count confirmed 1 in the current file.
+  grep -qF 'crossref-coverage: not applicable]' <<<"$blk" \
+    && ok "command: the not-applicable coverage state is recorded" \
+    || bad "command: the not-applicable coverage state is never recorded — an exit-3 round announces the fact in prose but leaves no durable line for the gate, so Task 6 has nothing to render for this state"
+
   grep -qF 'multi-review-crossref.sh check' <<<"$blk" \
     && ok "command: the coverage check is run inside the crossref step" \
     || bad "command: the crossref copy is never coverage-checked, or the check moved outside the crossref step where it no longer runs after this pass specifically"
