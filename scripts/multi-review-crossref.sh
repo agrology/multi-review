@@ -125,7 +125,8 @@ _iface_lines() { # <doc> <start> <end> <Consumes|Produces>
 }
 
 cmd_rows() { # <doc>
-  local doc="${1:?usage: multi-review-crossref.sh rows <doc>}" secs nsec
+  [[ $# -ge 1 ]] || die "usage: multi-review-crossref.sh rows <doc>" 2
+  local doc="$1" secs nsec
   [[ -f "$doc" ]] || die "doc not found: $doc" 2
   secs="$(_sections "$doc")"
   nsec="$(printf '%s' "$secs" | grep -c . || true)"
@@ -187,8 +188,9 @@ _review_verdicts() { # <copy> -> the fence-stripped review section
 }
 
 cmd_check() { # <doc> <copy>
-  local doc="${1:?usage: multi-review-crossref.sh check <doc> <copy>}"
-  local copy="${2:?usage: multi-review-crossref.sh check <doc> <copy>}"
+  [[ $# -ge 2 ]] || die "usage: multi-review-crossref.sh check <doc> <copy>" 2
+  local doc="$1"
+  local copy="$2"
   [[ -f "$doc"  ]] || die "doc not found: $doc" 2
   [[ -f "$copy" ]] || die "copy not found: $copy" 2
 
@@ -220,11 +222,17 @@ cmd_check() { # <doc> <copy>
 
   # Every defect must name a finding present in the SAME copy. A defect recorded only in the table
   # is a finding that bypasses adjudication and never reaches the human gate's accounting.
+  #
+  # Uses literal index() matching, NOT a concatenated regex (star.sh:586, same rationale): building
+  # "^> \[finding:" fid "|" as a regex would let any metacharacter in fid match unintended text —
+  # "r." would match the literal finding id "rX" via the '.' wildcard.
   local fid
   while IFS= read -r fid; do
     [[ -n "$fid" ]] || continue
-    printf '%s\n' "$rv" | grep -qE "^>[[:space:]]*\[finding:${fid}\|" \
-      || die "crossref defect names finding '${fid}', which is not in this copy" 1
+    printf '%s\n' "$rv" | awk -v fid="$fid" '
+      index($0, "> [finding:" fid "|") == 1 { f = 1; exit }
+      END { exit !f }
+    ' || die "crossref defect names finding '${fid}', which is not in this copy" 1
   done < <(printf '%s\n' "$rv" | sed -n 's/^>[[:space:]]*\[crossref:[^|]*|defect:\([^]]*\)\].*/\1/p')
   return 0
 }

@@ -174,10 +174,13 @@ bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
   && ok "check: a copy verdicting every row exits 0" || bad "check: complete coverage rejected"
 
 # clause 1: a missing row is an incomplete turn
+# Asserts the die MESSAGE, not just a nonzero exit: rc!=0 alone can't tell "my guard fired" from
+# "something unrelated failed" (e.g. an unknown subcommand) — the mechanism behind the R7 bug.
 C="$(mkcopy cov-missing.md "$D" '> [crossref] — via test-model' "${lines[1]}")"
-bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
-  && bad "check: a copy missing rows passed — coverage is not enforced" \
-  || ok "check: a copy missing rows fails"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'incomplete turn' <<<"$err" \
+  && ok "check: a copy missing rows fails" \
+  || bad "check: a copy missing rows passed — coverage is not enforced (rc=$rc err='$err')"
 
 # clause 2: a defect naming a finding that is not present
 # NOTE: every other row must still be verdicted here — otherwise clause 1 (missing rows) fires
@@ -191,18 +194,71 @@ err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
   && ok "check: a defect naming an absent finding fails, and names the id" \
   || bad "check: an unanchored defect passed (rc=$rc err='$err')"
 
+# guard 4 (defect anchoring) must match the finding id LITERALLY, not as a regex — a metacharacter
+# in a bogus id must not incidentally match an unrelated real finding via a wildcard. Every other
+# row is verdicted so only the anchoring guard is under test (same reason as clause 2 above).
+C="$(mkcopy cov-metachar.md "$D" '> [crossref] — via test-model' \
+      "$(sed -n 1p <<<"$allrows" | sed 's/.*/> [crossref:&|defect:r.] bad/')" \
+      "${lines[@]:2}" '> [finding:rX|high] real')"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'r.' <<<"$err" \
+  && ok "check: a defect id containing a regex metacharacter does not match an unrelated finding" \
+  || bad "check: a defect id 'r.' matched unrelated finding 'rX' via regex — anchoring is not literal (rc=$rc err='$err')"
+
 # clause 3: a verdict for a row that was never emitted
 C="$(mkcopy cov-extra.md "$D" '> [crossref] — via test-model' "${lines[@]:1}" \
       '> [crossref:P99|ok]')"
-bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
-  && bad "check: a verdict for an unemitted row passed" \
-  || ok "check: a verdict naming an unemitted row fails"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'P99' <<<"$err" \
+  && ok "check: a verdict naming an unemitted row fails" \
+  || bad "check: a verdict for an unemitted row passed (rc=$rc err='$err')"
 
 # the disclosure header is required, exactly as on a [no-findings] turn
 C="$(mkcopy cov-nodisc.md "$D" "${lines[@]:1}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'disclosure' <<<"$err" \
+  && ok "check: a table with no '> [crossref] — via' header fails" \
+  || bad "check: a table with no disclosure passed (rc=$rc err='$err')"
+
+# --- _review_verdicts guards: scoped to the LAST '## Review' heading, with fences stripped ---
+# Previously asserted only by a code comment — Task 4 exists to eliminate exactly this class.
+
+# (a) a verdict line fenced inside the Review section is illustrative, not a real verdict
+C="$(mkcopy cov-fenced-verdicts.md "$D" '> [crossref] — via test-model' \
+      '```' "${lines[1]}" "${lines[2]}" "${lines[3]}" '```')"
 bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
-  && bad "check: a table with no disclosure passed" \
-  || ok "check: a table with no '> [crossref] — via' header fails"
+  && bad "check: verdicts fenced inside the Review section were counted — fence-stripping is not applied" \
+  || ok "check: verdicts fenced inside the Review section do not count"
+
+# (b) the LAST '## Review' heading is authoritative, not the first. The stale FIRST block below
+# carries COMPLETE coverage and the real LAST block carries INCOMPLETE coverage: _review_verdicts
+# reads from the matched heading to EOF with no next-heading stop, so "first" is a superset of
+# "last" — a fixture with complete coverage in the LAST block can't distinguish the two, since a
+# first-heading bug would still see it. Only this arrangement (complete-then-incomplete) can fail.
+C="${WORK}/cov-last-heading.md"
+{ cat "$D"; echo; echo '## Review'; echo; printf '%s\n' "${lines[@]}"; echo
+  echo '## Review'; echo; echo '> [crossref] — via test-model'; echo "${lines[1]}"; } > "$C"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && bad "check: an earlier '## Review' heading's stale complete coverage was used instead of the last" \
+  || ok "check: the LAST '## Review' heading's verdicts are used, and stale ones are ignored"
+
+# (c) verdict lines outside any '## Review' heading do not count
+C="${WORK}/cov-no-heading-scope.md"
+{ cat "$D"; echo; printf '%s\n' "${lines[@]}"; echo; echo '## Review'; echo; } > "$C"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && bad "check: verdicts outside any '## Review' heading were counted — heading scoping is not applied" \
+  || ok "check: verdicts outside '## Review' do not count"
+
+# --- usage errors: a missing argument is a usage error (exit 2), not coverage failure (exit 1) ---
+err="$(bash "$SUT" rows 2>&1 >/dev/null)"; rc=$?
+[[ $rc == 2 ]] && grep -qF 'multi-review-crossref:' <<<"$err" \
+  && ok "rows: a missing <doc> argument exits 2 with the usage prefix" \
+  || bad "rows: missing argument rc=$rc err='$err' (want rc=2, multi-review-crossref: prefix)"
+
+err="$(bash "$SUT" check 2>&1 >/dev/null)"; rc=$?
+[[ $rc == 2 ]] && grep -qF 'multi-review-crossref:' <<<"$err" \
+  && ok "check: missing arguments exit 2 with the usage prefix" \
+  || bad "check: missing arguments rc=$rc err='$err' (want rc=2, multi-review-crossref: prefix)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
