@@ -365,6 +365,17 @@ mutations() {
 
   # The DISPATCH cwd. Without the pin, gemini-cli's workspace is whatever directory the Bash call
   # inherits — so the check can be correct and the dispatch still land somewhere else.
+  # The clause that reconciles the demand with the head block's own ordering. Removed, the prompt
+  # is back to two competing FIRSTs: the head orders a protocol/skill read and the demand forbids
+  # opening any repo file first. Two vendors found that independently on PR #92, each having
+  # violated one of the two instructions in the same turn, and the same prompt produced
+  # document-first on one PR and skill-first on the next — so the ordering was not merely
+  # ambiguous on paper, it was observably unpredictable.
+  mutate 'reviewer/prompt-names-allowed-first-read' 'scripts/multi-review-reviewer.sh' replace \
+    'drops the absolute ban without saying what MAY precede' 'multi-review-reviewer.test.sh' \
+    'contract is the one read that may come before it, because it defines the grammar this turn must' \
+    'contract matters here, because it defines the grammar this turn must'
+
   # `--resume` without a roster. Removed, the flag silently degrades to a fresh ask: `src` becomes
   # "resume" only inside the `[[ -n "$csv" ]]` branch, so an empty value falls through to
   # env -> pref -> floor and an undispatchable reviewer then refuses with exit 4 — the outcome
@@ -1086,8 +1097,8 @@ mutations() {
   # real one. Observed across four dispatches; three referenced the doc in zero commands.
   mutate 'reviewer/prompt-read-doc-in-full' 'scripts/multi-review-reviewer.sh' replace \
     'never demands the document be read' 'multi-review-reviewer.test.sh' \
-    'READ THAT DOCUMENT IN FULL, FIRST — end to end, before you open any repo file and before any' \
-    'Read the document, end to end, before you open any repo file and before any'
+    'READ THAT DOCUMENT IN FULL, FIRST — end to end, before any other exploration. The protocol' \
+    'Read the document, end to end, before any other exploration. The protocol'
   # ---- the wait bound's quarantine inputs (#71, #47) ------------------------------------------
   # wait.sh had NO entries before this group. Its exit code is the sole input to the quarantine
   # decision, so a guard lost here does not fail loudly — it silently discards reviewer turns.

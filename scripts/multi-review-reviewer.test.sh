@@ -187,6 +187,37 @@ for p in codex fable gemini; do
     || bad "prompt($p) never demands the document be read — a turn that opened only the protocol can still report [no-findings]"
 done
 
+# --- the read-first demand must not contradict the head block's own ordering ---
+#
+# Found independently by TWO vendors on PR #92, each corroborating it with its own read order that
+# very turn: codex read SKILL.md -> protocol -> document, and fable read the protocol file first
+# and said so verbatim. The demand said "before you open any repo file", while the skill-bearing
+# head says to use a skill that reads `docs/multi-review.md` and the skill-less agent head says
+# "FIRST ... read the protocol contract in full: <an on-disk repo path>". Two competing FIRSTs;
+# an instruction-following reviewer must violate one, and which one it picks is not predictable —
+# the same prompt produced document-first on one PR and skill-first on the next.
+#
+# The fix keeps the demand's force (the diagnosed failure was burning the turn on repo SOURCE and
+# never opening the document) while naming the ONE read that may precede it.
+for p in codex fable gemini; do
+  out="$(bash "$SUT" prompt "$D" --reviewer "$p" 2>/dev/null)"
+  grep -qF 'READ THAT DOCUMENT IN FULL, FIRST' <<<"$out" \
+    && ok "prompt($p) still demands the document be read in full" \
+    || bad "prompt($p) lost the read-in-full demand"
+  # The absolute form is what created the contradiction.
+  grep -qF 'before you open any repo file' <<<"$out" \
+    && bad "prompt($p) still forbids opening ANY repo file first — that contradicts its own head block, which orders a protocol/skill read" \
+    || ok "prompt($p) no longer forbids the protocol read it also requires"
+  # And the exception must be stated, not merely implied by omission.
+  # WHITESPACE-COLLAPSED, like docs-check.sh: the sentence wraps, so "protocol" can end one line
+  # while the rest of the clause starts the next, and a line-oriented grep never sees them
+  # together. Verified — the assertion reported a false FAIL against correct text before this.
+  flat="$(tr '\n' ' ' <<<"$out" | tr -s ' ')"
+  grep -qiE 'protocol[^.]{0,60}(may|is the one|only)[^.]{0,60}(precede|before|first)' <<<"$flat" \
+    && ok "prompt($p) names the one read allowed before the document" \
+    || bad "prompt($p) drops the absolute ban without saying what MAY precede the document — silence reopens the ambiguity"
+done
+
 # --- prompt: skill-bearing provider points at the skill; skill-less ones do NOT ---
 out="$(bash "$SUT" prompt "$D" --reviewer codex 2>/dev/null)"
 grep -qi 'multi-review skill' <<<"$out" && ok "codex prompt references its skill" || bad "codex skill reference missing"
