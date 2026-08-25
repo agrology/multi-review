@@ -1902,6 +1902,41 @@ RSNM="${WORK}/rs-nomarker.md"
 bash "$SUT" round-stats "$RSNM" >/dev/null 2>&1 \
   && bad "round-stats accepted a doc with no marker" || ok "round-stats: missing marker fails loud"
 
+# --- round-stats: B3 (final review) — cmd_round_stats was never taught STAR_PASSES, so a merged
+# pass copy (e.g. crossref) got its own provider column, inflated the per-round totals, drove the
+# trend glyph, accrued a dry streak, and could steer the converge/re-fan verdict. Vendors here are
+# FLAT (codex 1 -> 1, gemini 1 -> 1), but crossref raises 4 findings in round 1 only and none in
+# round 2 — the unfixed code reads that as "6 -> 2, still decaying" instead of "2 -> 2, flat".
+RSP="${WORK}/rs-passes.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 2/5 -->'
+  echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo
+  fnd codex 1 a; fnd gemini 1 a; fnd crossref 1 a; fnd crossref 1 b; fnd crossref 1 c; fnd crossref 1 d
+  fnd codex 2 a; fnd gemini 2 a
+} > "$RSP"
+out="$(bash "$SUT" round-stats "$RSP" 2>&1)"
+grep -qF 'crossref' <<<"$out" \
+  && bad "round-stats: a merged pass appears as a provider column: '$out'" \
+  || ok "round-stats: a merged pass does not appear as a provider column"
+grep -qE '^rd1 .*= 2$' <<<"$out" \
+  && ok "round-stats: round 1 total excludes the pass's findings" \
+  || bad "round-stats: round 1 total includes the pass's findings: '$(grep '^rd1' <<<"$out")'"
+grep -qE '^rd2 .*= 2  ' <<<"$out" \
+  && ok "round-stats: round 2 total excludes the pass (which has none)" \
+  || bad "round-stats: round 2 total wrong: '$(grep '^rd2' <<<"$out")'"
+grep -qE '^rd2 .*flat' <<<"$out" \
+  && ok "round-stats: the trend glyph reads flat once the pass is excluded" \
+  || bad "round-stats: the trend glyph is skewed by the pass: '$(grep '^rd2' <<<"$out")'"
+grep -qE '^verdict: converge' <<<"$out" \
+  && ok "round-stats: the verdict is converge (flat), not steered by the pass into re-fan" \
+  || bad "round-stats: the pass steered the verdict: '$(grep '^verdict:' <<<"$out")'"
+# The pass's findings are still counted where findings ARE counted — gate-summary's ratio total
+# is unaffected by this fix, since gate-summary never removes a pass's findings from $t (only its
+# raiser identity from the independence-check "admitted" set).
+gsout="$(bash "$SUT" gate-summary "$RSP" primary-model 2>&1)"
+grep -qE 'of 8 across 2 secondaries' <<<"$gsout" \
+  && ok "round-stats fix does not affect gate-summary: the pass's findings still count in the ratio total" \
+  || bad "gate-summary ratio total wrong after the round-stats fix: '$gsout'"
+
 # --- channel-check: reviewer findings that land outside the merged region (issue #32) ---
 # mkcopy <name> <body-lines...> : a working copy; the LAST "## Review" is the finding channel
 mkcc() { local p="${WORK}/$1"; shift; printf '%s\n' "$@" > "$p"; echo "$p"; }

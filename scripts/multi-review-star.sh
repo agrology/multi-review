@@ -1516,7 +1516,8 @@ cmd_round_stats() {
   # quar/hintp go through the ENVIRONMENT, not `awk -v`: -v values cannot contain a literal
   # newline (two quarantine records in one doc made awk die "newline in string"), and -v also
   # escape-processes backslashes. Same reason cmd_merge passes its block via ENVIRON.
-  printf '%s\n' "$t" | RS_QUAR="$quar" RS_HINTP="$hintp" awk -F'\t' -v rounds="$round" -v maxr="$max" '
+  printf '%s\n' "$t" | RS_QUAR="$quar" RS_HINTP="$hintp" RS_PASSES="$STAR_PASSES" \
+    awk -F'\t' -v rounds="$round" -v maxr="$max" '
     BEGIN {
       nq = split(ENVIRON["RS_QUAR"], ql, "\n")
       for (i = 1; i <= nq; i++) {
@@ -1525,6 +1526,14 @@ cmd_round_stats() {
       }
       np = split(ENVIRON["RS_HINTP"], hp, " ")
       for (i = 1; i <= np; i++) if (hp[i] != "") provs[hp[i]] = 1
+      # STAR_PASSES (issue #90, final review B3) — mirrors gate-summary excluding a pass raiser
+      # identity from the ADMITTED set. NB: no apostrophes in this comment or below — this awk
+      # program is single-quoted in the shell and one ends it mid-flight. Without this exclusion a
+      # merged pass (e.g. crossref) reads here as its own provider: it gets a column, inflates
+      # tot[r], drives the trend glyph and dry streak, and can steer the converge/re-fan verdict
+      # the primary reads at the gate.
+      npa = split(ENVIRON["RS_PASSES"], pa, " ")
+      for (i = 1; i <= npa; i++) if (pa[i] != "") PASSES[pa[i]] = 1
     }
     NF {
       # provider is the ns-id prefix before "-rd"; round is the digits that follow it. Same
@@ -1532,6 +1541,7 @@ cmd_round_stats() {
       split($1, pp, "-rd")
       p = pp[1]; r = pp[2]; sub(/-.*/, "", r)
       if (p == "" || r+0 < 1) next
+      if (p in PASSES) next
       C[p SUBSEP (r+0)]++; provs[p] = 1
       # Severity, per round. Column 7 of _table has always carried it; the verdict below counted
       # findings and never looked (issue #47 item 5). Findings are not fungible: a stale docstring
