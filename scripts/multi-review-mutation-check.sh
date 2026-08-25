@@ -1386,6 +1386,274 @@ mutations() {
     '      if (v ~ /^converge/ && HI[rounds+0] > 0)' \
     '      if (0)'
 
+
+  # The has-guard in _sections: an ordinal heading (Task/Step/Phase N) still needs its own
+  # Files/Interfaces block to qualify — the ordinal alone would sweep in a heading that never
+  # declares files at all. twosec.md only covered the OTHER half (a non-ordinal preamble that
+  # names a file); this guard had zero coverage until the sibling test above it was added for it.
+  mutate 'crossref/section-needs-files-block' 'scripts/multi-review-crossref.sh' delete \
+    'an ordinal heading without a Files/Interfaces block qualified as a section anyway' 'multi-review-crossref.test.sh' \
+    '        if (!has) continue'
+
+  # FENCE STATE in _sections (duplicated from strip_fences for module isolation, so it needs its
+  # own coverage): a '#' line inside a fenced code block must not parse as a heading. Reproduced
+  # against a real plan document: it truncated a 416-line task to 33 lines.
+  mutate 'crossref/heading-fence-aware' 'scripts/multi-review-crossref.sh' replace \
+    'heading detection is fence-blind' 'multi-review-crossref.test.sh' \
+    '      } else if (tk >= 3) { infence = 1; flen = tk; next }' \
+    '      }'
+
+  # A section ends at the next heading of EQUAL-OR-SHALLOWER depth, never at the next ordinal
+  # heading — "Task N" and "Step N" both match the ordinal pattern, so the naive rule ends a
+  # task at its own first step.
+  mutate 'crossref/section-end-by-depth' 'scripts/multi-review-crossref.sh' replace \
+    'depth-blind boundaries truncated the section' 'multi-review-crossref.test.sh' \
+    '        for (q = 1; q <= hn; q++) if (ahl[q] > hl[i] && ad[q] <= hd[i]) { e = ahl[q] - 1; break }' \
+    '        for (q = 1; q <= hn; q++) if (ahl[q] > hl[i]) { e = ahl[q] - 1; break }'
+
+  # P-rows come from declared UNION named, never declarations alone (spec criterion 10) — #90
+  # measured six Files entries with no corresponding step in a single document. A
+  # declaration-only implementation passes every other test in this suite and fails only here.
+  mutate 'crossref/pairs-from-union' 'scripts/multi-review-crossref.sh' replace \
+    'the union rule is not in effect, and this repo'"'"'s own shipped defect would survive' 'multi-review-crossref.test.sh' \
+    '    { _files_declared "$doc" "$start" "$end"; _files_named "$doc" "$start" "$end"; } \' \
+    '    { _files_declared "$doc" "$start" "$end"; } \'
+
+  # _files_named must fence-strip before scanning for path tokens — a path inside a fenced code
+  # block is illustrative output, not a file the section touches, and counting it manufactures a
+  # pair out of sample output.
+  mutate 'crossref/named-strips-fences' 'scripts/multi-review-crossref.sh' replace \
+    'a path inside a fenced block manufactured a pair' 'multi-review-crossref.test.sh' \
+    '  strip_fences "${TMPD}/sec.$$" | _paths_in' \
+    '  cat "${TMPD}/sec.$$" | _paths_in'
+
+  # The I%d emitter: every Consumes entry, matched or not, must produce a row — an unmatched
+  # Consumes is exactly the defect the pass exists to surface, and a silently-dropped row would
+  # make that defect invisible to `check`.
+  mutate 'crossref/iface-row-per-consumes' 'scripts/multi-review-crossref.sh' delete \
+    'the unmatched Consumes entry produced no row — the defect would be invisible' 'multi-review-crossref.test.sh' \
+    '      printf '"'"'I%d\tiface\t%s\tconsumes: %s\n'"'"' "$inum" "$sid" "$entry"'
+
+  # check clause 1: a row with no verdict at all is an incomplete turn, not a passing one.
+  mutate 'crossref/check-missing-rows' 'scripts/multi-review-crossref.sh' replace \
+    'coverage is not enforced' 'multi-review-crossref.test.sh' \
+    '    || die "incomplete turn: no verdict for row(s): ${missing% }" 1' \
+    '    || true'
+
+  # check clause 3: a verdict naming a row `rows` never emitted must fail — otherwise a reviewer
+  # could invent row ids and dilute real coverage with noise `check` cannot distinguish.
+  mutate 'crossref/check-unemitted-rows' 'scripts/multi-review-crossref.sh' replace \
+    'a verdict for an unemitted row passed' 'multi-review-crossref.test.sh' \
+    '    || die "verdict names row(s) that were never emitted: ${extra% }" 1' \
+    '    || true'
+
+  # check clause 2: a `defect` verdict must name a finding that is actually present in the SAME
+  # copy — a defect recorded only in the table bypasses adjudication entirely.
+  mutate 'crossref/check-defect-anchored' 'scripts/multi-review-crossref.sh' replace \
+    'an unanchored defect passed' 'multi-review-crossref.test.sh' \
+    '    '"'"' || die "crossref defect names finding '"'"'${fid}'"'"', which is not in this copy" 1' \
+    '    '"'"' || true'
+
+  # The disclosure header (`> [crossref] — via <model>`) is required exactly as on a
+  # [no-findings] turn — without it there is no evidence a model actually produced this table.
+  mutate 'crossref/check-disclosure' 'scripts/multi-review-crossref.sh' replace \
+    'a table with no disclosure passed' 'multi-review-crossref.test.sh' \
+    '    || die "crossref table carries no '"'"'> [crossref] — via <model>'"'"' disclosure" 1' \
+    '    || true'
+
+  # The defect-anchor match is LITERAL (index()), never a regex — star.sh:586 uses the same
+  # pattern for the same reason: a metacharacter in a bogus finding id (e.g. "r.") must not
+  # incidentally match an unrelated real finding ("rX") via a wildcard.
+  mutate 'crossref/defect-anchor-literal' 'scripts/multi-review-crossref.sh' replace \
+    'a defect id '"'"'r.'"'"' matched unrelated finding '"'"'rX'"'"' via regex — anchoring is not literal' 'multi-review-crossref.test.sh' \
+    '      index($0, "> [finding:" fid "|") == 1 { f = 1; exit }' \
+    '      $0 ~ fid { f = 1; exit }'
+
+  # A missing <copy> argument to `check` is a usage error (exit 2), not a coverage failure
+  # (exit 1) — the two must stay distinguishable so a caller can tell "you invoked me wrong"
+  # from "the reviewer's turn is untrustworthy".
+  mutate 'crossref/usage-exit-2' 'scripts/multi-review-crossref.sh' delete \
+    'want rc=2, multi-review-crossref: prefix' 'multi-review-crossref.test.sh' \
+    '  [[ $# -ge 2 ]] || die "usage: multi-review-crossref.sh check <doc> <copy>" 2'
+
+  # _review_verdicts must fence-strip the same way _table does (star.sh) — a verdict line
+  # quoted inside a fenced example in the Review section is documentation, not a real verdict.
+  mutate 'crossref/verdicts-strip-fences' 'scripts/multi-review-crossref.sh' replace \
+    'fence-stripping is not applied' 'multi-review-crossref.test.sh' \
+    '  strip_fences "${TMPD}/rv.$$"' \
+    '  cat "${TMPD}/rv.$$"'
+
+  # _review_verdicts must use the LAST '## Review' heading, not the first — the same
+  # channel discipline the finding grammar uses. A stale FIRST block with complete coverage must
+  # not mask a real LAST block that is incomplete.
+  mutate 'crossref/verdicts-last-review' 'scripts/multi-review-crossref.sh' replace \
+    'stale complete coverage was used instead of the last' 'multi-review-crossref.test.sh' \
+    '  awk '"'"'{ a[NR] = $0 } /^## Review[[:space:]]*$/ { last = NR }' \
+    '  awk '"'"'{ a[NR] = $0 } /^## Review[[:space:]]*$/ { if (!last) last = NR }'
+
+  # Verdict lines outside any '## Review' heading must not count — without heading scoping,
+  # text anywhere in the document (a prior draft, a scratch note) could forge coverage.
+  mutate 'crossref/verdicts-review-scoped' 'scripts/multi-review-crossref.sh' replace \
+    'verdicts outside any '"'"'## Review'"'"' heading were counted — heading scoping is not applied' 'multi-review-crossref.test.sh' \
+    '       END { if (last) for (i = last + 1; i <= NR; i++) print a[i] }'"'"' "$1" > "${TMPD}/rv.$$"' \
+    '       END { for (i = 1; i <= NR; i++) print a[i] }'"'"' "$1" > "${TMPD}/rv.$$"'
+  # The `rows` invocation itself, in step 2 — without it the pass derives no worklist and every
+  # downstream piece (seed, dispatch, check) has nothing to act on.
+  mutate 'command/crossref-dispatched' 'commands/multi-review.md' delete \
+    'the crossref row derivation is never invoked' 'multi-review-packaging.test.sh' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh rows "<doc>" > "<doc>.crossref.rows"`.'
+
+  # The explicit "it is not a secondary" statement (spec §0) — say it out loud, in the doc a
+  # later editor actually reads, not just enforce it in code where a rewrite could silently drop
+  # the exclusion and no reviewer of the PROSE would notice.
+  mutate 'command/crossref-not-a-secondary' 'commands/multi-review.md' replace \
+    'nothing says the crossref pass is not a secondary' 'multi-review-packaging.test.sh' \
+    '   argument, so **it is not a secondary**: it is excluded from the reviewer roster resolved in' \
+    '   argument, so it is excluded from the reviewer roster resolved in'
+
+  # Step 2's exit-0 branch must actually SEED the pass (both `<doc>.crossref` and its
+  # `.seed` snapshot) — without the seed, step 4's blind-dispatch has no baseline to diff
+  # against and step 5's wait has nothing to bound.
+  mutate 'command/crossref-seeded' 'commands/multi-review.md' replace \
+    'step 2 no longer seeds' 'multi-review-packaging.test.sh' \
+    '   "<doc>.crossref"`, rewrite its header the way above, then snapshot it as `<doc>.crossref.seed`' \
+    '   "<doc>.crossref"`, rewrite its header the way above.'
+
+  # The actual dispatch in step 4 must pass `--crossref` — without it the Agent task text
+  # would emit an ORDINARY reviewer prompt instead of the crossref pass's own grammar, and the
+  # pass's copy would never get a turn worth checking.
+  mutate 'command/crossref-dispatched-in-fanout' 'commands/multi-review.md' replace \
+    'step 4 no longer dispatches' 'multi-review-packaging.test.sh' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.crossref" --crossref' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.crossref"'
+
+  # Step 5 must wait on the pass WITH the secondaries — bounding it against its own `.seed`,
+  # same as an ordinary copy. Without this, merge could run before the pass ever writes
+  # anything, and step 8's `crossref check` would see a stale or empty copy.
+  mutate 'command/crossref-waited' 'commands/multi-review.md' replace \
+    'step 5 no longer waits' 'multi-review-packaging.test.sh' \
+    '   after them.** Bound `<doc>.crossref` against `<doc>.crossref.seed` with the same bound and' \
+    '   after them.** Bound `<doc>.crossref` with the same bound and'
+
+  # Step 7's `merge` invocation must actually pass `--pass "<doc>.crossref"` — without it the
+  # pass's findings are derived and coverage-checked but never reach the merged doc at all
+  # (Task 7's whole reason for existing).
+  mutate 'command/crossref-merged-as-pass' 'commands/multi-review.md' replace \
+    'merge is never given --pass' 'multi-review-packaging.test.sh' \
+    '   <id>:<reason> ...] [--pass "<doc>.crossref"] "<doc>" <admitted copies...>`. Pass `--pass' \
+    '   <id>:<reason> ...] "<doc>" <admitted copies...>`. Pass `--pass'
+
+  # The explicit verify-vendor exemption for the crossref copy — say it out loud so a later
+  # editor does not "fix" what looks like an omission by routing a vendorless pass through
+  # vendor verification it cannot pass.
+  mutate 'command/crossref-no-verify-vendor' 'commands/multi-review.md' replace \
+    'nothing says the crossref pass skips verify-vendor' 'multi-review-packaging.test.sh' \
+    '   **The crossref pass'"'"'s copy is not verified here.** `<doc>.crossref` is not run through' \
+    '   **The crossref pass'"'"'s copy is not verified here.** `<doc>.crossref` still goes through'
+
+  # The terminal gate's release-rule paragraph must name the pass's own working-file shapes
+  # (`<doc>.crossref.seed`, and `<doc>.crossref.rows` — the one shape that doesn't fit the
+  # provider-or-pass `.seed` pattern) — otherwise they are never released (R10).
+  mutate 'command/crossref-gate-releases' 'commands/multi-review.md' replace \
+    'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
+    '  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` included),' \
+    '  `<doc>.<id>.seed` (per provider only),'
+  # ---- the cross-reference pass (#90) ------------------------------------------------------
+
+  # The `--pass` argv-parsing arm itself — without it `--pass <copy>` falls through to the
+  # positional catch-all and is silently swallowed as a stray argument.
+  mutate 'star/merge-pass-arm' 'scripts/multi-review-star.sh' delete \
+    'pass copy findings did not merge' 'multi-review-star.test.sh' \
+    '      --pass) [[ $# -ge 2 ]] || die "--pass requires a value" 2; passes+=("$2"); shift 2 ;;'
+
+  # pass_id_of_copy's STAR_PASSES membership check — without it ANY suffix after "<doc>." is
+  # accepted as a pass id, defeating the whole point of a known-passes allowlist.
+  mutate 'star/merge-pass-validates-id' 'scripts/multi-review-star.sh' replace \
+    'unknown pass id (rc=' 'multi-review-star.test.sh' \
+    '  die "copy names an unknown pass '"'"'${p}'"'"': $copy (known: ${STAR_PASSES})" 2' \
+    '  echo "$p"'
+
+  # The pass copy's own -f existence check — without it a --pass argument naming a file that
+  # was never written (a crashed or never-dispatched pass) is silently treated as present, and
+  # merge proceeds to build a doc from content that does not exist.
+  mutate 'star/merge-pass-file-exists' 'scripts/multi-review-star.sh' delete \
+    'missing pass copy did not fail loudly' 'multi-review-star.test.sh' \
+    '    [[ -f "$copy" ]] || die "merge: pass copy not found: $copy" 1'
+
+  # pass_id_of_copy's failure must actually ABORT the merge before the doc is written — the
+  # `|| exit $?` is what turns a die() inside the $(...) subshell (which cannot itself kill the
+  # parent) into a real abort. Drop it and the swallowed failure lets merge proceed to write the
+  # doc anyway, exactly as if the validation had run too late to stop anything.
+  mutate 'star/merge-pass-before-write' 'scripts/multi-review-star.sh' replace \
+    'unknown pass id (rc=' 'multi-review-star.test.sh' \
+    '    provider="$(pass_id_of_copy "$doc" "$copy")" || exit $?' \
+    '    provider="$(pass_id_of_copy "$doc" "$copy")"'
+
+  # A --pass copy's findings must travel the SAME namespace_blocks path (fence-strip + id
+  # rewrite to <pass>-rd<N>-<id>) an ordinary copy's do — occurrence 2 of this call, the pass
+  # loop's own. Without it a pass's raw copy content (including its header) would be spliced in
+  # verbatim, with no namespaced finding id for merge/adjudication to key on.
+  mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace:2 \
+    'pass copy findings did not merge' 'multi-review-star.test.sh' \
+    '    block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'"'"'\n'"'"'' \
+    '    block="${block}$(cat "$copy")"$'"'"'\n'"'"''
+
+  # STAR_PASSES itself, the single source of truth for which namespace prefixes are passes
+  # rather than providers — governs BOTH pass_id_of_copy's validation and gate-summary's
+  # secondary-count exclusion. Emptied, a pass copy is rejected as an unknown pass by merge AND
+  # (if it somehow reached the doc another way) counted as a full secondary at the gate.
+  mutate 'star/passes-constant' 'scripts/multi-review-star.sh' replace \
+    'pass copy inflated the secondary count' 'multi-review-star.test.sh' \
+    'STAR_PASSES="crossref"' \
+    'STAR_PASSES=""'
+
+  # cmd_gate_summary's STAR_PASSES exclusion from `admitted` (spec criterion 9) — without it a
+  # merged pass copy's raiser (its namespace prefix) counts as a full secondary and skews both
+  # the secondary total and the cross-vendor independence check.
+  mutate 'star/gate-excludes-passes' 'scripts/multi-review-star.sh' replace \
+    'pass copy inflated the secondary count' 'multi-review-star.test.sh' \
+    '    admitted="$(printf '"'"'%s\n'"'"' "$admitted" | grep -vFx "$ga_pass" || true)"' \
+    '    :'
+
+  # pass_id_of_copy's prefix-strip guard (`[[ "$p" != "$copy" "]]`). Redundant behind the
+  # STAR_PASSES membership loop just below it — a non-stripped path (still containing "<doc>.")
+  # can never equal a bare known pass id like "crossref", so the loop's own die() catches the
+  # same input with a slightly different message. Recorded rather than dropped so losing the
+  # STAR_PASSES loop (the outer layer) would surface here as a real gap.
+  mutate 'star/merge-pass-prefix-guard' 'scripts/multi-review-star.sh' delete \
+    'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
+    '  [[ "$p" != "$copy" ]] || die "copy name does not match <doc>.<pass>: $copy" 2'
+
+  # cmd_gate_summary's crossref-coverage rendering: N==M (complete) vs N<M (INCOMPLETE) must
+  # render differently — the whole point of the pass is that a partially-verdicted round is
+  # visible at the gate, not indistinguishable from a fully-verdicted one.
+  mutate 'star/gate-crossref-incomplete-flag' 'scripts/multi-review-star.sh' replace \
+    'incomplete crossref coverage not flagged' 'multi-review-star.test.sh' \
+    '      if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then' \
+    '      if true; then'
+
+  # cmd_gate_summary's not-applicable rendering branch — without it a doc whose crossref pass
+  # recorded "not applicable" renders NOTHING for cross-reference coverage, indistinguishable
+  # from a doc where the pass was never wired up at all.
+  mutate 'star/gate-crossref-not-applicable-rendering' 'scripts/multi-review-star.sh' replace \
+    'not-applicable crossref coverage missing' 'multi-review-star.test.sh' \
+    '    if [[ "$xr" == "not applicable" ]]; then' \
+    '    if false; then'
+
+  # The crossref prompt's empty-rows-file guard — `rows` itself never produces an empty file
+  # (it dies exit 3 first), but a hand-built or truncated one can, and unguarded this would
+  # silently emit a prompt asking the reviewer to verdict nothing.
+  mutate 'reviewer/crossref-prompt-empty-rows-rejected' 'scripts/multi-review-reviewer.sh' delete \
+    'an empty rows file is not rejected' 'multi-review-reviewer.test.sh' \
+    '    [[ -s "$rowsfile" ]] || die "crossref rows file is empty: $rowsfile" 2'
+
+  # The crossref prompt's --crossref/--reviewer exclusivity guard — without it, --crossref
+  # combined with --reviewer is silently dropped by resolve_id's unrecognised-flag catch-all,
+  # and the round quietly becomes an ordinary review with rc=0 and no signal anything was wrong.
+  mutate 'reviewer/crossref-prompt-exclusive-flag' 'scripts/multi-review-reviewer.sh' replace \
+    'combined with --reviewer is silently dropped' 'multi-review-reviewer.test.sh' \
+    '      && die "usage: --crossref must be the only flag after <doc-path>, not combined with --reviewer" 2' \
+    '      && true'
 }
 
 if (( list )); then mutations; exit 0; fi

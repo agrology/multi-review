@@ -37,6 +37,21 @@ n="$(awk -F'\t' '$2=="self"' <<<"$out" | wc -l | tr -d ' ')"
 [[ "$n" == 2 ]] && ok "rows: one self row per qualifying section (got $n)" \
   || bad "rows: expected 2 self rows, got $n — a preamble that names a file may have qualified"
 
+# --- the block alone half of the same rule: an ORDINAL heading with no Files/Interfaces block
+# must not qualify either. twosec.md above only exercises the ordinal-alone half (a non-ordinal
+# preamble); this fixture is the other half, with a real "### Task N" heading that never declares
+# a Files/Interfaces block at all.
+D="$(mkdoc noblock.md \
+  '# Plan' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' \
+  '### Task 2: no files block' '' 'Mentions `scripts/shared2.sh` but declares nothing.' '' \
+  '### Task 3: second' '' '**Files:**' '- Modify: `scripts/shared2.sh`' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"
+n="$(awk -F'\t' '$2=="self"' <<<"$out" | wc -l | tr -d ' ')"
+[[ "$n" == 2 ]] \
+  && ok "rows: an ordinal heading with no Files/Interfaces block does not qualify (got $n self rows)" \
+  || bad "rows: an ordinal heading without a Files/Interfaces block qualified as a section anyway, got $n self rows"
+
 # --- a '#' line inside a fenced block is not a heading (spec criterion 11) ---
 # Reproduced against a real plan: a bash comment "# --- setup ---" parsed as a depth-1 heading and
 # truncated a 416-line task to 33 lines, silently discarding every pair in the rest of its body.
