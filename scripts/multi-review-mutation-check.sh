@@ -373,8 +373,8 @@ mutations() {
   # ambiguous on paper, it was observably unpredictable.
   mutate 'reviewer/prompt-names-allowed-first-read' 'scripts/multi-review-reviewer.sh' replace \
     'drops the absolute ban without saying what MAY precede' 'multi-review-reviewer.test.sh' \
-    'contract is the one read that may come before it, because it defines the grammar this turn must' \
-    'contract matters here, because it defines the grammar this turn must'
+    'that defines this turn'"'"'s own grammar and handoff may be read before it — the protocol contract and' \
+    'about this turn may be read before it — the protocol contract and'
 
   # `--resume` without a roster. Removed, the flag silently degrades to a fresh ask: `src` becomes
   # "resume" only inside the `[[ -n "$csv" ]]` branch, so an empty value falls through to
@@ -386,8 +386,17 @@ mutations() {
   # reason instead of proving the guard.
   mutate 'star/resume-requires-roster' 'scripts/multi-review-star.sh' replace \
     'silently degraded to a fresh ask' 'multi-review-star.test.sh' \
-    '  if (( resume )) && [[ -z "$csv" ]]; then' \
+    '  if (( resume )) && [[ -z "${csv//[[:space:]]/}" ]]; then' \
     '  if false; then'
+
+  # The whitespace TRIM in the resume-roster guard, distinct from the guard's existence above.
+  # Reverted to a bare `-z "$csv"`, a whitespace-only roster is not empty and passes straight
+  # through to the floor — the silent degrade the guard exists to close, reintroduced inside it
+  # (fable-rd1-r1, #93).
+  mutate 'star/resume-roster-trims-space' 'scripts/multi-review-star.sh' replace \
+    'whitespace slipped past the -z guard' 'multi-review-star.test.sh' \
+    '  if (( resume )) && [[ -z "${csv//[[:space:]]/}" ]]; then' \
+    '  if (( resume )) && [[ -z "$csv" ]]; then'
 
   # The macOS locale-pin job's own locale. Removed, the job's `caught` expectation rides on the
   # runner's ambient locale: demonstrated with the real pipeline on an invalid byte — under UTF-8
@@ -1097,8 +1106,8 @@ mutations() {
   # real one. Observed across four dispatches; three referenced the doc in zero commands.
   mutate 'reviewer/prompt-read-doc-in-full' 'scripts/multi-review-reviewer.sh' replace \
     'never demands the document be read' 'multi-review-reviewer.test.sh' \
-    'READ THAT DOCUMENT IN FULL, FIRST — end to end, before any other exploration. The protocol' \
-    'Read the document, end to end, before any other exploration. The protocol'
+    'READ THAT DOCUMENT IN FULL, FIRST — end to end, before any other exploration. Only the material' \
+    'Read the document, end to end, before any other exploration. Only the material'
   # ---- the wait bound's quarantine inputs (#71, #47) ------------------------------------------
   # wait.sh had NO entries before this group. Its exit code is the sole input to the quarantine
   # decision, so a guard lost here does not fail loudly — it silently discards reviewer turns.

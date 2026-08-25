@@ -284,7 +284,11 @@ cmd_resolve_set() {
   # fresh ask REFUSES an undispatchable reviewer with exit 4, the exact outcome `--resume` exists
   # to prevent. Reachable from the command's own resume path whenever a doc header carries no
   # `reviewers:` suffix, which `_roster` treats as legitimate (fable-rd1-r2, #91).
-  if (( resume )) && [[ -z "$csv" ]]; then
+  # `${csv//[[:space:]]/}`, not `-z "$csv"`: a whitespace-only value is not empty, so `-z` passed
+  # '   ' straight through to the floor — the same silent degrade this guard was added to close,
+  # reintroduced by the guard itself. Reproduced at rc=0 with a fable-only roster (fable-rd1-r1,
+  # #93). The class covers tabs, which a hand-edited header suffix can easily carry.
+  if (( resume )) && [[ -z "${csv//[[:space:]]/}" ]]; then
     die "resolve-set: --resume requires --reviewers <ids> (it declares the in-flight roster and cannot infer one; a doc header with no 'reviewers:' suffix must be resumed by naming the set explicitly)" 2
   fi
   # Validate BEFORE any source selection, and regardless of --fable-floor: a typo'd value must

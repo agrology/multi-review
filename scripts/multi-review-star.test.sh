@@ -2630,6 +2630,17 @@ out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers '' 2>&1)"; rc=
 [[ $rc == 2 ]] \
   && ok "resolve-set: --resume with an EMPTY --reviewers also exits 2" \
   || bad "resolve-set: --resume --reviewers '' exited $rc — an empty roster is exactly what a suffix-less doc header produces"
+# WHITESPACE-ONLY too. `[[ -z "$csv" ]]` is false for ' ', so the guard passed it straight through
+# to the floor — the same silent degrade the guard was added to close, reintroduced by its own
+# fix. Reproduced: rc=0 with a fable-only roster (fable-rd1-r1, #93).
+out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers '   ' 2>&1)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "resolve-set: --resume with a WHITESPACE-only --reviewers exits 2" \
+  || bad "resolve-set: --resume --reviewers '   ' exited $rc — whitespace slipped past the -z guard and silently degraded to the floor"
+out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers $'\t' 2>&1)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "resolve-set: --resume with a TAB-only --reviewers exits 2" \
+  || bad "resolve-set: --resume --reviewers '<tab>' exited $rc — the trim must cover tabs, not just spaces"
 # The real resume path must keep working.
 out="$(bash "$SUT" resolve-set --fable-floor --resume --reviewers fable 2>&1)"; rc=$?
 [[ $rc == 0 ]] && grep -q '^fable|' <<<"$out" \

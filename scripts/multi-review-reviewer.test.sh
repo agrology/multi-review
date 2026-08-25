@@ -213,9 +213,24 @@ for p in codex fable gemini; do
   # while the rest of the clause starts the next, and a line-oriented grep never sees them
   # together. Verified — the assertion reported a false FAIL against correct text before this.
   flat="$(tr '\n' ' ' <<<"$out" | tr -s ' ')"
-  grep -qiE 'protocol[^.]{0,60}(may|is the one|only)[^.]{0,60}(precede|before|first)' <<<"$flat" \
-    && ok "prompt($p) names the one read allowed before the document" \
+  grep -qiE 'protocol[^.]{0,60}(may|is the one|only)[^.]{0,60}(precede|before|first)|defines[^.]{0,40}grammar[^.]{0,60}(may|precede|before|first)' <<<"$flat" \
+    && ok "prompt($p) names what may precede the document" \
     || bad "prompt($p) drops the absolute ban without saying what MAY precede the document — silence reopens the ambiguity"
+  # STATED BY PURPOSE, NOT BY ENUMERATION. Two attempts at this paragraph shipped a contradiction,
+  # both by listing exceptions and missing one: attempt 1 forbade "any repo file" and forgot the
+  # protocol contract; attempt 2 named the protocol contract and forgot SKILL.md, which a
+  # skill-bearing provider must read to know what the protocol is (codex-rd1-r1 on PR #93,
+  # corroborated by its own read order: SKILL.md, protocol, document). A third enumeration is the
+  # same bet. The rule must cover files nobody has thought of yet, so it must key on what the
+  # material IS, not on its path.
+  # The discriminating property is that the exception names a CLASS, not one artifact. The prior
+  # wording ("The protocol contract is the one read that may come before it, because it defines
+  # the grammar...") already contains "defines the grammar", so any assertion keying on that
+  # phrase passes against the DEFECTIVE text and proves nothing — verified: it reported ok before
+  # this fix existed. Key on the class phrasing instead, which only the corrected text has.
+  grep -qiE '(material|anything|whatever) that defines' <<<"$flat" \
+    && ok "prompt($p) states the precedence rule as a class, not one named file" \
+    || bad "prompt($p) scopes the exception to a single named artifact — both shipped contradictions were a missing list entry, so the rule must cover files nobody has thought of yet"
 done
 
 # --- prompt: skill-bearing provider points at the skill; skill-less ones do NOT ---

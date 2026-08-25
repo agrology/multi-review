@@ -498,10 +498,11 @@ emit_prompt() { # <abs-doc-path> <has-skill> <dispatch-kind>
 Review EXACTLY this document — its canonical absolute path:
   ${abs}
 
-READ THAT DOCUMENT IN FULL, FIRST — end to end, before any other exploration. The protocol
-contract is the one read that may come before it, because it defines the grammar this turn must
-produce; nothing else does. Do not open repo source, git history, or any file the document merely
-mentions until you have read the document itself. Reading *about* the review is not reading the
+READ THAT DOCUMENT IN FULL, FIRST — end to end, before any other exploration. Only the material
+that defines this turn's own grammar and handoff may be read before it — the protocol contract and
+whatever carries it to you. Everything else waits: material ABOUT the change under review — repo
+source, git history, any file the document merely mentions — comes after you have read the
+document itself. Reading *about* the review is not reading the
 document under review, and a turn that never opened it cannot raise a finding: the
 \`[no-findings]\` it reports is indistinguishable at the gate from a real clean review.
 
