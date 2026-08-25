@@ -110,6 +110,20 @@ _files_named() { # <doc> <start> <end>
   rm -f "${TMPD}/sec.$$"
 }
 
+# Entries under **Interfaces:** whose bullet starts with the given kind. The bullet text after
+# "Consumes:"/"Produces:" is kept verbatim — it is what the reviewer reads.
+_iface_lines() { # <doc> <start> <end> <Consumes|Produces>
+  sed -n "${2},${3}p" "$1" \
+    | awk -v kind="$4" '
+        /^\*\*Interfaces:\*\*/ { inblk = 1; next }
+        inblk && /^[[:space:]]*$/ { inblk = 0 }
+        inblk && $0 ~ ("^- " kind ":") {
+          line = $0; sub("^- " kind ":[ \t]*", "", line)
+          if (line != "") print line
+        }
+      '
+}
+
 cmd_rows() { # <doc>
   local doc="${1:?usage: multi-review-crossref.sh rows <doc>}" secs nsec
   [[ -f "$doc" ]] || die "doc not found: $doc" 2
@@ -150,6 +164,16 @@ cmd_rows() { # <doc>
       done <<< "$shared"
     done
   done
+
+  local inum=0 entry
+  while IFS=$'\t' read -r _idx start end sid _title; do
+    [[ -n "$sid" ]] || continue
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      inum=$((inum + 1))
+      printf 'I%d\tiface\t%s\tconsumes: %s\n' "$inum" "$sid" "$entry"
+    done < <(_iface_lines "$doc" "$start" "$end" Consumes)
+  done <<< "$secs"
 }
 
 main() {

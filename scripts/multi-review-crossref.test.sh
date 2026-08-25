@@ -132,10 +132,27 @@ else
   awk -F'\t' '$2=="pair" && $4=="scripts/multi-review-mutation-check.sh"' <<<"$out" | grep -q . \
     && ok "rows: the fixture's named-only/declared-only pair is generated" \
     || bad "rows: the union pair is absent — a declaration-only pair set would ship"
-  # Task 3: awk -F'\t' '$2=="iface"' <<<"$out" | grep -q . \
-  # Task 3:   && ok "rows: the fixture yields an interface row" \
-  # Task 3:   || bad "rows: no iface row from the fixture (expected once Task 3 lands)"
+  awk -F'\t' '$2=="iface"' <<<"$out" | grep -q . \
+    && ok "rows: the fixture yields an interface row" \
+    || bad "rows: no iface row from the fixture (expected once Task 3 lands)"
 fi
+
+# --- an interface consumed but never produced earlier is a row that can fail ---
+D="$(mkdoc iface.md \
+  '# Plan' '' \
+  '### Task 1: produces' '' '**Files:**' '- Create: `scripts/a.sh`' '' \
+  '**Interfaces:**' '- Produces: `alpha --flag`' '' \
+  '### Task 2: consumes something real' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
+  '**Interfaces:**' '- Consumes: `alpha --flag`' '' \
+  '### Task 3: consumes something nobody makes' '' '**Files:**' '- Modify: `scripts/c.sh`' '' \
+  '**Interfaces:**' '- Consumes: `omega --nope`' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"
+n="$(awk -F'\t' '$2=="iface"' <<<"$out" | wc -l | tr -d ' ')"
+[[ "$n" == 2 ]] && ok "rows: one iface row per Consumes entry (got $n)" \
+  || bad "rows: expected 2 iface rows, got $n"
+awk -F'\t' '$2=="iface" && $3=="Task 3"' <<<"$out" | grep -q 'omega' \
+  && ok "rows: an unmatched Consumes still produces a row for the reviewer to verdict" \
+  || bad "rows: the unmatched Consumes entry produced no row — the defect would be invisible"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
