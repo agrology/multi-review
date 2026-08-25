@@ -426,6 +426,47 @@ bash "$SUT" merge --round 1 "$BASEQ" "${BASEQ}.bogus" >/dev/null 2>&1; rc=$?
 after="$(shasum "$BASEQ" | cut -d' ' -f1)"
 [[ $rc -ne 0 && "$before" == "$after" ]] && ok "merge: unregistered provider -> nonzero exit, doc untouched" || bad "merge bad-provider (rc=$rc)"
 
+# --- merge: --pass (Task 7, crossref) ------------------------------------------------------
+# A --pass copy travels the SAME namespace_blocks path an ordinary copy does, but is validated
+# against STAR_PASSES, NOT the reviewer registry — registering "crossref" as a provider is what
+# spec §0 forbids. Regression test for the whole task: "crossref" has no case in
+# multi-review-reviewer.sh's provider_row, so this only merges if --pass validation goes through
+# STAR_PASSES instead of provider_of_copy.
+BASEP="${WORK}/mpass.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASEP"
+mkcopy "${BASEP}.codex"    '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+mkcopy "${BASEP}.crossref" '> [finding:c1|med] shared file mismatch' '> — via gpt-5.5' '> — risk: rc'
+bash "$SUT" merge --round 1 "$BASEP" "${BASEP}.codex" --pass "${BASEP}.crossref" >/dev/null 2>&1
+grep -q '^> \[finding:codex-rd1-r1|high\] alpha$' "$BASEP" \
+  && ok "merge --pass: an ordinary copy still merges alongside a pass copy" \
+  || bad "merge --pass: ordinary copy dropped"
+grep -q '^> \[finding:crossref-rd1-c1|med\] shared file mismatch$' "$BASEP" \
+  && ok "merge --pass: pass copy findings namespaced <pass>-rd<N>-<id>, no registry validation" \
+  || bad "merge --pass: pass copy findings did not merge"
+
+# unknown pass id -> hard error, named, doc left untouched (validated before the doc is touched)
+BASEPX="${WORK}/mpassbad.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASEPX"
+mkcopy "${BASEPX}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+mkcopy "${BASEPX}.bogus" '> [finding:c1|low] x' '> — via gpt-5.5' '> — risk: r'
+before="$(shasum "$BASEPX" | cut -d' ' -f1)"
+err="$(bash "$SUT" merge --round 1 "$BASEPX" "${BASEPX}.codex" --pass "${BASEPX}.bogus" 2>&1 >/dev/null)"; rc=$?
+after="$(shasum "$BASEPX" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$before" == "$after" ]] \
+  && ok "merge --pass: unknown pass id -> nonzero exit, doc byte-unchanged" \
+  || bad "merge --pass: unknown pass id (rc=$rc, before=$before after=$after)"
+grep -qF 'crossref' <<<"$err" \
+  && ok "merge --pass: unknown-pass error names the known pass(es)" \
+  || bad "merge --pass: error does not name what IS known: $err"
+
+# a --pass copy that does not exist is a loud failure, not a skip
+BASEPM="${WORK}/mpassmissing.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASEPM"
+mkcopy "${BASEPM}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+before="$(shasum "$BASEPM" | cut -d' ' -f1)"
+bash "$SUT" merge --round 1 "$BASEPM" "${BASEPM}.codex" --pass "${BASEPM}.crossref" >/dev/null 2>&1; rc=$?
+after="$(shasum "$BASEPM" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$before" == "$after" ]] \
+  && ok "merge --pass: missing pass copy -> nonzero exit, doc untouched" \
+  || bad "merge --pass: missing pass copy did not fail loudly (rc=$rc)"
+
 # --- merge: manifest + quarantine ---
 BASE2="${WORK}/m2.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASE2"
 mkcopy "${BASE2}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'

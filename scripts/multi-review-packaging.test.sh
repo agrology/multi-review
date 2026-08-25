@@ -957,4 +957,50 @@ n="$(grep -n 'is not a secondary' "$CMD" | head -1 | cut -d: -f1)"
 [[ -n "$n" ]] && ok "command: the pass is excluded from the secondary count" \
   || bad "command: nothing says the crossref pass is not a secondary — it would inflate the roster and skew the independence warning"
 
+# --- Task 7: the crossref pass's defects must actually reach adjudication ---------------------
+# Spec §0 claimed the pass's findings "merge through the existing finding channel" with no other
+# change needed. False as written (see task-7-brief.md): merge dies on `<doc>.crossref` unless
+# given --pass, which bypasses the reviewer-registry check a bare `<doc>` positional would fail.
+CMD="${ROOT}/commands/multi-review.md"
+
+# merge must be invoked with --pass "<doc>.crossref" — windowed to the Merge step only (through
+# the line before step 8), the same style as the crossref-step window above.
+n="$(grep -nF '**Merge.**' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the Merge step ('**Merge.**') is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^8\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF -- '--pass "<doc>.crossref"' <<<"$blk" \
+    && ok "command: merge is invoked with --pass \"<doc>.crossref\"" \
+    || bad "command: merge is never given --pass \"<doc>.crossref\" — the pass's findings are derived and checked but never reach the merged doc"
+fi
+
+# the crossref copy must be explicitly exempted from verify-vendor — windowed to the Verify
+# identity step only (through the line before step 7).
+n="$(grep -nF 'Verify identity, per copy' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the Verify identity step is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^7\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF 'not run through' <<<"$blk" && grep -qF 'verify-vendor' <<<"$blk" \
+    && ok "command: the crossref copy is explicitly exempted from verify-vendor" \
+    || bad "command: nothing says the crossref pass skips verify-vendor — a later editor could 'fix' this into checking a pass that has no vendor to verify"
+fi
+
+# the terminal gate must release the crossref pass's working files — stated by purpose (R10), not
+# a fourth enumerated entry a future working-file kind can miss the same way twice already.
+n="$(grep -nF '### Terminal gate' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the Terminal gate section is gone"
+else
+  blk="$(sed -n "${n},\$p" "$CMD")"
+  grep -qF 'crossref' <<<"$blk" \
+    && ok "command: the terminal gate's release rule covers the crossref working files" \
+    || bad "command: the terminal gate never mentions crossref — <doc>.crossref/<doc>.crossref.seed/<doc>.crossref.rows are never released (R10)"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

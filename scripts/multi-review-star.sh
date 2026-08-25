@@ -7,7 +7,7 @@
 #   available
 #   open-findings <doc>
 #   observations <doc>
-#   merge --round N [--quarantined p:reason ...] <doc> <copy> ...
+#   merge --round N [--quarantined p:reason ...] [--pass <copy> ...] <doc> <copy> ...
 #   check-converged <doc>
 #   gate-summary <doc> <primary-model-id>
 #   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
@@ -99,6 +99,14 @@ STAR_GREP='<!--[[:space:]]*multi-review-mode:[[:space:]]*star'
 # (see r8/r9: widening this to dots was reverted — dot-free keys keep the whole id pipeline
 # — suffix split, awk matching — injection-free at the root).
 STAR_RE='^[[:space:]]*<!--[[:space:]]*multi-review-mode:[[:space:]]*star([[:space:]]*·[[:space:]]*reviewers:[[:space:]]*[a-z0-9 ]+)?[[:space:]]*-->[[:space:]]*$'
+
+# STAR_PASSES — the single source of truth for which namespace prefixes are PASSES (mechanical,
+# non-perspective dispatches like crossref) rather than reviewer PROVIDERS. `merge --pass` below
+# validates a pass copy's id against this instead of the reviewer registry (spec §0 forbids
+# registering a pass as a provider), and Task 6's gate exclusion reads it too — one literal, not
+# two that can drift apart. Space-separated, same shape as the roster suffix (STAR_RE's
+# `reviewers:` list): [a-z0-9]+ ids.
+STAR_PASSES="crossref"
 
 # The reviewer ROSTER, off the star mode hint: who was dispatched, independent of who raised a
 # finding. gate-summary needs this because "provider that raised a finding" is not "provider that
@@ -559,6 +567,21 @@ provider_of_copy() { # <doc> <copy> -> provider (exact suffix after "<doc>.")
   "$REVIEWER_SH" resolve --reviewer "$p" >/dev/null 2>&1 \
     || die "copy names an unknown provider '${p}': $copy" 2
   echo "$p"
+}
+
+# pass_id_of_copy <doc> <copy> -> pass id (exact suffix after "<doc>.", same extraction as
+# provider_of_copy) — but validated against STAR_PASSES, NOT the reviewer registry. A pass (e.g.
+# crossref) is deliberately not a registered provider (spec §0), so `merge --pass` must not route
+# it through provider_of_copy's registry check.
+pass_id_of_copy() {
+  local doc="$1" copy="$2"
+  local p="${copy#${doc}.}"   # exact prefix strip, same rationale as provider_of_copy (r8)
+  local known
+  [[ "$p" != "$copy" ]] || die "copy name does not match <doc>.<pass>: $copy" 2
+  for known in $STAR_PASSES; do
+    [[ "$p" == "$known" ]] && { echo "$p"; return 0; }
+  done
+  die "copy names an unknown pass '${p}': $copy (known: ${STAR_PASSES})" 2
 }
 
 # emit a copy's finding blocks with ids namespaced <id> -> <provider>-rd<N>-<id> on the
@@ -1076,11 +1099,12 @@ cmd_check_primary_id() { # <doc> <primary-model-id>
 }
 
 cmd_merge() {
-  local round="" doc="" copies=() quarantined=()
+  local round="" doc="" copies=() quarantined=() passes=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --round) [[ $# -ge 2 ]] || die "--round requires a value" 2; round="$2"; shift 2 ;;
       --quarantined) [[ $# -ge 2 ]] || die "--quarantined requires a value" 2; quarantined+=("$2"); shift 2 ;;
+      --pass) [[ $# -ge 2 ]] || die "--pass requires a value" 2; passes+=("$2"); shift 2 ;;
       *) if [[ -z "$doc" ]]; then doc="$1"; else copies+=("$1"); fi; shift ;;
     esac
   done
@@ -1109,6 +1133,13 @@ cmd_merge() {
     [[ "$_qr" =~ ^[^[:cntrl:]]+$ ]] \
       || die "merge: quarantine reason for '${_qp}' contains a control character (newline/tab); the record is one line" 2
   done
+
+  # --pass gets no dedicated up-front loop like --quarantined above: --quarantined NEEDS one
+  # because its own record-writing loop runs AFTER the doc is mutated (the comment above explains
+  # why). A --pass copy's existence/id check instead happens inline in the SAME copy-building loop
+  # ordinary copies already use below (provider_of_copy is validated there too, with no separate
+  # early pass) — that loop runs entirely BEFORE the doc is touched, so inline is already "before
+  # the doc is touched"; a second, earlier loop would only re-validate the same thing.
 
   # Refuse to merge onto a doc already inconsistent with its manifest — fail loud at THIS
   # handoff rather than compounding the corruption into later rounds (issue #16). Round 1 has
@@ -1162,6 +1193,14 @@ cmd_merge() {
   for copy in "${copies[@]}"; do
     [[ -f "$copy" ]] || die "merge: copy not found: $copy" 1
     provider="$(provider_of_copy "$doc" "$copy")" || exit $?
+    block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'\n'
+  done
+  # --pass copies use the SAME namespace_blocks path ordinary copies use, validated against
+  # STAR_PASSES (pass_id_of_copy) rather than the reviewer registry — see comment above.
+  for copy in "${passes[@]:-}"; do
+    [[ -z "$copy" ]] && continue
+    [[ -f "$copy" ]] || die "merge: pass copy not found: $copy" 1
+    provider="$(pass_id_of_copy "$doc" "$copy")" || exit $?
     block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'\n'
   done
 

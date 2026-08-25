@@ -415,6 +415,25 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    Seeding is the one step you perform by hand, so it is the one step with no other check on it:
    get the truncation wrong and nothing downstream notices — `merge` accepts the copy, `verify`
    passes, `check-converged` passes, and the gate reports N *independent* secondaries.
+
+   **Derive the crossref worklist here too, every round** — it is never diff-scoped like the
+   round-N provider copies above, so there is nothing round-dependent about deriving it:
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh rows "<doc>" > "<doc>.crossref.rows"`.
+   It is a mechanical cross-reference sweep over the document's own internal consistency
+   (declared `Files:` vs. paths named in its steps, matching pairs shared across sections,
+   `Consumes:`/`Produces:` pairing) rather than an independent perspective on the document's
+   argument, so **it is not a secondary**: it is excluded from the reviewer roster resolved in
+   §2, the secondary count, and the independence warning at the terminal gate — two vendored
+   secondaries plus this pass is still exactly two independent perspectives.
+
+   **Exit 3** → not applicable — the doc has no sectioned structure to cross-reference (the
+   message names why). **State that out loud** — a pass that silently does not run is
+   indistinguishable at the gate from one that ran and found nothing — and do NOT seed or
+   dispatch it this round: continue to step 3. Append `> [crossref-coverage: not applicable]`
+   under `<doc>`'s `## Review` heading, alongside this round's quarantine records.
+   **Exit 0** → seed it exactly as a round-1 secondary copy would be: `cp "<doc>.baseline"
+   "<doc>.crossref"`, rewrite its header the way above, then snapshot it as `<doc>.crossref.seed`
+   the same way. It is now ready to dispatch alongside the secondaries, in step 4.
 3. **Provision each secondary's skill, right before dispatch.** The working root is
    **`<session-root>` — the value you captured in Arm**, and **never** `<doc>`'s own location: for
    a PR-flavor doc, `<doc>` is a scratch file under `.multi-review/reviews/` and is not the repo
@@ -523,6 +542,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      reason for a reviewer that declined, not one that was never started.
 
    All same-turn subagent dispatches go in the SAME response block as each other.
+
+   **If step 2 derived a crossref worklist (exit 0), dispatch it here too — in this SAME response
+   block as the secondary dispatches above, not a later turn.** A `general-purpose` Agent,
+   pointed at `<doc>.crossref`, with the task text
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.crossref" --crossref
+   "<doc>.crossref.rows"`. Batching it with the secondaries here — not after they are already
+   merged — is what makes the pass concurrent rather than an afterthought.
 5. **Bound the wait, per copy — and never quarantine on the first bound hit.**
 
        "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh" "<doc>.<id>" awaiting-author \
@@ -612,6 +638,15 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    A hung secondary must never stall the others or the round: these waits are per-copy and a
    provider that keeps returning 8 past your patience is still yours to quarantine, deliberately.
+
+   **Wait on the crossref pass here too, if step 4 dispatched it — with the secondaries, not
+   after them.** Bound `<doc>.crossref` against `<doc>.crossref.seed` with the same bound and
+   retry timing above (up to 3 more waits on exit 8, one grace wait on exit 9). Exit 10 and
+   exit 2 mean exactly what they mean above. **Unlike a secondary, this pass has no roster slot
+   and is never quarantined** — there is no `--quarantined <id>:<reason>` to feed step 7's merge
+   for it. Once its wait budget is exhausted, whatever the final exit code or marker state, move
+   on: step 8's `crossref check` judges `<doc>.crossref` on what it actually contains, not on
+   whether it finished.
 6. **Verify identity, per copy that reached `awaiting-author`.**
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh verify-vendor --baseline
    "<doc>.baseline" "<doc>.<id>" --reviewer <id>`. Pass → admit the copy into the merge. Fail →
@@ -652,42 +687,24 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      marker; surface every quarantine reason and STOP. A round with zero trustworthy findings
      cannot merge. (With the fable floor on, `fable` runs in-harness and should be admissible, so this
      should not occur.)
-7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
-   <id>:<reason> ...] "<doc>" <admitted copies...>`.
-8. **Crossref pass — a mechanical cross-reference sweep, dispatched alongside the secondaries
-   above.** It checks the document's own internal consistency (declared `Files:` vs. paths named
-   in its steps, matching pairs shared across sections, `Consumes:`/`Produces:` pairing) rather
-   than offering an independent perspective on the document's argument, so **it is not a secondary**:
-   it is excluded from the reviewer roster resolved in §2, the secondary count, and the
-   independence warning at the terminal gate — two vendored secondaries plus this pass is still
-   exactly two independent perspectives.
 
-   1. Derive the worklist:
-      `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh rows "<doc>" > "<doc>.crossref.rows"`.
-   2. **Exit 3** → not applicable — the doc has no sectioned structure to cross-reference (the
-      message names why). **State that out loud** — a pass that silently does not run is
-      indistinguishable at the gate from one that ran and found nothing — and do NOT dispatch it
-      this round. Append `> [crossref-coverage: not applicable]` under `<doc>`'s `## Review`
-      heading, alongside this round's quarantine records, and move on to the next step.
-   3. **Exit 0** → seed and dispatch it exactly as a round-1 secondary copy would be: `cp
-      "<doc>.baseline" "<doc>.crossref"`, rewrite its header the way step 2 above does, snapshot
-      it as `<doc>.crossref.seed`, then dispatch a `general-purpose` Agent — in the SAME turn as
-      step 4's secondary dispatches — with the task text
-      `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.crossref" --crossref
-      "<doc>.crossref.rows"`.
-   4. Bound the wait on `<doc>.crossref` against `<doc>.crossref.seed`, using the same bound and
-      retry timing step 5 uses — up to 3 more waits on exit 8, one grace wait on exit 9. Exit 10
-      and exit 2 mean exactly what they mean in step 5 (a terminal state preempted the wait; a
-      usage error on your side) — handle them identically. **Unlike step 5, this pass has no
-      roster slot and is never quarantined**, so there is no `--quarantined <id>:<reason>` record
-      to feed once a retry/grace budget is spent — step 7's merge has already run, and there is
-      nothing left to feed it into anyway. Once the wait budget is exhausted, whatever its final
-      exit code, proceed straight to sub-step 5 below regardless: `check` reads `<doc>.crossref`
-      exactly as written whether or not its marker ever flipped, so a pass that timed out
-      mid-write is judged on what it actually wrote, not silently discarded.
-   5. Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref"`.
+   **The crossref pass's copy is not verified here.** `<doc>.crossref` is not run through
+   `verify-vendor` — it has no vendor, and it is not an independent perspective to authenticate.
+   `crossref check`, in step 8, is its verification. Say this explicitly so a later editor does
+   not "fix" the omission.
+7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
+   <id>:<reason> ...] [--pass "<doc>.crossref"] "<doc>" <admitted copies...>`. Pass `--pass
+   "<doc>.crossref"` only on a round where step 2 derived a worklist (exit 0) — omit it on the
+   exit-3 not-applicable round, when there is no `<doc>.crossref` to merge.
+8. **Crossref coverage.** The worklist, seed, dispatch and wait for this pass all already
+   happened above (steps 2, 4 and 5) — concurrently with the secondaries, so its copy exists in
+   time for step 7's merge. This step only checks and records the outcome.
+
+   If step 2 exited 3 (not applicable) this round, there is nothing further to do here — that
+   round's coverage state is already recorded by step 2. Otherwise, run
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref"`.
       - **Exit 0** → every row was verdicted. Let `<M>` be the worklist's row count (the number
-        of lines in `<doc>.crossref.rows` from step 1). Under `<doc>`'s `## Review` heading,
+        of lines in `<doc>.crossref.rows` from step 2). Under `<doc>`'s `## Review` heading,
         alongside this round's quarantine records, append:
         `> [crossref-coverage: <M>/<M> rows verdicted]`.
       - **Exit 1** → the turn is not fully trustworthy: a missing verdict, a missing `> [crossref]
@@ -707,10 +724,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
       - **Exit 2** → a genuine usage/infra error on YOUR side (a bad path). Fix the invocation;
         this is not a pass outcome and nothing is recorded for it.
 9. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
-   same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
-   `<doc>.<id>.seed` for every provider, `<doc>.baseline`, and every `<doc>.baseline.rd<N>` — the
-   terminal gate releases them. `<doc>.manifest` is retained too, but the gate does **not** release
-   it (see "Terminal gate").
+   same round number — your final edit of this step. Retain every regenerable working file this
+   round's fan-out wrote beside `<doc>` — every `<doc>.<id>` and `<doc>.<id>.seed` (provider or
+   pass), `<doc>.baseline`, every `<doc>.baseline.rd<N>`, and `<doc>.crossref.rows` — the terminal
+   gate releases them. `<doc>.manifest` is retained too, but the gate does **not** release it (see
+   "Terminal gate").
 
 #### Primary turn (on `awaiting-primary`)
 
@@ -831,10 +849,15 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
     post inline, the rest in the summary; it reads the PR url from the scratch header). STOP.
 
   This is the **human gate**: never implement, commit, or open/merge a PR from this command. Only
-  once the engineer confirms the review is done, remove the retained working files
-  (`<doc>.<id>` and `<doc>.<id>.seed` for every provider, `<doc>.baseline`, and every
-  `<doc>.baseline.rd<N>`) — never before the gate,
-  since the gate is presented FROM them (`check-converged`/`gate-summary` read the manifest).
+  once the engineer confirms the review is done, remove every regenerable working file this
+  review created beside `<doc>` — never before the gate, since the gate is presented FROM them
+  (`check-converged`/`gate-summary` read the manifest). That is EVERY `<doc>.<id>` and
+  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` included),
+  every `<doc>.baseline` and `<doc>.baseline.rd<N>`, and `<doc>.crossref.rows`. State the rule this
+  way — by what it is FOR, not as a fixed list — on purpose: this repo shipped the identical
+  contradiction twice already (an enumerated exception with a missing entry), and a list is
+  exactly the shape that silently stops covering a working-file kind this protocol adds later.
+  The one thing this rule does NOT cover is next, by name.
 
   **Keep `<doc>.manifest`.** It is the one retained file that is not regenerable, and it is tiny
   next to the copies/seeds/baselines this step releases — so releasing them without it gets the
