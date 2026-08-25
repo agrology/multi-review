@@ -887,4 +887,41 @@ else
   fi
 fi
 
+
+# --- the crossref pass must be dispatched, announced, and excluded from the secondary count ---
+CMD="${ROOT}/commands/multi-review.md"
+n="$(grep -n 'multi-review-crossref.sh rows' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the crossref row derivation is never invoked"
+else
+  sed -n "${n},$((n+12))p" "$CMD" | grep -q 'not applicable' \
+    && ok "command: the not-applicable case is announced" \
+    || bad "command: exit 3 is not announced — a pass that silently does not run reads as a clean one"
+fi
+grep -q 'multi-review-crossref.sh check' "$CMD" \
+  && ok "command: the coverage check is run after the pass" \
+  || bad "command: the crossref copy is never coverage-checked"
+n="$(grep -n 'is not a secondary' "$CMD" | head -1 | cut -d: -f1)"
+[[ -n "$n" ]] && ok "command: the pass is excluded from the secondary count" \
+  || bad "command: nothing says the crossref pass is not a secondary — it would inflate the roster and skew the independence warning"
+
+# --- the crossref-coverage line must actually be RECORDED, not just checked ---
+# No task in the plan writes `> [crossref-coverage: N/M rows verdicted]` into the doc — Task 6 only
+# reads and renders it (its own gate-summary test seeds the line by hand via mkstar). Without an
+# explicit instruction here the line never lands in a real review, and Task 6's three-state gate
+# rendering has nothing to render: the pass could run to completion and stay silently invisible at
+# the human gate forever, which is the exact defect class this whole feature exists to catch.
+n="$(grep -n 'crossref-coverage' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: nothing instructs the primary to record '> [crossref-coverage: ...]' — Task 6's gate-summary rendering would have nothing to read"
+else
+  blk="$(grep -F 'crossref-coverage' "$CMD")"
+  grep -qF 'crossref-coverage: not applicable' <<<"$blk" \
+    && ok "command: the not-applicable crossref-coverage state is recorded" \
+    || bad "command: the not-applicable crossref-coverage state is never recorded — an exit-3 round reads identically to one that was never wired up"
+  grep -qF 'rows verdicted]' <<<"$blk" \
+    && ok "command: the N/M-rows-verdicted crossref-coverage state is recorded" \
+    || bad "command: no N/M-rows-verdicted crossref-coverage line is ever recorded — a complete or incomplete turn leaves no durable count for the gate"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

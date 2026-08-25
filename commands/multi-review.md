@@ -654,7 +654,43 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      should not occur.)
 7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
    <id>:<reason> ...] "<doc>" <admitted copies...>`.
-8. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
+8. **Crossref pass — a mechanical cross-reference sweep, dispatched alongside the secondaries
+   above.** It checks the document's own internal consistency (declared `Files:` vs. paths named
+   in its steps, matching pairs shared across sections, `Consumes:`/`Produces:` pairing) rather
+   than offering an independent perspective on the document's argument, so **it is not a secondary**:
+   it is excluded from the reviewer roster resolved in §2, the secondary count, and the
+   independence warning at the terminal gate — two vendored secondaries plus this pass is still
+   exactly two independent perspectives.
+
+   1. Derive the worklist:
+      `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh rows "<doc>" > "<doc>.crossref.rows"`.
+   2. **Exit 3** → not applicable — the doc has no sectioned structure to cross-reference (the
+      message names why). **State that out loud** — a pass that silently does not run is
+      indistinguishable at the gate from one that ran and found nothing — and do NOT dispatch it
+      this round. Append `> [crossref-coverage: not applicable]` under `<doc>`'s `## Review`
+      heading, alongside this round's quarantine records, and move on to the next step.
+   3. **Exit 0** → seed and dispatch it exactly as a round-1 secondary copy would be: `cp
+      "<doc>.baseline" "<doc>.crossref"`, rewrite its header the way step 2 above does, snapshot
+      it as `<doc>.crossref.seed`, then dispatch a `general-purpose` Agent — in the SAME turn as
+      step 4's secondary dispatches — with the task text
+      `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.crossref" --crossref
+      "<doc>.crossref.rows"`.
+   4. Bound the wait exactly as step 5 above does, on `<doc>.crossref` against
+      `<doc>.crossref.seed`.
+   5. After the wait, run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>"
+      "<doc>.crossref"`.
+      - **Exit 0** → every row was verdicted. Let `<M>` be the worklist's row count (the number
+        of lines in `<doc>.crossref.rows` from step 1). Under `<doc>`'s `## Review` heading,
+        alongside this round's quarantine records, append:
+        `> [crossref-coverage: <M>/<M> rows verdicted]`.
+      - **Non-zero, "incomplete turn"** → report it at the gate, but do **not** quarantine
+        anything for it — the rows it DID verdict still count, the same way an evidence-less
+        finding is reported at the gate rather than dropped. Let `<N>` be `<M>` minus the count
+        of row ids the message names as missing, and append, the same way:
+        `> [crossref-coverage: <N>/<M> rows verdicted]`.
+      - **Any other non-zero exit** → a usage/infra error on your side (a bad path). Fix the
+        invocation; this is not a pass outcome and nothing is recorded for it.
+9. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
    `<doc>.<id>.seed` for every provider, `<doc>.baseline`, and every `<doc>.baseline.rd<N>` — the
    terminal gate releases them. `<doc>.manifest` is retained too, but the gate does **not** release

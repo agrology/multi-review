@@ -1638,6 +1638,22 @@ fi
   && ok "G4/T3: doctor's probe argv is the dispatch argv, modulo the prompt" \
   || bad "G4/T3: probe and dispatch argv have drifted — $drift"
 
+# --- crossref prompt: the worklist is inlined, and the reviewer is told not to invent rows ---
+RF="${WORK}/rows.tsv"
+printf 'S1\tself\tTask 1\tdeclared Files vs files named in steps\nP1\tpair\tTask 1 | Task 2\tscripts/a.sh\n' > "$RF"
+D="$(mkdoc xr.md awaiting-reviewer)"
+out="$(bash "$SUT" prompt "$D" --crossref "$RF" 2>/dev/null)"
+grep -qF 'S1' <<<"$out" && grep -qF 'P1' <<<"$out" \
+  && ok "prompt(crossref) inlines every row id" || bad "prompt(crossref) dropped a row id"
+grep -qF '[crossref:<row-id>|ok]' <<<"$out" \
+  && ok "prompt(crossref) states the verdict grammar" || bad "prompt(crossref) lacks the grammar"
+grep -qiE 'do not (invent|add|create) rows|exactly these rows' <<<"$out" \
+  && ok "prompt(crossref) forbids inventing rows" \
+  || bad "prompt(crossref) does not forbid inventing rows — the coverage join key is the row id"
+grep -qF 'READ THAT DOCUMENT IN FULL, FIRST' <<<"$out" \
+  && ok "prompt(crossref) keeps the read-in-full demand" \
+  || bad "prompt(crossref) lost the read-in-full demand"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

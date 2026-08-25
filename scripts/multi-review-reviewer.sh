@@ -482,18 +482,13 @@ HEAD
   fi
 }
 
-emit_prompt() { # <abs-doc-path> <has-skill> <dispatch-kind>
-  local abs="$1" has_skill="$2" kind="${3:-}" authority
-  # Who defines the finding grammar for this reviewer. Saying "your skill" to a skill-less
-  # reviewer contradicts the head block, which just told it to read the protocol file.
-  # The codex wording is byte-frozen; only the skill-less variant differs.
-  if [[ "$has_skill" == "yes" ]]; then
-    authority="the protocol your skill defines"
-  else
-    authority="the protocol contract you just read"
-  fi
-  prompt_head "$has_skill" "$kind"
-  cat <<PROMPT
+# The document-first framing shared by every prompt shape (ordinary reviewer and the crossref
+# pass alike): the canonical path, and the demand to read it in full before anything else. Kept
+# in ONE place so the crossref prompt (emit_crossref_prompt) gets the same demand byte-for-byte
+# rather than a copy that can drift from it.
+prompt_doc_intro() { # <abs-doc-path>
+  local abs="$1"
+  cat <<INTRO
 
 Review EXACTLY this document — its canonical absolute path:
   ${abs}
@@ -506,6 +501,22 @@ document itself. Reading *about* the review is not reading the
 document under review, and a turn that never opened it cannot raise a finding: the
 \`[no-findings]\` it reports is indistinguishable at the gate from a real clean review.
 
+INTRO
+}
+
+emit_prompt() { # <abs-doc-path> <has-skill> <dispatch-kind>
+  local abs="$1" has_skill="$2" kind="${3:-}" authority
+  # Who defines the finding grammar for this reviewer. Saying "your skill" to a skill-less
+  # reviewer contradicts the head block, which just told it to read the protocol file.
+  # The codex wording is byte-frozen; only the skill-less variant differs.
+  if [[ "$has_skill" == "yes" ]]; then
+    authority="the protocol your skill defines"
+  else
+    authority="the protocol contract you just read"
+  fi
+  prompt_head "$has_skill" "$kind"
+  prompt_doc_intro "$abs"
+  cat <<PROMPT
 Do ONE reviewer turn, following ${authority}.
 You are a secondary: read the document, then append your findings under its \`## Review\`
 heading as:
@@ -547,11 +558,53 @@ Then stop and report which ids you added and that the marker was flipped.
 PROMPT
 }
 
-cmd_prompt() { # <doc> --reviewer <id>
+# The cross-reference pass (issue #90): a fixed worklist derived by multi-review-crossref.sh
+# `rows`, not a freeform review. It shares the ordinary prompt's document-first framing
+# (prompt_head + prompt_doc_intro) but replaces the finding-grammar tail with the crossref
+# verdict grammar `check` parses, and inlines the worklist itself so the reviewer never has to
+# go derive it — deriving it independently is exactly what would make coverage unverifiable.
+emit_crossref_prompt() { # <abs-doc-path> <rows-file>
+  local abs="$1" rowsfile="$2"
+  prompt_head "no" ""
+  prompt_doc_intro "$abs"
+  cat <<PROMPT
+You are running the CROSS-REFERENCE PASS. This is not a freeform review: you are given a fixed
+worklist and you return one verdict per row, in row order.
+
+Return EXACTLY these rows. Do not invent rows, do not merge rows, do not skip rows. The row id is
+how coverage is checked; a row you cannot decide is still a row you must verdict.
+
+    > [crossref] — via <your-model-id>
+    > [crossref:<row-id>|ok]
+    > [crossref:<row-id>|defect:<finding-id>] <one line>
+
+An \`ok\` verdict asserts you checked that specific row and it is consistent. That assertion is the
+point of the pass — a row nobody looked at and a row checked and found clean must not be the same
+bytes.
+
+For a \`defect\` verdict, ALSO raise an ordinary finding with the id you named, using the normal
+finding grammar. A defect recorded only in the table never reaches adjudication.
+
+Flip the status marker from \`awaiting-reviewer\` to \`awaiting-author\` as your FINAL edit.
+
+The worklist — one row per line, as \`<row-id> <TAB> <kind> <TAB> <subject> <TAB> <detail>\`:
+
+PROMPT
+  cat "$rowsfile"
+}
+
+cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file>
   local doc="${1:-}"
   [[ -n "$doc" ]] || die "usage: multi-review-reviewer.sh prompt <doc-path> --reviewer <id>" 2
   shift
   [[ -f "$doc" ]] || die "doc not found: $doc" 2
+  if [[ "${1:-}" == "--crossref" ]]; then
+    [[ $# -ge 2 ]] || die "--crossref requires a rows-file value" 2
+    local rowsfile="$2"
+    [[ -f "$rowsfile" ]] || die "crossref rows file not found: $rowsfile" 2
+    emit_crossref_prompt "$(abs_path "$doc")" "$rowsfile"
+    return
+  fi
   local row has_skill kind
   row="$(resolve_row "$@")" || exit 2
   has_skill="$(field "$row" 5)"; kind="$(field "$row" 3)"
