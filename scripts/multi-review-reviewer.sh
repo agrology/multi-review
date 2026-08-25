@@ -558,14 +558,40 @@ Then stop and report which ids you added and that the marker was flipped.
 PROMPT
 }
 
+# The crossref pass's own head — deliberately NOT prompt_head. prompt_head's skill-less variant
+# opens "You are a secondary reviewer" and hands over the protocol contract as what "governs the
+# rest of this turn", which defines the secondary role AND the `[no-findings]` clean-turn signal.
+# The crossref pass is neither: commands/multi-review.md says so explicitly (excluded from the
+# roster, the secondary count, the independence warning), so the prompt it actually receives must
+# say the same thing, not the opposite (round 1, F6) — a reviewer that reads "you are a secondary"
+# and "the contract governs this turn" and then finds nothing to flag will follow that contract's
+# OWN clean-turn signal, `[no-findings]`, which `check` cannot parse: the table's required
+# `> [crossref] — via <model>` disclosure line never appears, and the turn is misreported as
+# unusable rather than clean. Still points at the protocol contract, because a `defect` verdict
+# below needs its finding grammar — but only for that, not as the turn's governing contract.
+crossref_prompt_head() {
+  [[ -f "$PROTOCOL" ]] || die "protocol contract not found at ${PROTOCOL}" 1
+  cat <<HEAD
+You are running the CROSS-REFERENCE PASS in this repo's multi-review star review. This is NOT a
+secondary review turn — you are not offering an independent perspective on the document's
+argument, and the \`[no-findings]\` signal does not apply to you: this pass's own clean-turn
+signal is a table of \`ok\` verdicts, not \`[no-findings]\`.
+
+FIRST, before editing anything, read the protocol contract in full — you need only the finding
+grammar it defines, and only if you file a \`defect\` verdict below:
+  ${PROTOCOL}
+HEAD
+}
+
 # The cross-reference pass (issue #90): a fixed worklist derived by multi-review-crossref.sh
 # `rows`, not a freeform review. It shares the ordinary prompt's document-first framing
-# (prompt_head + prompt_doc_intro) but replaces the finding-grammar tail with the crossref
-# verdict grammar `check` parses, and inlines the worklist itself so the reviewer never has to
-# go derive it — deriving it independently is exactly what would make coverage unverifiable.
+# (prompt_doc_intro) but opens with crossref_prompt_head rather than prompt_head, and replaces
+# the finding-grammar tail with the crossref verdict grammar `check` parses, inlining the
+# worklist itself so the reviewer never has to go derive it — deriving it independently is
+# exactly what would make coverage unverifiable.
 emit_crossref_prompt() { # <abs-doc-path> <rows-file>
   local abs="$1" rowsfile="$2"
-  prompt_head "no" ""
+  crossref_prompt_head
   prompt_doc_intro "$abs"
   cat <<PROMPT
 You are running the CROSS-REFERENCE PASS. This is not a freeform review: you are given a fixed
@@ -602,9 +628,26 @@ cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file>
     [[ $# -ge 2 ]] || die "--crossref requires a rows-file value" 2
     local rowsfile="$2"
     [[ -f "$rowsfile" ]] || die "crossref rows file not found: $rowsfile" 2
+    # Empty is not merely a smaller worklist — it is nothing to verdict at all. `rows` never
+    # produces this (it dies exit 3 first), but a truncated redirect or a hand-built file can, and
+    # unguarded it would silently emit a prompt asking for nothing rather than failing loud.
+    [[ -s "$rowsfile" ]] || die "crossref rows file is empty: $rowsfile" 2
+    shift 2
+    # Reject trailing junk rather than silently ignoring it — same reasoning as the mixed-flag
+    # guard below: a dropped argument here is how a crossref round quietly stops being one.
+    [[ $# -eq 0 ]] || die "usage: unexpected argument(s) after --crossref <rows-file>: $*" 2
     emit_crossref_prompt "$(abs_path "$doc")" "$rowsfile"
     return
   fi
+  # --crossref belongs only at this position, exclusive with --reviewer. Anywhere else in "$@" it
+  # would otherwise be silently dropped by resolve_id's `*) shift ;;` catch-all for unrecognised
+  # flags, so a combined invocation would emit the ORDINARY prompt with rc=0 and no signal that
+  # --crossref was ever seen — the crossref round quietly becomes a normal review.
+  local a
+  for a in "$@"; do
+    [[ "$a" == "--crossref" ]] \
+      && die "usage: --crossref must be the only flag after <doc-path>, not combined with --reviewer" 2
+  done
   local row has_skill kind
   row="$(resolve_row "$@")" || exit 2
   has_skill="$(field "$row" 5)"; kind="$(field "$row" 3)"

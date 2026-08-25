@@ -675,21 +675,37 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
       step 4's secondary dispatches — with the task text
       `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.crossref" --crossref
       "<doc>.crossref.rows"`.
-   4. Bound the wait exactly as step 5 above does, on `<doc>.crossref` against
-      `<doc>.crossref.seed`.
-   5. After the wait, run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>"
-      "<doc>.crossref"`.
+   4. Bound the wait on `<doc>.crossref` against `<doc>.crossref.seed`, using the same bound and
+      retry timing step 5 uses — up to 3 more waits on exit 8, one grace wait on exit 9. Exit 10
+      and exit 2 mean exactly what they mean in step 5 (a terminal state preempted the wait; a
+      usage error on your side) — handle them identically. **Unlike step 5, this pass has no
+      roster slot and is never quarantined**, so there is no `--quarantined <id>:<reason>` record
+      to feed once a retry/grace budget is spent — step 7's merge has already run, and there is
+      nothing left to feed it into anyway. Once the wait budget is exhausted, whatever its final
+      exit code, proceed straight to sub-step 5 below regardless: `check` reads `<doc>.crossref`
+      exactly as written whether or not its marker ever flipped, so a pass that timed out
+      mid-write is judged on what it actually wrote, not silently discarded.
+   5. Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref"`.
       - **Exit 0** → every row was verdicted. Let `<M>` be the worklist's row count (the number
         of lines in `<doc>.crossref.rows` from step 1). Under `<doc>`'s `## Review` heading,
         alongside this round's quarantine records, append:
         `> [crossref-coverage: <M>/<M> rows verdicted]`.
-      - **Non-zero, "incomplete turn"** → report it at the gate, but do **not** quarantine
-        anything for it — the rows it DID verdict still count, the same way an evidence-less
-        finding is reported at the gate rather than dropped. Let `<N>` be `<M>` minus the count
-        of row ids the message names as missing, and append, the same way:
-        `> [crossref-coverage: <N>/<M> rows verdicted]`.
-      - **Any other non-zero exit** → a usage/infra error on your side (a bad path). Fix the
-        invocation; this is not a pass outcome and nothing is recorded for it.
+      - **Exit 1** → the turn is not fully trustworthy: a missing verdict, a missing `> [crossref]
+        — via <model>` disclosure, a verdict naming a row that was never emitted, or a defect
+        naming a finding that is not in the copy — `check`'s own message says which.
+
+        **Do NOT quarantine anything for it.** This pass has no roster slot to quarantine, and
+        the rows it DID verdict correctly still count; discarding them to punish the gap would
+        destroy real work for a reason unrelated to those rows.
+
+        When the message is `incomplete turn: no verdict for row(s): …`, let `<N>` be `<M>` minus
+        the count of row ids it names. For any OTHER exit-1 reason, the verdict table cannot be
+        trusted at all, so `<N>` is `0`. Either way, append:
+        `> [crossref-coverage: <N>/<M> rows verdicted]`. This branch is never optional: an
+        unrecorded exit-1 turn is byte-identical at the gate to a round where this pass was never
+        wired up, which is the exact failure this feature exists to close.
+      - **Exit 2** → a genuine usage/infra error on YOUR side (a bad path). Fix the invocation;
+        this is not a pass outcome and nothing is recorded for it.
 9. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain `<doc>.<id>` for every provider,
    `<doc>.<id>.seed` for every provider, `<doc>.baseline`, and every `<doc>.baseline.rd<N>` — the

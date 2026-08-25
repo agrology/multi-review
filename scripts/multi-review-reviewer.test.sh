@@ -1654,6 +1654,36 @@ grep -qF 'READ THAT DOCUMENT IN FULL, FIRST' <<<"$out" \
   && ok "prompt(crossref) keeps the read-in-full demand" \
   || bad "prompt(crossref) lost the read-in-full demand"
 
+# --- crossref prompt: round 1, F6 — it must not tell the pass it is a secondary reviewer, and
+# must not instruct the ORDINARY reviewer's [no-findings] clean-turn signal (its own is a table
+# of `ok` verdicts) ---
+grep -qi 'a secondary reviewer' <<<"$out" \
+  && bad "prompt(crossref) opens by calling the agent a secondary reviewer — the command file says the opposite" \
+  || ok "prompt(crossref) does not call the agent a secondary reviewer"
+grep -qF '[no-findings] reviewed in full; nothing to raise' <<<"$out" \
+  && bad "prompt(crossref) instructs the ordinary reviewer's [no-findings] signal — check cannot parse that as a clean crossref turn" \
+  || ok "prompt(crossref) does not instruct the [no-findings] signal"
+
+# --- crossref prompt: round 1, F7 — an empty rows file is a usage error, not a prompt asking for
+# nothing ---
+EMPTYRF="${WORK}/empty-rows.tsv"
+: > "$EMPTYRF"
+out="$(bash "$SUT" prompt "$D" --crossref "$EMPTYRF" 2>/dev/null)"; rc=$?
+[[ $rc -eq 2 ]] \
+  && ok "prompt(crossref): an empty rows file is rejected" \
+  || bad "prompt(crossref): an empty rows file is not rejected (rc=$rc) — it would silently produce a prompt asking for nothing"
+
+# --- crossref prompt: round 1, F8 — --crossref is silently dropped when it is not the flag
+# immediately after <doc>, and trailing junk after the rows file is silently dropped too ---
+out="$(bash "$SUT" prompt "$D" --reviewer fable --crossref "$RF" 2>/dev/null)"; rc=$?
+[[ $rc -eq 2 ]] \
+  && ok "prompt: --crossref combined with --reviewer is rejected" \
+  || bad "prompt: --crossref combined with --reviewer is silently dropped (rc=$rc) — the round quietly becomes an ordinary review"
+out="$(bash "$SUT" prompt "$D" --crossref "$RF" extra-junk 2>/dev/null)"; rc=$?
+[[ $rc -eq 2 ]] \
+  && ok "prompt(crossref): trailing arguments after the rows file are rejected" \
+  || bad "prompt(crossref): trailing arguments after the rows file are silently ignored (rc=$rc)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

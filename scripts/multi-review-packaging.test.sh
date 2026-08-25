@@ -894,34 +894,57 @@ n="$(grep -n 'multi-review-crossref.sh rows' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
   bad "command: the crossref row derivation is never invoked"
 else
-  sed -n "${n},$((n+12))p" "$CMD" | grep -q 'not applicable' \
+  # WINDOWED to the crossref step only (through the line before the NEXT top-level numbered
+  # step), not a fixed +12 or a file-wide grep. A file-wide/fixed-window match is satisfied by
+  # text that lives ANYWHERE else in the doc — including the blockquote this same step records —
+  # so a guard phrased that way can go green while the actual instruction it names was deleted
+  # (round 1, F1/F5: reviewed on the most capable model, verified by deleting the real trigger
+  # lines and watching these stay green under the old phrasing).
+  ne="$(awk -v s="$n" 'NR>s && /^9\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+
+  # Matches ONLY the exit-3 prose trigger ("State that out loud"), not the
+  # `> [crossref-coverage: not applicable]` blockquote the same branch also writes — the two are
+  # asserted separately below, and this one must go red on its own when the prose is deleted.
+  grep -qF 'State that out loud' <<<"$blk" \
     && ok "command: the not-applicable case is announced" \
     || bad "command: exit 3 is not announced — a pass that silently does not run reads as a clean one"
+
+  grep -qF 'multi-review-crossref.sh check' <<<"$blk" \
+    && ok "command: the coverage check is run inside the crossref step" \
+    || bad "command: the crossref copy is never coverage-checked, or the check moved outside the crossref step where it no longer runs after this pass specifically"
+
+  # Split from a single 'rows verdicted]' pattern (round 1, F3): that pattern is satisfied by
+  # EITHER the complete or the incomplete line alone, so deleting just one of them left it green.
+  grep -qF '<M>/<M> rows verdicted]' <<<"$blk" \
+    && ok "command: the complete-coverage (N/N) state is recorded" \
+    || bad "command: the complete-coverage crossref-coverage state is never recorded — a fully-verdicted turn leaves no durable count for the gate"
+  grep -qF '<N>/<M> rows verdicted]' <<<"$blk" \
+    && ok "command: the incomplete-coverage (N/M) state is recorded" \
+    || bad "command: the incomplete-coverage crossref-coverage state is never recorded — a partially-verdicted turn leaves no durable count for the gate"
+
+  # Round 1, F2: `check` exits 1 for FOUR distinct reviewer-side failures (missing verdicts,
+  # missing disclosure, a verdict naming an unemitted row, a defect naming an absent finding),
+  # and every one of them must still be recorded — not routed into the "usage/infra, nothing
+  # recorded" bucket that exit 2 alone owns.
+  # `**Exit 1** →`, NOT a bare 'Exit 1': the bare form is a substring of 'Exit 10' (the wait's own
+  # exit code, mentioned two paragraphs above in the same window) and stays green regardless of
+  # whether this branch exists — caught live while writing this guard.
+  grep -qF '**Exit 1** →' <<<"$blk" \
+    && ok "command: check's exit 1 is handled as its own branch, distinct from a usage error" \
+    || bad "command: check's exit 1 (a reviewer-side failure) is not distinguished from exit 2 (a usage error) — every non-incomplete-turn exit-1 reason falls into 'nothing is recorded for it'"
+
+  # Round 1, F4: an incomplete crossref turn must be reported, never quarantined — the rows it
+  # DID verdict still count. Inverting this single line to "and quarantine the pass" left the
+  # suite green before this guard existed.
+  grep -qF 'Do NOT quarantine anything for it' <<<"$blk" \
+    && ok "command: an incomplete crossref turn is reported without being quarantined" \
+    || bad "command: nothing says an incomplete crossref turn must NOT be quarantined — the rows it DID verdict could be silently discarded"
 fi
-grep -q 'multi-review-crossref.sh check' "$CMD" \
-  && ok "command: the coverage check is run after the pass" \
-  || bad "command: the crossref copy is never coverage-checked"
+
 n="$(grep -n 'is not a secondary' "$CMD" | head -1 | cut -d: -f1)"
 [[ -n "$n" ]] && ok "command: the pass is excluded from the secondary count" \
   || bad "command: nothing says the crossref pass is not a secondary — it would inflate the roster and skew the independence warning"
-
-# --- the crossref-coverage line must actually be RECORDED, not just checked ---
-# No task in the plan writes `> [crossref-coverage: N/M rows verdicted]` into the doc — Task 6 only
-# reads and renders it (its own gate-summary test seeds the line by hand via mkstar). Without an
-# explicit instruction here the line never lands in a real review, and Task 6's three-state gate
-# rendering has nothing to render: the pass could run to completion and stay silently invisible at
-# the human gate forever, which is the exact defect class this whole feature exists to catch.
-n="$(grep -n 'crossref-coverage' "$CMD" | head -1 | cut -d: -f1)"
-if [[ -z "$n" ]]; then
-  bad "command: nothing instructs the primary to record '> [crossref-coverage: ...]' — Task 6's gate-summary rendering would have nothing to read"
-else
-  blk="$(grep -F 'crossref-coverage' "$CMD")"
-  grep -qF 'crossref-coverage: not applicable' <<<"$blk" \
-    && ok "command: the not-applicable crossref-coverage state is recorded" \
-    || bad "command: the not-applicable crossref-coverage state is never recorded — an exit-3 round reads identically to one that was never wired up"
-  grep -qF 'rows verdicted]' <<<"$blk" \
-    && ok "command: the N/M-rows-verdicted crossref-coverage state is recorded" \
-    || bad "command: no N/M-rows-verdicted crossref-coverage line is ever recorded — a complete or incomplete turn leaves no durable count for the gate"
-fi
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
