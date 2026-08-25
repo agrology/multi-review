@@ -142,6 +142,17 @@ cmd_rows() { # <doc>
 
   # One file list per section, indexed by position, built once: the pair loop is O(n^2) over
   # sections and re-deriving inside it would re-read the document for every pair.
+  #
+  # _files_declared is arithmetically dead TODAY (M3, final review, ruling R14: keep it, record
+  # it): `declared ⊆ named` holds unconditionally, because _files_named scans the WHOLE section —
+  # including the **Files:** block declared paths live in — so every declared path is already a
+  # named one. Deleting `_files_declared` from this union leaves the suite fully green. It stays
+  # in the union anyway, because that containment is not a law of the interface, only a fact about
+  # today's _files_named: the moment _files_named is narrowed (e.g. to skip the Files block itself,
+  # to stop double-counting a path already declared) the two sets stop being nested and this half
+  # starts doing real work again. Recorded as SURVIVES-BY-DESIGN in the mutation table (§11) rather
+  # than omitted, so losing that outer containment surfaces as a failure instead of silently
+  # reintroducing the union bug #90 exists to close.
   local i=0 sids=""
   while IFS=$'\t' read -r _idx start end sid _title; do
     [[ -n "$sid" ]] || continue
