@@ -13,6 +13,9 @@ set -uo pipefail
 
 die() { echo "multi-review-crossref: $1" >&2; exit "${2:-1}"; }
 
+TMPD="$(mktemp -d)" || die "cannot create a scratch dir" 2
+trap 'rm -rf "$TMPD"' EXIT
+
 # Fence-stripping, duplicated from star.sh for module isolation (same rationale as
 # unterminated_fence_line there). A path inside a fenced code block is illustrative, not a file the
 # section touches, so counting it would manufacture pairs out of sample output.
@@ -74,6 +77,39 @@ _sections() { # <doc> -> "idx\tstart\tend\tshort-id\ttitle"
   ' "$1"
 }
 
+# A path token: backticked, and either containing a '/' or ending in a known source extension.
+# Trailing ":123" / ":1-9" line specs are stripped — `path:12` and `path` are the same file.
+_paths_in() { # <text-on-stdin> -> one path per line
+  awk '
+    {
+      s = $0
+      while (match(s, /`[^`]+`/)) {
+        tok = substr(s, RSTART + 1, RLENGTH - 2)
+        s   = substr(s, RSTART + RLENGTH)
+        sub(/:[0-9]+(-[0-9]+)?$/, "", tok)
+        if (tok ~ /\// || tok ~ /\.(sh|bash|md|py|ts|tsx|js|json|yml|yaml|txt)$/) print tok
+      }
+    }
+  ' | LC_ALL=C sort -u
+}
+
+# Declared: the paths inside the section's **Files:** block only — from the block header to the
+# next blank-line-terminated bold block or the section end.
+_files_declared() { # <doc> <start> <end>
+  sed -n "${2},${3}p" "$1" \
+    | awk '/^\*\*Files:\*\*/ { inblk = 1; next } inblk && /^[[:space:]]*$/ { inblk = 0 } inblk' \
+    | _paths_in
+}
+
+# Named: every path token in the section, fences stripped. Deliberately WIDER than declared — the
+# union of the two is what makes a pair set trustworthy when the Files block is wrong, which #90
+# measured happening six times in one document.
+_files_named() { # <doc> <start> <end>
+  sed -n "${2},${3}p" "$1" > "${TMPD}/sec.$$"
+  strip_fences "${TMPD}/sec.$$" | _paths_in
+  rm -f "${TMPD}/sec.$$"
+}
+
 cmd_rows() { # <doc>
   local doc="${1:?usage: multi-review-crossref.sh rows <doc>}" secs nsec
   [[ -f "$doc" ]] || die "doc not found: $doc" 2
@@ -88,6 +124,32 @@ cmd_rows() { # <doc>
     n=$((n + 1))
     printf 'S%d\tself\t%s\tdeclared Files vs files named in steps\n' "$n" "$sid"
   done <<< "$secs"
+
+  # One file list per section, indexed by position, built once: the pair loop is O(n^2) over
+  # sections and re-deriving inside it would re-read the document for every pair.
+  local i=0 sids=""
+  while IFS=$'\t' read -r _idx start end sid _title; do
+    [[ -n "$sid" ]] || continue
+    i=$((i + 1))
+    { _files_declared "$doc" "$start" "$end"; _files_named "$doc" "$start" "$end"; } \
+      | LC_ALL=C sort -u > "${TMPD}/files.${i}"
+    sids="${sids}${sid}"$'\n'
+  done <<< "$secs"
+
+  local a b pn=0 sid_a sid_b shared
+  for (( a = 1; a < i; a++ )); do
+    sid_a="$(printf '%s' "$sids" | sed -n "${a}p")"
+    for (( b = a + 1; b <= i; b++ )); do
+      sid_b="$(printf '%s' "$sids" | sed -n "${b}p")"
+      shared="$(LC_ALL=C comm -12 "${TMPD}/files.${a}" "${TMPD}/files.${b}")"
+      [[ -n "$shared" ]] || continue
+      while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        pn=$((pn + 1))
+        printf 'P%d\tpair\t%s | %s\t%s\n' "$pn" "$sid_a" "$sid_b" "$f"
+      done <<< "$shared"
+    done
+  done
 }
 
 main() {
