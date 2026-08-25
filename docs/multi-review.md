@@ -165,6 +165,56 @@ convergence impossible.
   enforced** — read the gate's independence line as "nothing structural was wrong with this
   round", not as a proof about what each reviewer had in context.
 
+## Cross-reference pass
+
+A mechanical worklist (`multi-review-crossref.sh rows <doc>`) over a multi-section document's own
+internal consistency — declared `Files:`/`Interfaces:` blocks vs. what the steps actually name,
+matching file pairs shared across sections, and `Consumes:`/`Produces:` entries — rather than an
+independent perspective on the document's argument. It is dispatched alongside the secondaries in
+round 1 (`multi-review-reviewer.sh prompt <doc> --crossref <rows-file>`), but it is **not a
+secondary**: it does not count toward the secondary total or the cross-vendor independence warning
+at the gate, and its copy is not run through `verify-vendor` — it has no vendor to authenticate;
+`multi-review-crossref.sh check` is its verification instead.
+
+Under the copy's `## Review` heading, alongside the disclosure line every turn carries:
+
+    > [crossref] — via <model>
+    > [crossref:<row-id>|ok]
+    > [crossref:<row-id>|defect:<finding-id>] <one line>
+
+- One verdict per row the worklist emitted, in row order — no invented, merged, or skipped rows.
+  The row id is the coverage join key.
+- A `defect` verdict **must** be accompanied by an ordinary `> [finding:<finding-id>|<sev>] ...`
+  block in the same copy, adjudicated like any other finding — a defect recorded only in the
+  verdict table bypasses adjudication and never reaches the human gate's accounting.
+
+`multi-review-crossref.sh check <doc> <copy>` judges the turn:
+
+| outcome | meaning |
+|---|---|
+| exit 3 (from `rows`) | not applicable — no sectioned structure to cross-reference; announced, never silent |
+| exit 0 | every row verdicted, every `defect` anchored to a finding present in the same copy |
+| exit 1 | a missing verdict, a missing `> [crossref] — via <model>` disclosure, a verdict naming a row never emitted, or a `defect` naming a finding absent from the copy |
+| exit 2 | usage/infra error on the caller's side |
+
+An exit-1 turn is **reported, never quarantined** — the pass has no roster slot to quarantine, and
+the rows it DID verdict correctly still count; discarding them would destroy real work for a reason
+unrelated to those rows. Its findings still merge normally
+(`multi-review-star.sh merge --pass "<doc>.crossref"`, namespaced `crossref-rd<N>-<id>` the same
+way a provider's findings are), so a `defect` still reaches the human gate even from an
+otherwise-incomplete turn.
+
+Each round records a durable coverage line alongside the round's quarantine records:
+
+    > [crossref-coverage: not applicable]
+    > [crossref-coverage: <M>/<M> rows verdicted]
+    > [crossref-coverage: <N>/<M> rows verdicted]
+
+`gate-summary` renders it under its own line — `Cross-reference pass: not applicable`,
+`Cross-reference pass: <M>/<M> rows verdicted`, or `Cross-reference pass: <N>/<M> rows verdicted —
+INCOMPLETE` — so an unchecked relation is visible at the human gate rather than indistinguishable
+from a clean pass.
+
 ## Bounds & terminal state
 
 Round = one secondary fan-out pass + one primary adjudication pass. **One round is the default**:
