@@ -215,6 +215,66 @@ Each round records a durable coverage line alongside the round's quarantine reco
 INCOMPLETE` — so an unchecked relation is visible at the human gate rather than indistinguishable
 from a clean pass.
 
+## Symbol-check pass
+
+A mechanical worklist (`multi-review-symcheck.sh rows <doc>`) over the ready-to-paste code a
+document ships — one row per fenced block inside a section that declares a `**Files:**` block —
+checked against the repository the document targets. That is the defect class reviewer scope
+structurally cannot see: a printed test that calls an existing repo function with a signature it
+does not have reads as perfectly consistent prose. Dispatched alongside the secondaries in round 1
+(`multi-review-reviewer.sh prompt <doc> --symcheck <rows-file>`); like the cross-reference pass it
+is **not a secondary** — it does not count toward the secondary total or the cross-vendor
+independence warning, and its copy is not run through `verify-vendor`;
+`multi-review-symcheck.sh check` is its verification.
+
+**Reviewer scope is unchanged.** The pass runs in-harness as a subagent of the primary, whose
+harness already has the repository; the sandboxed secondaries are asked for nothing new and gain no
+repo access. The pass's own read is bounded by purpose in its prompt: only what resolving a symbol
+the document's code names requires, no whole-repo sweeps, read and search only — no writes, no
+network, and never environment or secret files.
+
+Under the copy's `## Review` heading, alongside the disclosure line every turn carries:
+
+    > [symcheck] — via <model>
+    > [symcheck:<row-id>|ok] <the symbols checked, and what they were checked against>
+    > [symcheck:<row-id>|new] <the symbols this document itself introduces>
+    > [symcheck:<row-id>|none] <why this block references nothing in the repository>
+    > [symcheck:<row-id>|defect:<finding-id>] <one line>
+
+- One verdict per row, and exactly one: two verdicts for the same row is a contradiction, not
+  coverage. No invented, merged, or skipped rows — the row id is the coverage join key.
+- An `ok` **must name the symbols it checked**. An `ok` naming nothing is byte-identical to a row
+  nobody opened, which is the hazard the coverage assertion exists to close, one level down.
+  `none` is the verdict for a block that genuinely references nothing, and needs no symbol list.
+- `new` is for symbols the document itself introduces — every row carries that set (the document's
+  own `- Create:` paths and `- Produces:` entries, document-wide) so a not-yet-written symbol is
+  not reported as missing.
+- A `defect` verdict **must** be accompanied by an ordinary `> [finding:<finding-id>|<sev>] ...`
+  block in the same copy, same rule and same reason as the cross-reference pass.
+
+`multi-review-symcheck.sh check <doc> <copy>` judges the turn:
+
+| outcome | meaning |
+|---|---|
+| exit 3 (from `rows`) | not applicable — the document ships no ready-to-paste code blocks; announced, never silent |
+| exit 0 | every row verdicted exactly once, every `ok` naming a symbol, every `defect` anchored to a finding present in the same copy |
+| exit 1 | a missing or duplicated verdict, a missing `> [symcheck] — via <model>` disclosure, an unknown verdict token, a bare `ok`, a verdict naming a row never emitted, or a `defect` naming an empty or absent finding id |
+| exit 2 | usage/infra error on the caller's side |
+
+An exit-1 turn is **reported, never quarantined**, for the same reason as above, and its findings
+merge normally (`multi-review-star.sh merge --pass "<doc>.symcheck"`, namespaced
+`symcheck-rd<N>-<id>`).
+
+Each round records a durable coverage line alongside the round's quarantine records:
+
+    > [symcheck-coverage: not applicable]
+    > [symcheck-coverage: <M>/<M> rows verdicted]
+    > [symcheck-coverage: <N>/<M> rows verdicted]
+
+`gate-summary` renders it beside the cross-reference line — `Symbol-check pass: not applicable`,
+`Symbol-check pass: <M>/<M> rows verdicted`, or `Symbol-check pass: <N>/<M> rows verdicted —
+INCOMPLETE`.
+
 ## Bounds & terminal state
 
 Round = one secondary fan-out pass + one primary adjudication pass. **One round is the default**:
