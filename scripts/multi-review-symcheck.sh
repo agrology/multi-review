@@ -165,10 +165,107 @@ cmd_rows() { # <doc>
   cat "${TMPD}/rows"
 }
 
+# Verdict lines live under the LAST '## Review' heading and outside fences — the same channel
+# discipline the finding grammar uses. A PR description can legally contain a '> [symcheck:...]'
+# blockquote, and a fenced example of the grammar is documentation, not a verdict.
+_review_verdicts() { # <copy> -> the fence-stripped review section
+  # The heading scan is itself fence-aware. A copy that QUOTES the review grammar in a fence — which
+  # any document about this protocol does — would otherwise move `last` inside that fence and hide
+  # every real verdict above it, reporting a complete turn as incomplete.
+  strip_fences "$1" > "${TMPD}/rvsrc.$$"
+  awk '{ a[NR] = $0 } /^## Review[[:space:]]*$/ { last = NR }
+       END { if (last) for (i = last + 1; i <= NR; i++) print a[i] }' "${TMPD}/rvsrc.$$"
+  rm -f "${TMPD}/rvsrc.$$"
+}
+
+cmd_check() { # <doc> <copy>
+  [[ $# -ge 2 ]] || die "usage: multi-review-symcheck.sh check <doc> <copy>" 2
+  local doc="$1" copy="$2"
+  [[ -f "$doc"  ]] || die "doc not found: $doc" 2
+  [[ -f "$copy" ]] || die "copy not found: $copy" 2
+
+  local rows rc=0
+  rows="$(cmd_rows "$doc")" || {
+    rc=$?
+    # Not applicable is not a failure: there was nothing to cover.
+    (( rc == 3 )) && return 0
+    die "cannot derive rows for $doc" 1
+  }
+  awk -F'\t' '{ print $1 }' <<< "$rows" | LC_ALL=C sort -u > "${TMPD}/want"
+
+  local rv; rv="$(_review_verdicts "$copy")"
+
+  printf '%s\n' "$rv" | grep -qE '^>[[:space:]]*\[symcheck\][[:space:]]*—[[:space:]]*via[[:space:]]+[^[:space:]]' \
+    || die "symcheck table carries no '> [symcheck] — via <model>' disclosure" 1
+
+  printf '%s\n' "$rv" \
+    | sed -n 's/^>[[:space:]]*\[symcheck:\([A-Za-z][0-9A-Za-z]*\)|.*/\1/p' \
+    | LC_ALL=C sort -u > "${TMPD}/got"
+
+  # ONE verdict per row. The join sorts unique, so two contradictory verdicts for the same row
+  # (`B1|ok` and `B1|defect:r1`) would otherwise both be accepted and the turn read as complete.
+  local dupes
+  dupes="$(printf '%s\n' "$rv" \
+    | sed -n 's/^>[[:space:]]*\[symcheck:\([A-Za-z][0-9A-Za-z]*\)|.*/\1/p' \
+    | LC_ALL=C sort | uniq -d | tr '\n' ' ')"
+  [[ -z "${dupes// /}" ]] || die "more than one verdict for row(s): ${dupes% }" 1
+
+  local missing extra
+  missing="$(LC_ALL=C comm -23 "${TMPD}/want" "${TMPD}/got" | tr '\n' ' ')"
+  [[ -z "${missing// /}" ]] \
+    || die "incomplete turn: no verdict for row(s): ${missing% }" 1
+  extra="$(LC_ALL=C comm -13 "${TMPD}/want" "${TMPD}/got" | tr '\n' ' ')"
+  [[ -z "${extra// /}" ]] \
+    || die "verdict names row(s) that were never emitted: ${extra% }" 1
+
+  # Clause 4: an `ok` must name what it checked. An `ok` naming nothing is byte-identical to a row
+  # nobody opened — the hazard the coverage assertion exists to close, one level down. `none` is the
+  # verdict for a block that genuinely references nothing, so this stays strict for `ok`.
+  local bare
+  bare="$(printf '%s\n' "$rv" \
+    | sed -n 's/^>[[:space:]]*\[symcheck:\([A-Za-z][0-9A-Za-z]*\)|ok\][[:space:]]*$/\1/p' \
+    | tr '\n' ' ')"
+  [[ -z "${bare// /}" ]] \
+    || die "ok verdict names no symbol for row(s): ${bare% }" 1
+
+  # CLAUSE 5: the verdict token must be one this pass defines. The row-id extraction above accepts
+  # any `|<token>]`, so without this a typo'd or invented verdict — `[symcheck:B1|wat]` — counts as
+  # coverage and reaches the gate as a complete turn. Coverage that accepts anything is not coverage.
+  local badtok
+  badtok="$(printf '%s\n' "$rv" \
+    | sed -n 's/^>[[:space:]]*\[symcheck:\([A-Za-z][0-9A-Za-z]*\)|\([^]]*\)\].*/\1=\2/p' \
+    | awk -F= '$2 != "ok" && $2 != "new" && $2 != "none" && $2 !~ /^defect:/ { print $1 "(" $2 ")" }' \
+    | tr '\n' ' ')"
+  [[ -z "${badtok// /}" ]] \
+    || die "unknown verdict token on row(s): ${badtok% } (expected ok, new, none or defect:<id>)" 1
+
+  # Every defect must name a finding present in the SAME copy. A defect recorded only in the table
+  # is a finding that bypasses adjudication and never reaches the human gate's accounting.
+  #
+  # LITERAL matching, never a built regex: a finding id is agent-authored text, and interpolating it
+  # into a regex let `defect:r.` be satisfied by any finding at all. star.sh:586 records this repo
+  # being bitten by exactly that.
+  # An EMPTY id (`defect:]`) must FAIL rather than be skipped: skipping it lets a defect verdict
+  # satisfy coverage while anchoring to nothing, the bypass this clause exists to prevent.
+  printf '%s\n' "$rv" | grep -qE '^>[[:space:]]*\[symcheck:[^|]*\|defect:\]' \
+    && die "defect verdict names an empty finding id" 1
+
+  local fid
+  while IFS= read -r fid; do
+    [[ -n "$fid" ]] || continue
+    printf '%s\n' "$rv" \
+      | sed 's/^>[[:space:]]*/> /' \
+      | awk -v want="> [finding:${fid}|" 'index($0, want) == 1 { found = 1 } END { exit !found }' \
+      || die "symcheck defect names finding '${fid}', which is not in this copy" 1
+  done < <(printf '%s\n' "$rv" | sed -n 's/^>[[:space:]]*\[symcheck:[^|]*|defect:\([^]]*\)\].*/\1/p')
+  return 0
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     rows)  cmd_rows "$@" ;;
+    check) cmd_check "$@" ;;
     *)     die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }

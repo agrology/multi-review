@@ -153,6 +153,123 @@ else
     && ok "rows: the fixture's Produces entry is in the introduces set" \
     || bad "rows: the Produces entry is absent"
 fi
+# --- check: coverage is enforced, not assumed ---
+# mkcopy <name> <doc> <review-line...> : the doc plus a ## Review block carrying verdicts
+mkcopy() { local p="${WORK}/$1"; local src="$2"; shift 2
+  { cat "$src"; echo; echo '## Review'; echo; printf '%s\n' "$@"; } > "$p"; echo "$p"; }
+
+D="$(mkdoc cov.md \
+  '# Plan' '' \
+  '### Task 1: one' '' '**Files:**' '- Modify: `src/a.py`' '' \
+  '```python' 'foo(1)' '```' '' \
+  '### Task 2: two' '' '**Files:**' '- Modify: `src/b.py`' '' \
+  '```python' 'bar(2)' '```' '')"
+rows="$(bash "$SUT" rows "$D" 2>/dev/null)"
+allrows="$(awk -F'\t' '{print $1}' <<<"$rows")"
+
+# complete coverage -> exit 0
+lines=('> [symcheck] — via test-model')
+while IFS= read -r r; do [[ -n "$r" ]] && lines+=("> [symcheck:${r}|ok] foo() in src/a.py"); done <<<"$allrows"
+C="$(mkcopy cov-ok.md "$D" "${lines[@]}")"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && ok "check: a copy verdicting every row exits 0" || bad "check: complete coverage rejected"
+
+# clause 1: a missing row is an incomplete turn
+C="$(mkcopy cov-missing.md "$D" '> [symcheck] — via test-model' "${lines[1]}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'incomplete turn' <<<"$err" \
+  && ok "check: a copy missing rows fails, and says it is incomplete" \
+  || bad "check: a copy missing rows passed — coverage is not enforced (rc=$rc err='$err')"
+
+# clause 2: a defect naming a finding that is not present
+first="$(sed -n 1p <<<"$allrows")"
+C="$(mkcopy cov-ghost.md "$D" '> [symcheck] — via test-model' \
+      "> [symcheck:${first}|defect:r9] ghost" "${lines[@]:2}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'r9' <<<"$err" \
+  && ok "check: a defect naming an absent finding fails, and names the id" \
+  || bad "check: an unanchored defect passed (rc=$rc err='$err')"
+
+# clause 3: a verdict for a row that was never emitted
+C="$(mkcopy cov-extra.md "$D" '> [symcheck] — via test-model' "${lines[@]:1}" \
+      '> [symcheck:B99|ok] nothing')"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'never emitted' <<<"$err" \
+  && ok "check: a verdict naming an unemitted row fails" \
+  || bad "check: a verdict for an unemitted row passed (rc=$rc err='$err')"
+
+# clause 4: an `ok` that names no symbol
+# An `ok` naming nothing is byte-identical to a row nobody opened. `none` exists so this clause can
+# stay strict for `ok`.
+C="$(mkcopy cov-bareok.md "$D" '> [symcheck] — via test-model' \
+      "> [symcheck:${first}|ok]" "${lines[@]:2}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'names no symbol' <<<"$err" \
+  && ok "check: a bare 'ok' with no symbol list fails" \
+  || bad "check: a bare 'ok' passed — the verdict is unfalsifiable (rc=$rc err='$err')"
+
+# ... and `none` is accepted with no symbol list, because that is what it is for
+C="$(mkcopy cov-none.md "$D" '> [symcheck] — via test-model' \
+      "> [symcheck:${first}|none] literal data fixture, references nothing in the repo" "${lines[@]:2}")"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && ok "check: a 'none' verdict needs no symbol list" \
+  || bad "check: 'none' was rejected — clause 4 is over-tight and would force a false statement"
+
+# clause 5: an unknown verdict token must not count as coverage
+C="$(mkcopy cov-badtok.md "$D" '> [symcheck] — via test-model' \
+      "> [symcheck:${first}|wat] invented verdict" "${lines[@]:2}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'unknown verdict token' <<<"$err" \
+  && ok "check: an invented verdict token is rejected" \
+  || bad "check: an unknown verdict token counted as coverage (rc=$rc err='$err')"
+
+# fable-rd1-r3: `check` on a NOT-APPLICABLE doc returns 0 — otherwise every prose doc reports a
+# bogus 0/M at the gate. This is the covering test for `symcheck/check-na-returns-0`.
+ND="$(mkdoc cov-na.md '# A design' '' 'Prose only.' '')"
+NC="$(mkcopy cov-na-copy.md "$ND" '> [symcheck] — via test-model')"
+bash "$SUT" check "$ND" "$NC" >/dev/null 2>&1 \
+  && ok "check: a not-applicable doc passes coverage trivially" \
+  || bad "check: a not-applicable doc failed coverage — every prose doc would report a bogus 0/M"
+
+# fable-rd1-r7: a finding id carrying a regex metacharacter must not match a DIFFERENT finding.
+# This is what distinguishes the literal index() match from a rebuilt regex (star.sh:586).
+C="$(mkcopy cov-metachar.md "$D" '> [symcheck] — via test-model' \
+      "> [symcheck:${first}|defect:r.] metachar id" "${lines[@]:2}" \
+      '> [finding:rX|high] a real finding with a different id' '> — via test-model' '> — risk: none')"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] \
+  && ok "check: a metacharacter finding id does not match a different finding" \
+  || bad "check: 'defect:r.' was satisfied by finding 'rX' — the anchor is a regex, not a literal"
+
+# codex-rd2-r1: an EMPTY defect id must fail, not be skipped
+C="$(mkcopy cov-emptyid.md "$D" '> [symcheck] — via test-model' \
+      "> [symcheck:${first}|defect:] anchored to nothing" "${lines[@]:2}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'empty finding id' <<<"$err" \
+  && ok "check: a defect with an empty finding id is rejected" \
+  || bad "check: 'defect:' with no id satisfied coverage while anchoring to nothing (rc=$rc err='$err')"
+
+# codex-rd2-r2: two verdicts for one row must fail
+C="$(mkcopy cov-dupe.md "$D" '> [symcheck] — via test-model' \
+      "> [symcheck:${first}|ok] foo()" "> [symcheck:${first}|none] contradicts the line above" "${lines[@]:2}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'more than one verdict' <<<"$err" \
+  && ok "check: contradictory duplicate verdicts for one row are rejected" \
+  || bad "check: two verdicts for the same row were accepted as complete (rc=$rc err='$err')"
+
+# fable-rd2-r7: a fenced '## Review' after the real one must not hide the verdicts
+C="$(mkcopy cov-fencedheading.md "$D" '> [symcheck] — via test-model' "${lines[@]:1}" \
+      '' 'An example of the grammar:' '' '```markdown' '## Review' '> [symcheck:B1|ok] example' '```')"
+bash "$SUT" check "$D" "$C" >/dev/null 2>&1 \
+  && ok "check: a fenced '## Review' does not hide the real verdicts" \
+  || bad "check: a fenced '## Review' shifted the scan and a complete turn read as incomplete"
+
+# the disclosure header is required, exactly as on a [no-findings] turn
+C="$(mkcopy cov-nodisc.md "$D" "${lines[@]:1}")"
+err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc != 0 ]] && grep -qF 'disclosure' <<<"$err" \
+  && ok "check: a table with no '> [symcheck] — via' header fails" \
+  || bad "check: a table with no disclosure passed (rc=$rc err='$err')"
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
