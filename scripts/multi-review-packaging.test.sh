@@ -1090,9 +1090,53 @@ else
   ne="$(awk -v s="$n" 'NR>s && /\*\*Keep `<doc>\.manifest`\.\*\*/{print NR; exit}' "$CMD")"
   [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
   blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
-  grep -qF '<doc>.crossref.seed' <<<"$blk" && grep -qF '<doc>.crossref.rows' <<<"$blk" \
-    && ok "command: the terminal gate's release rule covers the crossref working files" \
-    || bad "command: the terminal gate's release-rule paragraph never names <doc>.crossref.seed/<doc>.crossref.rows — they are never released (R10)"
+  # `<doc>.<pass>.rows`, not `<doc>.crossref.rows`: once a SECOND pass exists (#89's symcheck) an
+  # enumerated worklist entry is exactly the shape that silently stops covering the next one, which
+  # is the failure the paragraph's own prose warns about. Assert the by-purpose shape instead.
+  grep -qF '<doc>.crossref.seed' <<<"$blk" && grep -qF '<doc>.<pass>.rows' <<<"$blk" \
+    && ok "command: the terminal gate's release rule covers every pass's working files" \
+    || bad "command: the terminal gate's release-rule paragraph never names <doc>.crossref.seed/<doc>.<pass>.rows — a pass's working files are never released (R10)"
 fi
+
+
+# --- the symcheck pass must be derived, dispatched, merged, checked and announced ---
+# Patterns are the SYMCHECK-prefixed forms, never the bare `<M>/<M> rows verdicted]` the plan
+# sketched: that one now has two matches in this file (crossref writes the same shape), so it is
+# satisfied by the crossref line alone and would stay green with the whole symcheck branch
+# deleted. Counts confirmed 1 each in the current file, and each guard verified by deleting only
+# the symcheck line it names.
+n="$(grep -n 'multi-review-symcheck.sh rows' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the symcheck row derivation is never invoked"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^9\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF 'prompt "<doc>.symcheck" --symcheck' <<<"$blk" \
+    && ok "command: the symcheck pass is dispatched" \
+    || bad "command: nothing dispatches the symcheck pass — rows are derived and never used"
+  # `--` before the pattern: without it grep reads `--pass ...` as an option and aborts.
+  grep -qF -- '--pass "<doc>.symcheck"' <<<"$blk" \
+    && ok "command: the symcheck copy is merged as a pass" \
+    || bad "command: the symcheck copy is never merged — its defects reach nothing"
+  grep -qF 'multi-review-symcheck.sh check' <<<"$blk" \
+    && ok "command: the symcheck coverage check is run" \
+    || bad "command: the symcheck copy is never coverage-checked"
+  grep -qF 'symcheck-coverage: not applicable]' <<<"$blk" \
+    && ok "command: the not-applicable symcheck state is recorded" \
+    || bad "command: an exit-3 symcheck round leaves no durable line, so the gate has nothing to render"
+  grep -qF 'symcheck-coverage: <M>/<M> rows verdicted]' <<<"$blk" \
+    && ok "command: the complete symcheck state is recorded" \
+    || bad "command: the complete symcheck coverage state is never recorded"
+  grep -qF 'symcheck-coverage: <N>/<M> rows verdicted]' <<<"$blk" \
+    && ok "command: the incomplete symcheck state is recorded" \
+    || bad "command: the incomplete symcheck coverage state is never recorded"
+  grep -qF 'Wait on the symcheck pass here too' <<<"$blk" \
+    && ok "command: the symcheck copy is waited on with the secondaries" \
+    || bad "command: nothing waits on <doc>.symcheck — merge could run before the pass writes anything"
+fi
+grep -qF 'symcheck pass is not a secondary' "$CMD" \
+  && ok "command: the symcheck pass is excluded from the secondary count" \
+  || bad "command: nothing says the symcheck pass is not a secondary — it would inflate the roster"
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
