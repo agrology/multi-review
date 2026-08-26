@@ -207,6 +207,117 @@ RV_D="$(grep -oE 'MULTI_REVIEW_DOC_DIRS:-[^}]*' "${DIR}/multi-review-reviewer.sh
   && ok "doc-dir default identical across core/egress-guard/reviewer" \
   || bad "DOC_DIRS default drifted (core='$CORE_D' guard='$EG_D' reviewer='$RV_D')"
 
+# --- sections: an ordinal heading that declares a Files/Interfaces block ---
+# Both halves are required. The ordinal alone sweeps in prose headings ("Task lists we rejected");
+# the block alone sweeps in a preamble that happens to mention files.
+SD="${WORK}/sections-basic.md"
+printf '%s\n' \
+  '# Plan' '' \
+  '## Overview' '' 'Mentions `scripts/a.sh` but declares nothing.' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' 'Edit it.' '' \
+  '### Task 2: second' '' '**Interfaces:**' '- Produces: `alpha`' '' > "$SD"
+out="$(bash "$SUT" sections "$SD" 2>/dev/null)"; rc=$?
+[[ $rc == 0 ]] && ok "sections: exits 0 on a sectioned doc" || bad "sections: rc=$rc on a sectioned doc"
+n="$(printf '%s\n' "$out" | grep -c . || true)"
+[[ "$n" == 2 ]] && ok "sections: one row per qualifying section (got $n)" \
+  || bad "sections: expected 2 rows, got $n — the preamble may have qualified"
+awk -F'\t' '$4=="Task 1"' <<<"$out" | grep -q . \
+  && ok "sections: the short id is the ordinal heading prefix" \
+  || bad "sections: no row with short id 'Task 1'"
+
+# --- TILDE fences are fences too, and a different fence char does not close one ---
+# Without this, tilde-fenced shipped code is read as prose: its `**Files:**` lines qualify sections
+# that ship nothing and its `#` lines split sections. The second half matters independently — a
+# ``` line inside a ~~~ block must NOT close it, or the rest of the block escapes.
+SD="${WORK}/sections-tilde.md"
+printf '%s\n' \
+  '# Plan' '' \
+  '### Task 1: tilde-fenced' '' '**Files:**' '- Modify: `scripts/a.sh`' '' \
+  '~~~bash' '# --- setup ---' '```' 'echo still inside the tilde block' '~~~' '' \
+  'Tail line.' '' \
+  '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' > "$SD"
+out="$(bash "$SUT" sections "$SD" 2>/dev/null)"
+end1="$(awk -F'\t' '$4=="Task 1"{print $3}' <<<"$out")"
+[[ -n "$end1" && "$end1" -ge 14 ]] \
+  && ok "sections: a '#' inside a TILDE fence does not truncate its section (end=$end1)" \
+  || bad "sections: Task 1 ended at line ${end1:-?} — tilde fences are not recognised"
+n="$(printf '%s\n' "$out" | grep -c . || true)"
+[[ "$n" == 2 ]] && ok "sections: a backtick line does not close a tilde fence (got $n)" \
+  || bad "sections: expected 2 sections, got $n — a \`\`\` line closed the ~~~ block"
+
+# --- an ordinal heading that declares NO Files/Interfaces block is excluded ---
+# This is the exclusion direction of `if (!has) continue`, and without it the guard can fail OPEN —
+# every ordinal heading emitted — with every other assertion still green. The blockless section here
+# is ORDINAL on purpose: a non-ordinal heading is excluded by the ordinal test instead, so it proves
+# nothing about this one.
+SD="${WORK}/sections-blockless.md"
+printf '%s\n' \
+  '# Plan' '' \
+  '### Task 1: declares nothing' '' 'Just prose, and a mention of `scripts/a.sh`.' '' \
+  '### Task 2: declares a block' '' '**Files:**' '- Modify: `scripts/b.sh`' '' > "$SD"
+out="$(bash "$SUT" sections "$SD" 2>/dev/null)"
+n="$(printf '%s\n' "$out" | grep -c . || true)"
+[[ "$n" == 1 ]] && ok "sections: an ordinal heading with no Files/Interfaces block is excluded (got $n)" \
+  || bad "sections: expected 1 row, got $n — the block requirement is not enforced and the filter fails open"
+awk -F'\t' '$4=="Task 2"' <<<"$out" | grep -q . \
+  && ok "sections: the surviving row is the one that declares a block" \
+  || bad "sections: the wrong section survived the block filter"
+
+# --- fenced example content must not qualify a section (fable-rd1-r1) ---
+# A plan that QUOTES a fixture contains bare `**Files:**` and `- Create:` lines inside a fence. If
+# derivation reads them raw, an illustrative block qualifies as shipping code and its paths inflate
+# the introduces set — suppressing the missing-symbol defect this pass exists to catch.
+SD="${WORK}/sections-fenced-files.md"
+printf '%s\n' \
+  '# Plan' '' \
+  '### Task 1: quotes a fixture' '' 'Create the fixture:' '' \
+  '````markdown' '# Fixture' '' '**Files:**' '- Create: `src/illustrative.py`' '' '```bash' 'echo hi' '```' '````' '' \
+  '### Task 2: real' '' '**Files:**' '- Modify: `src/real.py`' '' > "$SD"
+out="$(bash "$SUT" sections "$SD" 2>/dev/null)"
+awk -F'\t' '$4=="Task 1"' <<<"$out" | grep -q . \
+  && bad "sections: a section qualified on a **Files:** line that is inside a fenced block" \
+  || ok "sections: a fenced **Files:** does not qualify a section"
+
+# --- a '#' line inside a fenced block is not a heading ---
+# Reproduced against a real plan: a bash comment "# --- setup ---" parsed as a depth-1 heading and
+# truncated a 416-line task to 33 lines, silently discarding the rest of its body.
+SD="${WORK}/sections-fenced.md"
+printf '%s\n' \
+  '# Plan' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' \
+  'Run:' '' '```bash' '# --- setup ---' 'echo hi' '```' '' 'Tail line.' '' \
+  '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' > "$SD"
+out="$(bash "$SUT" sections "$SD" 2>/dev/null)"
+end1="$(awk -F'\t' '$4=="Task 1"{print $3}' <<<"$out")"
+[[ -n "$end1" && "$end1" -ge 14 ]] \
+  && ok "sections: a fenced '#' comment does not truncate its section (end=$end1)" \
+  || bad "sections: Task 1 ended at line ${end1:-?} — heading detection is fence-blind"
+
+# --- section boundaries use heading DEPTH, not the next ordinal heading ---
+# "Task N" and "Step N" both match the ordinal pattern, so the naive rule ends a task at its own
+# first step.
+SD="${WORK}/sections-depth.md"
+printf '%s\n' \
+  '# Plan' '' \
+  '### Task 1: has sub-steps' '' '**Files:**' '- Modify: `scripts/a.sh`' '' \
+  '#### Step 1: do a thing' '' 'Body.' '' \
+  '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' > "$SD"
+out="$(bash "$SUT" sections "$SD" 2>/dev/null)"
+end1="$(awk -F'\t' '$4=="Task 1"{print $3}' <<<"$out")"
+[[ -n "$end1" && "$end1" -ge 11 ]] \
+  && ok "sections: a task runs past its own sub-steps (end=$end1)" \
+  || bad "sections: Task 1 ended at line ${end1:-?} — depth is not being used"
+
+# --- usage and missing file both exit 2, with the module prefix ---
+err="$(bash "$SUT" sections 2>&1 >/dev/null)"; rc=$?
+[[ $rc == 2 ]] && grep -qF 'multi-review-core:' <<<"$err" \
+  && ok "sections: no argument exits 2 with the module prefix" \
+  || bad "sections: no-arg rc=$rc err='$err' (want rc=2 and the module prefix)"
+err="$(bash "$SUT" sections "${WORK}/nope.md" 2>&1 >/dev/null)"; rc=$?
+[[ $rc == 2 ]] && grep -qF 'not found' <<<"$err" \
+  && ok "sections: a missing doc exits 2 and says so" \
+  || bad "sections: missing doc rc=$rc err='$err'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

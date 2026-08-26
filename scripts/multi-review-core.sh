@@ -239,12 +239,74 @@ _sibling_hint() {
   return 0
 }
 
+# A SECTION is a heading whose text starts with a section keyword and an ordinal, AND which declares
+# a Files/Interfaces block before its own end. Both halves are required: the ordinal alone sweeps in
+# prose headings, the block alone sweeps in a preamble that happens to mention files.
+#
+# Exposed as a SUBCOMMAND rather than a sourced function because that is how this repo shares across
+# modules (see star.sh's calls to `core.sh marker`). multi-review-crossref.sh keeps its own private
+# copy deliberately — moving lines that carry passing mutation entries would risk STALE for no
+# behavioural gain.
+cmd_sections() { # <doc> -> "idx\tstart\tend\tshort-id\ttitle"
+  [[ $# -ge 1 ]] || die "usage: multi-review-core.sh sections <doc>" 2
+  [[ -f "$1" ]] || die "sections: doc not found: $1" 2
+  awk '
+    # FENCE STATE FIRST, and headings only outside a fence. A shell comment such as
+    # "# --- setup ---" inside a fenced block is not a heading; treating it as one truncates the
+    # enclosing section and silently drops the rest of its body.
+    # A fence opens with THREE OR MORE backticks or tildes, and closes only with the same
+    # character, at least as long (CommonMark). Tildes are not decorative here: a doc nests a block
+    # by using a longer or different outer fence, which is exactly what a plan quoting a fixture
+    # does, and a backtick-only parser reads that content as live document structure.
+    { fs = $0; sub(/^ ? ? ?/, "", fs)
+      tk = 0; fc = ""
+      if (match(fs, /^`+/))      { tk = RLENGTH; fc = "`" }
+      else if (match(fs, /^~+/)) { tk = RLENGTH; fc = "~" }
+      # RECORD ONLY UNFENCED LINES. The `has` scan below reads lines[] raw, so a fenced
+      # `**Files:**` in an illustrative block would qualify a section that ships no code — and a
+      # fenced `- Create:` would inflate the introduces set, suppressing the very missing-symbol
+      # defect this pass exists to catch. Verdict parsing strips fences for this reason; derivation
+      # must too.
+      if (infence) {
+        lines[NR] = ""
+        if (fc == fchar && tk >= flen) { rest = substr(fs, tk + 1); gsub(/[ \t]/, "", rest); if (rest == "") { infence = 0; flen = 0; fchar = "" } }
+        next
+      } else if (tk >= 3) { infence = 1; flen = tk; fchar = fc; lines[NR] = ""; next }
+      lines[NR] = $0
+    }
+    /^#+[ \t]+/ {
+      match($0, /^#+/); d = RLENGTH
+      t = $0; sub(/^#+[ \t]+/, "", t)
+      hn++; ahl[hn] = NR; ad[hn] = d           # every heading, for the depth-based end below
+      if (t ~ /^(Task|Step|Phase)[ \t]+[0-9]+/ || t ~ /^[0-9]+\./) { n++; hl[n] = NR; ht[n] = t; hd[n] = d }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        # END AT THE NEXT HEADING OF EQUAL-OR-SHALLOWER DEPTH, never at the next ordinal heading:
+        # "Task N" and "Step N" both match the ordinal pattern, so the naive rule ends a task at its
+        # own first step.
+        e = NR
+        for (q = 1; q <= hn; q++) if (ahl[q] > hl[i] && ad[q] <= hd[i]) { e = ahl[q] - 1; break }
+        has = 0
+        for (j = hl[i]; j <= e; j++) if (lines[j] ~ /^\*\*(Files|Interfaces):\*\*/) has = 1
+        if (!has) continue
+        sid = ht[i]
+        if (match(sid, /^(Task|Step|Phase)[ \t]+[0-9]+/)) sid = substr(sid, RSTART, RLENGTH)
+        else if (match(sid, /^[0-9]+/))                   sid = substr(sid, RSTART, RLENGTH)
+        gsub(/[ \t]+/, " ", sid)
+        print ++k "\t" hl[i] "\t" e "\t" sid "\t" ht[i]
+      }
+    }
+  ' "$1"
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     marker) cmd_marker "$@" ;;
     init)   cmd_init "$@" ;;
     resolve-doc) cmd_resolve_doc "$@" ;;
+    sections)     cmd_sections "$@" ;;
     *)      die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }
