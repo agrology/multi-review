@@ -700,7 +700,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    **The crossref pass's copy is not verified here.** `<doc>.crossref` is not run through
    `verify-vendor` — it has no vendor, and it is not an independent perspective to authenticate.
    `crossref check`, in step 8, is its verification. Say this explicitly so a later editor does
-   not "fix" the omission.
+   not "fix" the omission. It is also not run through `channel-check` above — genuinely
+   uncovered, but fail-safe: `channel-check`'s `namespace_blocks` is `review_section`-scoped, so
+   an out-of-channel crossref verdict or finding is DROPPED rather than injected, and the
+   resulting missing table then trips `crossref check`'s own disclosure guard in step 8, reported
+   as `0/M` rather than silently passed.
 7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
    <id>:<reason> ...] [--pass "<doc>.crossref"] "<doc>" <admitted copies...>`. Pass `--pass
    "<doc>.crossref"` only in round 1, and only when step 2 derived a worklist (exit 0) — omit it
