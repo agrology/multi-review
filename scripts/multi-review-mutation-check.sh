@@ -1622,8 +1622,8 @@ mutations() {
   # provider-or-pass `.seed` pattern) — otherwise they are never released (R10).
   mutate 'command/crossref-gate-releases' 'commands/multi-review.md' replace \
     'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
-    '  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` included),' \
-    '  `<doc>.<id>.seed` (per provider only),'
+    '  every `<doc>.baseline` and `<doc>.baseline.rd<N>`, and every pass'"'"'s derived worklist' \
+    '  every `<doc>.baseline` and `<doc>.baseline.rd<N>`,'
   # ---- the cross-reference pass (#90) ------------------------------------------------------
 
   # The `--pass` argv-parsing arm itself — without it `--pass <copy>` falls through to the
@@ -1670,7 +1670,7 @@ mutations() {
   # (if it somehow reached the doc another way) counted as a full secondary at the gate.
   mutate 'star/passes-constant' 'scripts/multi-review-star.sh' replace \
     'pass copy inflated the secondary count' 'multi-review-star.test.sh' \
-    'STAR_PASSES="crossref"' \
+    'STAR_PASSES="crossref symcheck"' \
     'STAR_PASSES=""'
 
   # cmd_gate_summary's STAR_PASSES exclusion from `admitted` (spec criterion 9) — without it a
@@ -1693,7 +1693,8 @@ mutations() {
   # cmd_gate_summary's crossref-coverage rendering: N==M (complete) vs N<M (INCOMPLETE) must
   # render differently — the whole point of the pass is that a partially-verdicted round is
   # visible at the gate, not indistinguishable from a fully-verdicted one.
-  mutate 'star/gate-crossref-incomplete-flag' 'scripts/multi-review-star.sh' replace \
+  # replace:1 — #89's symcheck renderer duplicates this line shape; occurrence 1 is crossref's.
+  mutate 'star/gate-crossref-incomplete-flag' 'scripts/multi-review-star.sh' replace:1 \
     'incomplete crossref coverage not flagged' 'multi-review-star.test.sh' \
     '      if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then' \
     '      if true; then'
@@ -1709,7 +1710,8 @@ mutations() {
   # _crossref_coverage reads the MOST RECENT durable coverage line, not the first (B5, final
   # review) — a first-wins reading would report a stale INCOMPLETE record over a later complete
   # round, silently understating coverage at the gate.
-  mutate 'star/crossref-coverage-most-recent' 'scripts/multi-review-star.sh' replace \
+  # replace:1 — same duplication: _symcheck_coverage carries an identical `| tail -1`.
+  mutate 'star/crossref-coverage-most-recent' 'scripts/multi-review-star.sh' replace:1 \
     'crossref coverage read a stale first record instead of the most recent' 'multi-review-star.test.sh' \
     '    | tail -1' \
     '    | head -1'
