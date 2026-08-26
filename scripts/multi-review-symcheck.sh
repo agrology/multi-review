@@ -94,12 +94,59 @@ _blocks_in() { # <doc> <start> <end>
   '
 }
 
+# What the DOCUMENT introduces: every `- Create:` path and every `- Produces:` entry, document-wide.
+#
+# Document-wide, not section-local, and deliberately so: a later section legitimately calls what an
+# earlier one creates, and scoping this per section would make every such call read as a defect.
+#
+# `- Modify:` is EXCLUDED. A modified file already exists, so the symbols its block touches are
+# precisely the ones worth checking — treating it as introduced would suppress the whole point.
+_introduces() { # <doc> -> one entry per line
+  local doc="$1" idx start end sid title
+  # EVERY section, not just the ones that declare **Files:**. A section that declares only
+  # `**Interfaces:**` still PRODUCES things later sections legitimately call; scoping this to
+  # `_file_sections` would drop those, and every valid call to a contract-only section's interface
+  # would then read as a missing repo symbol — the false-positive flood this set exists to prevent.
+  # Read the sections into a FILE first. A `|| die` inside a process substitution exits only that
+  # subshell, so the failure would be printed and then discarded — the loop would simply see EOF and
+  # the caller would carry on with an empty set.
+  "$CORE_SH" sections "$doc" > "${TMPD}/isecs" 2>"${TMPD}/isec.err" \
+    || die "core.sh sections failed for ${doc}: $(head -1 "${TMPD}/isec.err")" 1
+  { while IFS=$'\t' read -r idx start end sid title; do
+      [[ -n "$sid" ]] || continue
+      sed -n "${start},${end}p" "$doc" > "${TMPD}/int.$$"
+      strip_fences "${TMPD}/int.$$" | awk '
+        /^\*\*(Files|Interfaces):\*\*/ { inblk = 1; next }
+        inblk && /^[[:space:]]*$/      { inblk = 0 }
+        # Take the BACKTICKED TOKENS, not the rest of the line. A real `- Produces:` entry is a
+        # sentence — this plan\x27s own Task 1 entry runs to several clauses with embedded commas — so
+        # capturing the remainder makes the introduces column undelimitable prose instead of a symbol
+        # list. Every entry worth checking names its symbol in backticks; the prose around it is
+        # commentary. A line with no backticked token contributes nothing.
+        inblk && /^- (Create|Produces):/ {
+          line = $0
+          while (match(line, /`[^`]+`/)) {
+            print substr(line, RSTART + 1, RLENGTH - 2)
+            line = substr(line, RSTART + RLENGTH)
+          }
+        }
+      '
+    done < "${TMPD}/isecs"
+    rm -f "${TMPD}/int.$$"
+  } | sed 's/^[ \t]*//; s/[ \t]*$//' | sed '/^$/d' | LC_ALL=C sort -u  # sed, not grep -v: an empty set is not a failure
+}
+
 cmd_rows() { # <doc>
   [[ $# -ge 1 ]] || die "usage: multi-review-symcheck.sh rows <doc>" 2
   local doc="$1"
   [[ -f "$doc" ]] || die "doc not found: $doc" 2
 
-  local secs; secs="$(_file_sections "$doc")"
+  # `|| exit $?` on BOTH: `die` inside a command substitution kills only the subshell, so without
+  # this the loud failure above is printed and then thrown away, and the pass falls through to
+  # "not applicable" — recording a clean non-run at the gate, which is the exact failure this
+  # family of passes exists to close.
+  local secs; secs="$(_file_sections "$doc")" || exit $?
+  local intro; intro="$(_introduces "$doc" | tr '\n' ',' | sed 's/,$//')" || exit $?
   : > "${TMPD}/rows"
   local n=0 idx start end sid title bs be tag
   while IFS=$'\t' read -r idx start end sid title; do
@@ -107,7 +154,7 @@ cmd_rows() { # <doc>
     while IFS=$'\t' read -r bs be tag; do
       [[ -n "$bs" ]] || continue
       n=$((n + 1))
-      printf 'B%d\t%s\t%s:%s-%s\t\n' "$n" "$sid" "$tag" "$bs" "$be" >> "${TMPD}/rows"
+      printf 'B%d\t%s\t%s:%s-%s\t%s\n' "$n" "$sid" "$tag" "$bs" "$be" "$intro" >> "${TMPD}/rows"
     done < <(_blocks_in "$doc" "$start" "$end")
   done <<< "$secs"
 
