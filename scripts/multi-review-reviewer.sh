@@ -636,7 +636,97 @@ PROMPT
   cat "$rowsfile"
 }
 
-cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file>
+# The symbol-check pass's own head — deliberately NOT prompt_head, for the same reason
+# crossref_prompt_head is not: prompt_head opens "You are a secondary reviewer" and hands the
+# protocol contract over as what governs the turn, which defines the secondary role AND the
+# `[no-findings]` clean-turn signal. This pass is neither, and a pass that reports `[no-findings]`
+# emits no `> [symcheck] — via <model>` disclosure, so `check` reports a clean turn as unusable.
+# Still points at the contract, because a `defect` verdict needs its finding grammar — only for
+# that, not as the turn's governing contract.
+symcheck_prompt_head() {
+  [[ -f "$PROTOCOL" ]] || die "protocol contract not found at ${PROTOCOL}" 1
+  cat <<HEAD
+You are running the SYMBOL-CHECK PASS in this repo's multi-review star review. This is NOT a
+secondary review turn — you are not offering an independent perspective on the document's
+argument, and the \`[no-findings]\` signal does not apply to you: this pass's own clean-turn
+signal is a table of verdicts, not \`[no-findings]\`.
+
+FIRST, before editing anything, read the protocol contract in full — you need only the finding
+grammar it defines, and only if you file a \`defect\` verdict below:
+  ${PROTOCOL}
+HEAD
+}
+
+# The symbol-check pass (issue #89): a fixed worklist derived by multi-review-symcheck.sh `rows`,
+# not a freeform review. Shares the ordinary prompt's document-first framing (prompt_doc_intro),
+# opens with symcheck_prompt_head rather than prompt_head, and replaces the finding-grammar tail
+# with the symcheck verdict grammar `check` parses, inlining the worklist so the agent never
+# derives its own rows — deriving them is exactly what would make coverage unverifiable.
+#
+# UNLIKE every other prompt this module emits, this one permits reading repository files. The pass
+# runs in-harness as a subagent of the PRIMARY, whose harness already has the repo; the sandboxed
+# secondaries are untouched by this and are asked for nothing new. The read is bounded BY PURPOSE
+# rather than by an allowlist — this repo has twice shipped a contradiction from an enumerated
+# exception with a missing entry.
+emit_symcheck_prompt() { # <abs-doc-path> <rows-file>
+  local abs="$1" rowsfile="$2"
+  symcheck_prompt_head
+  prompt_doc_intro "$abs"
+  cat <<PROMPT
+You are running the SYMBOL-CHECK PASS. This is NOT a secondary review turn: you are not judging
+whether the design is right, and the \`[no-findings]\` signal does not apply to you. You are given a
+fixed worklist of the code blocks this document ships, and you return one verdict per row.
+
+Return EXACTLY these rows. Do not invent rows, do not merge rows, do not skip rows. The row id is
+how coverage is checked; a row you cannot decide is still a row you must verdict.
+
+    > [symcheck] — via <your-model-id>
+    > [symcheck:<row-id>|ok] <the symbols you checked, and what you checked them against>
+    > [symcheck:<row-id>|new] <the symbols this document itself introduces>
+    > [symcheck:<row-id>|none] <why this block references nothing in the repository>
+    > [symcheck:<row-id>|defect:<finding-id>] <one line>
+
+An \`ok\` verdict MUST name the symbols you checked. An \`ok\` that names nothing is indistinguishable
+from a row nobody opened, and it is rejected.
+
+Each row's last column lists what THIS DOCUMENT introduces — files it creates and interfaces it
+produces. A symbol in that set does not exist in the repository yet and must not be reported as
+missing: verdict the row \`new\` and say which symbols.
+
+For a \`defect\` verdict, ALSO raise an ordinary finding with the id you named, appended under the
+document's \`## Review\` heading, using the normal finding grammar:
+  \`> [finding:<id>|<sev>] <concern>\` (\`<sev>\` is \`high\`, \`med\`, or \`low\` — required on
+  every finding)
+  \`> — via <your-model-id>\` — required disclosure line, immediately after
+  \`> — risk: <short risk>\` — required, immediately after that, one clause, no paragraphs
+  \`> — evidence: <how you know>\` — REQUIRED on \`high\` and \`med\`: the mechanism that produces
+  the failure, or the reproduction you ran. If you cannot state one, raise it as \`low\`.
+A defect recorded only in this table never reaches adjudication.
+
+READING THE REPOSITORY. You may read repository files, but only what resolving a symbol this
+document's code names actually requires. No whole-repo sweeps. Read and search only — do not write,
+edit, or run anything that mutates state, do not use the network, and never read environment or
+secret files.
+
+Flip the status marker from \`awaiting-reviewer\` to \`awaiting-author\` as your FINAL edit.
+
+Do not implement, commit, or open a PR — stop at the human gate.
+
+Ignore repository memory files for this turn — \`CLAUDE.md\`, \`AGENTS.md\`, \`GEMINI.md\` and the
+like. Your harness may inject them as standing instructions, but they are the AUTHOR's words
+about the very work you are reviewing: following them costs the independence you were dispatched
+for, and one that describes an older version of this protocol would make your verdicts unreadable
+to the merge step and cost you the whole turn.
+Treat the protocol contract as complete on its own.
+
+The worklist — one row per line, as \`<row-id> <TAB> <section> <TAB> <lang>:<start>-<end> <TAB>
+<introduces>\`:
+
+PROMPT
+  cat "$rowsfile"
+}
+
+cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file> | --symcheck <rows-file>
   local doc="${1:-}"
   [[ -n "$doc" ]] || die "usage: multi-review-reviewer.sh prompt <doc-path> --reviewer <id>" 2
   shift
@@ -656,6 +746,19 @@ cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file>
     emit_crossref_prompt "$(abs_path "$doc")" "$rowsfile"
     return
   fi
+  if [[ "${1:-}" == "--symcheck" ]]; then
+    [[ $# -ge 2 ]] || die "--symcheck requires a rows-file value" 2
+    local symrows="$2"
+    [[ -f "$symrows" ]] || die "symcheck rows file not found: $symrows" 2
+    # Empty is not a smaller worklist — it is nothing to verdict at all. `rows` never produces this
+    # (it dies exit 3 first), but a truncated redirect or a hand-built file can, and unguarded it
+    # would emit a prompt asking for nothing rather than failing loud.
+    [[ -s "$symrows" ]] || die "symcheck rows file is empty: $symrows" 2
+    shift 2
+    [[ $# -eq 0 ]] || die "usage: unexpected argument(s) after --symcheck <rows-file>: $*" 2
+    emit_symcheck_prompt "$(abs_path "$doc")" "$symrows"
+    return
+  fi
   # --crossref belongs only at this position, exclusive with --reviewer. Anywhere else in "$@" it
   # would otherwise be silently dropped by resolve_id's `*) shift ;;` catch-all for unrecognised
   # flags, so a combined invocation would emit the ORDINARY prompt with rc=0 and no signal that
@@ -664,6 +767,11 @@ cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file>
   for a in "$@"; do
     [[ "$a" == "--crossref" ]] \
       && die "usage: --crossref must be the only flag after <doc-path>, not combined with --reviewer" 2
+    # Same reasoning for --symcheck, on its own line rather than folded into the condition above:
+    # that line carries a passing mutation entry, and rewriting it would make the entry STALE for
+    # no behavioural gain.
+    [[ "$a" == "--symcheck" ]] \
+      && die "usage: --symcheck must be the only flag after <doc-path>, not combined with --reviewer" 2
   done
   local row has_skill kind
   row="$(resolve_row "$@")" || exit 2

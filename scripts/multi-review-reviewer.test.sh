@@ -1718,6 +1718,70 @@ grep -qF '## Review' <<<"$out" \
   && ok "prompt(crossref) states where to append the finding (## Review)" \
   || bad "prompt(crossref) never says where to append the ordinary finding"
 
+# --- symcheck prompt: worklist inlined, scope bounded, grammar stated ---
+RF="${WORK}/symrows.tsv"
+printf 'B1\tTask 1\tpython:12-18\tsrc/new_mod.py,alpha --flag\nB2\tTask 2\tsql:30-34\tsrc/new_mod.py,alpha --flag\n' > "$RF"
+D="$(mkdoc sym.md awaiting-reviewer)"
+out="$(bash "$SUT" prompt "$D" --symcheck "$RF" 2>/dev/null)"
+grep -qF 'B1' <<<"$out" && grep -qF 'B2' <<<"$out" \
+  && ok "prompt(symcheck) inlines every row id" || bad "prompt(symcheck) dropped a row id"
+grep -qF '[symcheck:<row-id>|ok]' <<<"$out" \
+  && ok "prompt(symcheck) states the ok grammar" || bad "prompt(symcheck) lacks the ok grammar"
+grep -qF '[symcheck:<row-id>|new]' <<<"$out" \
+  && ok "prompt(symcheck) states the new grammar" || bad "prompt(symcheck) lacks the new verdict"
+grep -qF '[symcheck:<row-id>|none]' <<<"$out" \
+  && ok "prompt(symcheck) states the none grammar" || bad "prompt(symcheck) lacks the none verdict"
+grep -qiE 'do not (invent|add|create) rows|exactly these rows' <<<"$out" \
+  && ok "prompt(symcheck) forbids inventing rows" \
+  || bad "prompt(symcheck) does not forbid inventing rows — the row id is the coverage join key"
+grep -qF 'READ THAT DOCUMENT IN FULL, FIRST' <<<"$out" \
+  && ok "prompt(symcheck) keeps the read-in-full demand" \
+  || bad "prompt(symcheck) lost the read-in-full demand"
+
+# The scope bound. Stated BY PURPOSE, not as an enumerated allowlist: this repo has twice shipped a
+# contradiction from an enumerated exception with a missing entry.
+grep -qiE 'no whole-repo sweeps|do not sweep the (whole )?repo' <<<"$out" \
+  && ok "prompt(symcheck) forbids whole-repo sweeps" \
+  || bad "prompt(symcheck) does not bound the read — an unbounded agent may sweep the corpus"
+grep -qiE 'never (read )?(env|secret)|no secrets' <<<"$out" \
+  && ok "prompt(symcheck) forbids reading env/secret files" \
+  || bad "prompt(symcheck) does not forbid reading secrets"
+grep -qiE 'do not (write|modify|edit)|read-only' <<<"$out" \
+  && ok "prompt(symcheck) forbids writes" || bad "prompt(symcheck) does not forbid writes"
+grep -qiE 'stop at the human gate' <<<"$out" \
+  && ok "prompt(symcheck) stops at the human gate" || bad "prompt(symcheck) lacks the gate stop"
+grep -qiE 'ignore .*(CLAUDE\.md|memory file)' <<<"$out" \
+  && ok "prompt(symcheck) keeps the ignore-memory-files clause" \
+  || bad "prompt(symcheck) lost the independence clause"
+grep -qiF 'secondary reviewer' <<<"$out" \
+  && bad "prompt(symcheck) calls the pass a secondary reviewer — it is a mechanical pass and would emit [no-findings] on a clean turn" \
+  || ok "prompt(symcheck) does not call the pass a secondary"
+
+# An empty worklist must be refused, not turned into a prompt that asks for nothing.
+: > "${WORK}/empty.tsv"
+bash "$SUT" prompt "$D" --symcheck "${WORK}/empty.tsv" >/dev/null 2>&1 \
+  && bad "prompt(symcheck) accepted an empty rows file" \
+  || ok "prompt(symcheck) rejects an empty rows file"
+
+# --- symcheck prompt: the flag is exclusive, and trailing junk is not silently dropped ---
+# Same failure mode as --crossref's F8: resolve_id's `*) shift ;;` catch-all would swallow the flag
+# and emit the ORDINARY prompt with rc=0, so the symbol-check round quietly becomes a normal review.
+out="$(bash "$SUT" prompt "$D" --reviewer fable --symcheck "$RF" 2>/dev/null)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "prompt: --symcheck combined with --reviewer is rejected" \
+  || bad "prompt: --symcheck combined with --reviewer is silently dropped (rc=$rc) — the round quietly becomes an ordinary review"
+out="$(bash "$SUT" prompt "$D" --symcheck "$RF" extra-junk 2>/dev/null)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "prompt(symcheck): trailing arguments after the rows file are rejected" \
+  || bad "prompt(symcheck): trailing arguments after the rows file are silently ignored (rc=$rc)"
+err="$(bash "$SUT" prompt "$D" --symcheck 2>&1 >/dev/null)"; rc=$?
+[[ $rc == 2 ]] && grep -qF 'requires a rows-file value' <<<"$err" \
+  && ok "prompt(symcheck): a bare --symcheck is a usage error" \
+  || bad "prompt(symcheck): a bare --symcheck gave rc=$rc err='$err'"
+err="$(bash "$SUT" prompt "$D" --symcheck "${WORK}/no-such-rows.tsv" 2>&1 >/dev/null)"; rc=$?
+[[ $rc == 2 ]] && grep -qF 'rows file not found' <<<"$err" \
+  && ok "prompt(symcheck): a missing rows file is named, not ignored" \
+  || bad "prompt(symcheck): a missing rows file gave rc=$rc err='$err'"
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
