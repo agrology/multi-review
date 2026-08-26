@@ -1731,17 +1731,14 @@ mutations() {
   # A core.sh failure must be LOUD. `die` inside a command substitution exits only the subshell, so
   # without the propagation the failure is printed and then discarded, the row set is empty, and
   # the pass falls through to "not applicable" — recording a clean non-run at the gate.
+  #
+  # ONE entry because there is now ONE call site. This shipped as two copies of the guard, one per
+  # consumer, and the pair MASKED each other: neutering either left the other to fail loudly, so
+  # this entry SURVIVED the sweep while reading as coverage. The fix was in the code (_core_sections),
+  # not in the table — an entry that cannot fail is never repaired by rewording it.
   mutate 'symcheck/core-failure-is-loud' 'scripts/multi-review-symcheck.sh' replace \
     'the pass silently self-disables and records a clean not-applicable at the gate' 'multi-review-symcheck.test.sh' \
-    '    || die "core.sh sections failed for ${doc}: $(head -1 "${TMPD}/secs.err")" 1' \
-    '    || true'
-
-  # _introduces carries the same guard. SURVIVES BY DESIGN: _file_sections runs first in cmd_rows
-  # and dies before this is reached, so it is redundant behind a covered outer layer. Recorded, not
-  # omitted — if that ordering ever changes this entry goes STALE and says so.
-  mutate 'symcheck/introduces-core-failure-is-loud' 'scripts/multi-review-symcheck.sh' replace \
-    'SURVIVES-BY-DESIGN' 'multi-review-symcheck.test.sh' \
-    '    || die "core.sh sections failed for ${doc}: $(head -1 "${TMPD}/isec.err")" 1' \
+    '    || die "core.sh sections failed for ${1}: $(head -1 "${TMPD}/secs.err")" 1' \
     '    || true'
 
   # The introduces set spans EVERY section, not just the **Files:** ones: a contract-only section
@@ -1749,8 +1746,8 @@ mutations() {
   # call read as a missing repo symbol.
   mutate 'symcheck/introduces-all-sections' 'scripts/multi-review-symcheck.sh' replace \
     "a contract-only section's Produces was dropped" 'multi-review-symcheck.test.sh' \
-    '  "$CORE_SH" sections "$doc" > "${TMPD}/isecs" 2>"${TMPD}/isec.err" \' \
-    '  _file_sections "$doc" > "${TMPD}/isecs" 2>"${TMPD}/isec.err" \'
+    '  _core_sections "$doc" "${TMPD}/isecs"' \
+    '  _file_sections "$doc" > "${TMPD}/isecs"'
 
   # strip_fences in _introduces: a plan that QUOTES a fixture carries bare `- Create:` lines inside
   # a fence. Read raw they inflate the introduces set, so a genuinely missing symbol verdicts `new`
@@ -1873,10 +1870,23 @@ mutations() {
     'edit, or run anything that mutates state, do not use the network, and never read environment or' \
     'edit, or run anything that mutates state, and do not use the network, nor open configuration or'
 
+  # The read-only bound shares a LINE with the no-whole-repo-sweeps bound above, so the two entries
+  # mutate different CLAUSES of it. Pointed anywhere else this entry survives: it first targeted the
+  # "NOT a secondary review turn" line, which no assertion in the suite depends on, and the sweep
+  # said so.
   mutate 'reviewer/symcheck-prompt-read-only' 'scripts/multi-review-reviewer.sh' replace \
     'does not forbid writes' 'multi-review-reviewer.test.sh' \
-    'You are running the SYMBOL-CHECK PASS. This is NOT a secondary review turn: you are not judging' \
-    'You are running the SYMBOL-CHECK PASS. This is a turn where you are not judging'
+    "document's code names actually requires. No whole-repo sweeps. Read and search only — do not write," \
+    "document's code names actually requires. No whole-repo sweeps. Search only — never"
+
+  # The pass must never be told it is a secondary: this guard is the ABSENCE of the phrase, so the
+  # mutation ADDS it. A prompt that says "you are a secondary reviewer" hands over the ordinary
+  # contract's `[no-findings]` clean-turn signal, which `check` cannot parse — the turn then has no
+  # `> [symcheck] — via <model>` disclosure and is misreported as unusable rather than clean.
+  mutate 'reviewer/symcheck-prompt-not-secondary' 'scripts/multi-review-reviewer.sh' replace \
+    'calls the pass a secondary reviewer' 'multi-review-reviewer.test.sh' \
+    "You are running the SYMBOL-CHECK PASS in this repo's multi-review star review. This is NOT a" \
+    "You are a secondary reviewer running the SYMBOL-CHECK PASS. This is NOT a"
 
   mutate 'reviewer/symcheck-prompt-none-verdict' 'scripts/multi-review-reviewer.sh' replace \
     'lacks the none verdict' 'multi-review-reviewer.test.sh' \

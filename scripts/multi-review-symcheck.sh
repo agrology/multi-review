@@ -47,15 +47,25 @@ strip_fences() { # <file>
 # Interfaces, which is right for a general parser: a section declaring only interfaces is describing
 # a contract, not shipping code, so its fenced blocks are illustration. That distinction is this
 # pass's rule, so this pass applies it.
+# The ONE call site for `core.sh sections`, so its failure has ONE guard.
+#
+# NEVER swallow a core.sh failure. A misset MULTI_REVIEW_CORE_SH, a core.sh without the subcommand,
+# or an awk error would otherwise yield zero sections -> `rows` exits 3 "not applicable" ->
+# `check` returns 0, and the pass silently self-disables while recording a clean not-applicable at
+# the gate. That is exactly the silent-non-run this family of passes exists to close.
+#
+# Both consumers route through here rather than each carrying its own copy of the guard: two copies
+# MASK EACH OTHER under mutation — neutering either leaves the other to fail loudly, so neither can
+# be shown load-bearing and both entries read as coverage the behaviour does not have. Observed
+# directly: `symcheck/core-failure-is-loud` SURVIVED the sweep for exactly that reason.
+_core_sections() { # <doc> <outfile>
+  "$CORE_SH" sections "$1" > "$2" 2>"${TMPD}/secs.err" \
+    || die "core.sh sections failed for ${1}: $(head -1 "${TMPD}/secs.err")" 1
+}
+
 _file_sections() { # <doc> -> the core rows whose span contains a **Files:** line
   local doc="$1" idx start end sid title
-  # NEVER swallow a core.sh failure. A misset MULTI_REVIEW_CORE_SH, a core.sh without the
-  # subcommand, or an awk error would otherwise yield zero sections -> `rows` exits 3 "not
-  # applicable" -> `check` returns 0, and the pass silently self-disables while recording a clean
-  # not-applicable at the gate. That is exactly the silent-non-run this family of passes exists to
-  # close, so it fails loudly instead.
-  "$CORE_SH" sections "$doc" > "${TMPD}/secs" 2>"${TMPD}/secs.err" \
-    || die "core.sh sections failed for ${doc}: $(head -1 "${TMPD}/secs.err")" 1
+  _core_sections "$doc" "${TMPD}/secs"
   while IFS=$'\t' read -r idx start end sid title; do
     [[ -n "$sid" ]] || continue
     if sed -n "${start},${end}p" "$doc" > "${TMPD}/sec.$$" \
@@ -110,8 +120,7 @@ _introduces() { # <doc> -> one entry per line
   # Read the sections into a FILE first. A `|| die` inside a process substitution exits only that
   # subshell, so the failure would be printed and then discarded — the loop would simply see EOF and
   # the caller would carry on with an empty set.
-  "$CORE_SH" sections "$doc" > "${TMPD}/isecs" 2>"${TMPD}/isec.err" \
-    || die "core.sh sections failed for ${doc}: $(head -1 "${TMPD}/isec.err")" 1
+  _core_sections "$doc" "${TMPD}/isecs"
   { while IFS=$'\t' read -r idx start end sid title; do
       [[ -n "$sid" ]] || continue
       sed -n "${start},${end}p" "$doc" > "${TMPD}/int.$$"
