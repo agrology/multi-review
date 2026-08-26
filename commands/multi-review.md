@@ -939,9 +939,8 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
   review created beside `<doc>` — never before the gate, since the gate is presented FROM them
   (`check-converged`/`gate-summary` read the manifest). That is EVERY `<doc>.<id>` and
   `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` and
-  `<doc>.symcheck`/`<doc>.symcheck.seed` included),
-  every `<doc>.baseline` and `<doc>.baseline.rd<N>`, and every pass's derived worklist
-  (`<doc>.<pass>.rows`). State the rule this
+  `<doc>.symcheck`/`<doc>.symcheck.seed` included), every `<doc>.baseline` and
+  `<doc>.baseline.rd<N>`, and every pass's derived worklist (`<doc>.<pass>.rows`). State the rule this
   way — by what it is FOR, not as a fixed list — on purpose: this repo shipped the identical
   contradiction twice already (an enumerated exception with a missing entry), and a list is
   exactly the shape that silently stops covering a working-file kind this protocol adds later.

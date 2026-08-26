@@ -1622,8 +1622,17 @@ mutations() {
   # provider-or-pass `.seed` pattern) — otherwise they are never released (R10).
   mutate 'command/crossref-gate-releases' 'commands/multi-review.md' replace \
     'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
-    '  every `<doc>.baseline` and `<doc>.baseline.rd<N>`, and every pass'"'"'s derived worklist' \
-    '  every `<doc>.baseline` and `<doc>.baseline.rd<N>`,'
+    '  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` and' \
+    '  `<doc>.<id>.seed` (per provider only),'
+
+  # The release rule's guard is a two-term conjunct (the seed shape AND the worklist shape), so it
+  # gets TWO entries. One entry would catch whichever term the mutation happened to touch and leave
+  # the other unfalsifiable — the ci/macos-locale-job-pinned trap. This term is the by-purpose
+  # worklist shape that replaced the enumerated `<doc>.crossref.rows` when #89 added a second pass.
+  mutate 'command/gate-releases-pass-worklist' 'commands/multi-review.md' replace \
+    'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
+    '  `<doc>.baseline.rd<N>`, and every pass'"'"'s derived worklist (`<doc>.<pass>.rows`). State the rule this' \
+    '  `<doc>.baseline.rd<N>`. State the rule this'
   # ---- the cross-reference pass (#90) ------------------------------------------------------
 
   # The `--pass` argv-parsing arm itself — without it `--pass <copy>` falls through to the
