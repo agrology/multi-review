@@ -2763,6 +2763,17 @@ printf '%s' "$out_noxr" | grep -q 'Cross-reference pass' \
   && bad "gate-summary: crossref line leaked with no coverage recorded" \
   || ok "gate-summary: crossref line absent when nothing was recorded (dormant)"
 
+# --- _crossref_coverage: the MOST RECENT recorded line wins (B5, final review) ---
+# Two durable coverage lines can exist in one doc (an earlier turn's stale/incomplete record,
+# superseded by a later complete one). The gate must read the LAST one — a first-wins reading
+# would report a stale INCOMPLETE over a later complete round, silently understating coverage.
+XR_MULTI="$(mkstar xr-multi.md \
+  '> [crossref-coverage: 3/4 rows verdicted]' '> [crossref-coverage: 4/4 rows verdicted]')"
+out="$(bash "$SUT" gate-summary "$XR_MULTI" claude-opus-5 2>/dev/null)"
+grep -qF '4/4 rows verdicted' <<<"$out" && ! grep -qF -- '— INCOMPLETE' <<<"$out" \
+  && ok "gate-summary: the crossref coverage line reflects the MOST RECENT record, not the first" \
+  || bad "gate-summary: crossref coverage read a stale first record instead of the most recent: '$out'"
+
 ## --- gate-summary: STAR_PASSES excluded from the secondary count (spec criterion 9 / #90) ---
 # A merged pass copy's findings get raiser "crossref" (its namespace prefix) the same way any
 # other copy's raiser is its provider prefix. A pass is not a secondary: it must not inflate the

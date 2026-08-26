@@ -24,6 +24,18 @@ grep -qF 'not applicable' <<<"$err" \
   && ok "rows: the not-applicable reason is stated on stderr" \
   || bad "rows: exits 3 without saying why: '$err'"
 
+# --- the applicability threshold is TWO qualifying sections, not one (B5, final review) ---
+# A single section has no pair to check and no earlier section to consume from — its only rows
+# would be self-consistency ones, real but not worth a dispatch on their own. Without this,
+# `nsec >= 1` would let a one-section doc through as applicable.
+D="$(mkdoc onesec.md \
+  '# Plan' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' 'Edit `scripts/a.sh`.' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"; rc=$?
+[[ $rc == 3 && -z "$out" ]] \
+  && ok "rows: a doc with exactly one qualifying section is not applicable" \
+  || bad "rows: a one-section doc rc=$rc out='$out' (want rc=3, empty) — the >=2 threshold is not enforced"
+
 # --- section detection requires BOTH an ordinal heading and a Files/Interfaces block ---
 # The ordinal alone would sweep in prose headings; the block alone would sweep in a preamble.
 D="$(mkdoc twosec.md \
@@ -135,6 +147,60 @@ awk -F'\t' '$2=="pair"' <<<"$out" | grep -q . \
   && bad "rows: a path inside a fenced block manufactured a pair" \
   || ok "rows: fenced-block paths do not manufacture pairs"
 
+# --- a trailing ":<line>" / ":<start>-<end>" spec is stripped so `path:42` pairs with `path`
+# (B5, final review) — the shared file is the same file whether or not a mention pins a line. ---
+D="$(mkdoc linespec.md \
+  '# Plan' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' 'Edit `scripts/a.sh`.' '' \
+  '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
+  'See `scripts/a.sh:42` for context.' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"
+awk -F'\t' '$2=="pair" && $4=="scripts/a.sh"' <<<"$out" | grep -q . \
+  && ok "rows: a trailing line-spec (path:42) is stripped so it pairs with the bare path" \
+  || bad "rows: no pair row for scripts/a.sh — a trailing line-spec is not stripped, so path:42 != path"
+
+# --- a backticked token that is neither a path (no '/') nor a known source extension must NOT
+# become a path — otherwise every backticked identifier, flag, or variable name would manufacture
+# spurious pairs across sections that merely share vocabulary (B5, final review). This filter is
+# an OR of two terms; each is checked independently below so neither is an inert conjunct
+# (the standing hazard: a disjunct that does no work of its own, hiding behind the other). ---
+D="$(mkdoc barefilter.md \
+  '# Plan' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' \
+  'Uses the `TMPD` scratch dir.' '' \
+  '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
+  'Also uses the `TMPD` scratch dir.' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"
+awk -F'\t' '$2=="pair"' <<<"$out" | grep -q . \
+  && bad "rows: a bare non-path backticked token (TMPD) manufactured a pair" \
+  || ok "rows: a bare non-path backticked token does not manufacture a pair"
+
+# the SLASH term alone: a path with '/' but no recognised extension must still pair — proves the
+# slash disjunct is not dead weight behind the extension check.
+D="$(mkdoc slashonly.md \
+  '# Plan' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' \
+  'See `docs/design-notes` for background.' '' \
+  '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
+  'Also see `docs/design-notes`.' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"
+awk -F'\t' '$2=="pair" && $4=="docs/design-notes"' <<<"$out" | grep -q . \
+  && ok "rows: a slash path with no recognised extension still pairs (slash term alone)" \
+  || bad "rows: no pair row for docs/design-notes — the slash disjunct is not doing independent work"
+
+# the EXTENSION term alone: a bare filename (no '/') with a recognised extension must still pair
+# — proves the extension disjunct is not dead weight behind the slash check.
+D="$(mkdoc extonly.md \
+  '# Plan' '' \
+  '### Task 1: first' '' '**Files:**' '- Modify: `scripts/a.sh`' '' \
+  'Reads `config.yml` at startup.' '' \
+  '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
+  'Also reads `config.yml`.' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"
+awk -F'\t' '$2=="pair" && $4=="config.yml"' <<<"$out" | grep -q . \
+  && ok "rows: a bare filename with a recognised extension still pairs (extension term alone)" \
+  || bad "rows: no pair row for config.yml — the extension disjunct is not doing independent work"
+
 # --- the fixture reproduces the shipped defect, and the pass must catch it ---
 # Kept as a fixture rather than pointed at the real plan document: /docs/superpowers/ is
 # gitignored (.gitignore:11), so a test reading it would pass here and be broken in CI and in
@@ -173,6 +239,16 @@ awk -F'\t' '$2=="iface" && $3=="Task 3"' <<<"$out" | grep -q 'omega' \
 # mkcopy <name> <doc> <review-line...> : a copy carrying the doc's sections plus a ## Review block
 mkcopy() { local p="${WORK}/$1"; local src="$2"; shift 2
   { cat "$src"; echo; echo '## Review'; echo; printf '%s\n' "$@"; } > "$p"; echo "$p"; }
+
+# --- check: a not-applicable doc (rows exits 3) is a clean pass, not a failure (B5, final
+# review) — the caller (commands/multi-review.md step 8) treats a non-zero check exit as an
+# untrustworthy turn; without this, every not-applicable doc would be reported that way even
+# though nothing was ever expected to be verdicted.
+DNA="$(mkdoc na.md '# A design' '' 'Some prose.' '' '## Review' '')"
+CNA="$(mkcopy na-copy.md "$DNA" '## Review' '')"
+bash "$SUT" check "$DNA" "$CNA" >/dev/null 2>&1 \
+  && ok "check: a not-applicable doc is a clean pass (exit 0)" \
+  || bad "check: a not-applicable doc did not exit 0 — the rc==3 short-circuit is not in effect"
 
 D="$(mkdoc cov.md \
   '# Plan' '' \
