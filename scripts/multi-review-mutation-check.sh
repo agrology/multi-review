@@ -1559,6 +1559,16 @@ mutations() {
     'the crossref row derivation is never invoked' 'multi-review-packaging.test.sh' \
     '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh rows "<doc>" > "<doc>.crossref.rows"`.'
 
+  # RULING R15 / R13 (final review, B4): commands/multi-review.md said the crossref worklist is
+  # derived "every round", contradicting docs/multi-review.md and spec §7 ("one dispatch per
+  # review, not one per round") — two shipped files disagreed and nothing checked it. Without the
+  # "ROUND 1 ONLY" phrase, step 2's positive guard (packaging.test.sh) reds first, so this entry
+  # targets that specific phrase rather than the paragraph as a whole.
+  mutate 'command/crossref-round-1-only' 'commands/multi-review.md' replace \
+    'never says the crossref pass is round 1 only' 'multi-review-packaging.test.sh' \
+    '   **Derive the crossref worklist here too, but ROUND 1 ONLY** (spec §7): the pass runs once per' \
+    '   **Derive the crossref worklist here too** — the pass runs once per'
+
   # The explicit "it is not a secondary" statement (spec §0) — say it out loud, in the doc a
   # later editor actually reads, not just enforce it in code where a rewrite could silently drop
   # the exclusion and no reviewer of the PROSE would notice.
@@ -1718,6 +1728,40 @@ mutations() {
     'combined with --reviewer is silently dropped' 'multi-review-reviewer.test.sh' \
     '      && die "usage: --crossref must be the only flag after <doc-path>, not combined with --reviewer" 2' \
     '      && true'
+
+  # RULING R15 (final review, B1): the crossref pass is dispatched as a general-purpose Agent with
+  # full tool access, so emit_crossref_prompt must carry the SAME scope guardrails as the ordinary
+  # reviewer prompt — byte-for-byte reuse of emit_prompt's tail, not new phrasing (see the comment
+  # above emit_crossref_prompt). Two SEPARATE guardrails, two separate entries: one entry covering
+  # the whole added block would leave whichever guardrail did not happen to be the mutated line
+  # unfalsifiable (the ci/macos-locale-job-pinned trap — a whole-line replace proves only the
+  # PRESENCE of the line it targets, nothing about a sibling line the same block also carries).
+  # replace:2 — B1 duplicated the ordinary prompt's exact wording into emit_crossref_prompt, so
+  # each line now occurs twice in the file; occurrence 1 is the pre-existing emit_prompt copy
+  # (already covered, or not, by its own pre-existing entries — out of scope here), occurrence 2
+  # is the crossref-prompt copy this branch introduced.
+  mutate 'reviewer/crossref-prompt-stop-at-gate' 'scripts/multi-review-reviewer.sh' replace:2 \
+    'is missing the scope-to-the-document / stop-at-the-gate guardrail' 'multi-review-reviewer.test.sh' \
+    'Read only that document. Do not implement, commit, or open a PR — stop at the human gate.' \
+    'Read only that document.'
+
+  mutate 'reviewer/crossref-prompt-ignore-memory-files' 'scripts/multi-review-reviewer.sh' replace:2 \
+    'is missing the ignore-repository-memory-files independence clause' 'multi-review-reviewer.test.sh' \
+    'Ignore repository memory files for this turn — \`CLAUDE.md\`, \`AGENTS.md\`, \`GEMINI.md\` and the' \
+    'Ignore unrelated repository documentation for this turn. Additionally, the'
+
+  # RULING R15 (final review, B2): the crossref prompt told the pass to raise "an ordinary
+  # finding... using the normal finding grammar" without ever stating that grammar — a defect
+  # verdict missing the severity tag or the required continuation lines fails _table and kills
+  # the round's merge AFTER the doc has already been written. Also byte-for-byte reuse of
+  # emit_prompt's grammar lines (replace:2, same reasoning as above: occurrence 2 is what this
+  # branch added). One entry for the statement as a whole (unlike B1's two independent
+  # guardrails, this is one grammar spec) — the severity-tag line is the specific clause the
+  # finding named as round-breaking.
+  mutate 'reviewer/crossref-prompt-finding-grammar' 'scripts/multi-review-reviewer.sh' replace:2 \
+    'never states the `|<sev>` finding grammar' 'multi-review-reviewer.test.sh' \
+    '  \`> [finding:<id>|<sev>] <concern>\` (\`<sev>\` is \`high\`, \`med\`, or \`low\` — required on' \
+    '  <concern>'
 }
 
 if (( list )); then mutations; exit 0; fi
