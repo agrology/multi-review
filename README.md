@@ -108,6 +108,7 @@ unless a named test catches it — because a green suite is not by itself eviden
 | `codex` | openai | `codex` CLI authed **+ the Codex Claude Code plugin** (below) — skill provisioned automatically per run (git-ignored) |
 | `gemini` | google | `gemini` CLI authed + 3 settings (below) |
 | `crossref` *(pass, not a reviewer)* | — | **none** — a mechanical cross-reference sweep over the doc's own internal consistency, dispatched automatically alongside the secondaries on a multi-section document. It does **not** count toward the secondary total or the independence warning — see [`docs/multi-review.md`](docs/multi-review.md). |
+| `symcheck` *(pass, not a reviewer)* | — | **none** — a mechanical check of the doc's ready-to-paste code against the repository it targets, dispatched automatically alongside the secondaries on a document that ships code. It does **not** count toward the secondary total or the independence warning, and it does **not** widen reviewer scope: it runs in-harness as a subagent of the primary, so no secondary gains repo access — see [`docs/multi-review.md`](docs/multi-review.md). |
 
 **codex prereqs:** two things, and the second is easy to miss because the CLI alone looks
 sufficient.

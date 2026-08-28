@@ -2794,6 +2794,48 @@ echo "$out" | grep -q 'shared file mismatch' \
   && ok "gate-summary: the pass's own finding is still present and counted" \
   || bad "gate-summary: pass finding suppressed along with its raiser"
 
+# --- symcheck is a PASS, not a provider ---
+# Both halves matter. Excluding the raiser must not suppress the findings: a fix that drops them
+# with it is worse than the bug.
+D="$(mkstar sym-gate.md \
+  '> [finding:symcheck-rd1-r1|high] a printed call does not match its def' \
+  '> — via pass-model' \
+  '> — risk: the pasted test fails on first run' \
+  '> [finding:codex-rd1-r1|med] something else' \
+  '> — via codex-model' \
+  '> — risk: unrelated' \
+  '> [symcheck-coverage: 5/6 rows verdicted]')"
+out="$(bash "$SUT" gate-summary "$D" claude-opus-5 2>/dev/null)"
+grep -qF '5/6' <<<"$out" \
+  && ok "gate-summary: symcheck coverage is reported with counts" \
+  || bad "gate-summary: symcheck coverage absent from the gate"
+grep -qiE 'INCOMPLETE' <<<"$out" \
+  && ok "gate-summary: an incomplete symcheck turn is marked INCOMPLETE" \
+  || bad "gate-summary: 5/6 rendered without an INCOMPLETE marker"
+grep -qE 'across 1 secondar' <<<"$out" \
+  && ok "gate-summary: the symcheck pass is not counted as a secondary" \
+  || bad "gate-summary: the pass inflated the secondary count — spec criterion 10"
+grep -qF 'symcheck-rd1-r1' <<<"$out" \
+  && ok "gate-summary: the pass's findings are still present" \
+  || bad "gate-summary: the exclusion suppressed the findings along with the raiser — criterion 11"
+
+# --- round-stats is the OTHER STAR_PASSES consumer, and the one #90 shipped without ---
+# gate-summary and round-stats read the same string but in different code; in the #90 build the
+# round-stats consumer was missed entirely and the pass got its own provider column plus a vote in
+# the converge/re-fan verdict. Assert it here so losing that consumer reds by name.
+RSD="${WORK}/sym-roundstats.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 1/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [finding:symcheck-rd1-r1|high] a printed call does not match its def' \
+    '> — via pass-model' '> — risk: the pasted test fails on first run' \
+    '> [finding:codex-rd1-r1|med] something else' '> — via codex-model' '> — risk: unrelated'; } > "$RSD"
+out="$(bash "$SUT" round-stats "$RSD" 2>/dev/null)"
+grep -qE '(^|[[:space:]])symcheck[[:space:]]' <<<"$out" \
+  && bad "round-stats: the symcheck pass got its own provider column — it votes in the converge/re-fan verdict" \
+  || ok "round-stats: the symcheck pass is not counted as a provider"
+grep -qE '(^|[[:space:]])codex[[:space:]]' <<<"$out" \
+  && ok "round-stats: excluding the pass did not drop the real providers" \
+  || bad "round-stats: the exclusion took codex with it (out='$out')"
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

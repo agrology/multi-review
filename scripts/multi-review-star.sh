@@ -106,7 +106,7 @@ STAR_RE='^[[:space:]]*<!--[[:space:]]*multi-review-mode:[[:space:]]*star([[:spac
 # registering a pass as a provider), and Task 6's gate exclusion reads it too — one literal, not
 # two that can drift apart. Space-separated, same shape as the roster suffix (STAR_RE's
 # `reviewers:` list): [a-z0-9]+ ids.
-STAR_PASSES="crossref"
+STAR_PASSES="crossref symcheck"
 
 # The reviewer ROSTER, off the star mode hint: who was dispatched, independent of who raised a
 # finding. gate-summary needs this because "provider that raised a finding" is not "provider that
@@ -193,6 +193,17 @@ _crossref_coverage() { # <doc> -> "not applicable" | "N/M rows verdicted"
   review_section "$1" | strip_fences /dev/stdin \
     | grep -oE '^> \[crossref-coverage: (not applicable|[0-9]+/[0-9]+ rows verdicted)\]' \
     | sed -E 's/^> \[crossref-coverage: (.*)\]$/\1/' \
+    | tail -1
+}
+
+# _symcheck_coverage <doc> — the symbol-check pass's durable line (#89), read exactly the way
+# _crossref_coverage reads its own. Separate function rather than a parameterised one: the
+# crossref reader carries a passing mutation entry, and rewriting it to take a prefix would move
+# that line for no behavioural gain (plan Deviation 1's reasoning, applied to the gate).
+_symcheck_coverage() { # <doc> -> "not applicable" | "N/M rows verdicted"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -oE '^> \[symcheck-coverage: (not applicable|[0-9]+/[0-9]+ rows verdicted)\]' \
+    | sed -E 's/^> \[symcheck-coverage: (.*)\]$/\1/' \
     | tail -1
 }
 
@@ -1413,6 +1424,23 @@ cmd_gate_summary() {
         echo "Cross-reference pass: ${xr}"
       else
         echo "Cross-reference pass: ${xr} — INCOMPLETE"
+      fi
+    fi
+    echo
+  fi
+
+  # symbol-check pass coverage (#89), same three renderings and the same dormancy rule as the
+  # cross-reference block above. Rendered BESIDE it, never folded into it: crossref's behaviour is
+  # unchanged by this work (spec criterion 12).
+  local sx; sx="$(_symcheck_coverage "$doc")"
+  if [[ -n "$sx" ]]; then
+    if [[ "$sx" == "not applicable" ]]; then
+      echo "Symbol-check pass: not applicable (no ready-to-paste code blocks)"
+    elif [[ "$sx" =~ ^([0-9]+)/([0-9]+)\ rows\ verdicted$ ]]; then
+      if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+        echo "Symbol-check pass: ${sx}"
+      else
+        echo "Symbol-check pass: ${sx} — INCOMPLETE"
       fi
     fi
     echo

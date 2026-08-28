@@ -1004,9 +1004,22 @@ else
     || bad "command: step 5 no longer waits on <doc>.crossref — merge could run before the pass ever writes anything"
 fi
 
-n="$(grep -n 'is not a secondary' "$CMD" | head -1 | cut -d: -f1)"
-[[ -n "$n" ]] && ok "command: the pass is excluded from the secondary count" \
-  || bad "command: nothing says the crossref pass is not a secondary — it would inflate the roster and skew the independence warning"
+# WINDOWED to step 2's CROSSREF paragraph. A file-wide `grep -n 'is not a secondary' | head -1` was
+# satisfied by the SYMCHECK paragraph (#89) that now follows this one — delete crossref's sentence
+# and the guard stayed green on symcheck's. Caught by the full sweep as
+# `command/crossref-not-a-secondary` SURVIVED; the same window end is why the round-1-only guard
+# below needed it too.
+n="$(grep -nF 'Derive the crossref worklist here too' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 2's crossref-worklist derivation is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && (/^3\. / || /Derive the symcheck worklist here too/){print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF 'is not a secondary' <<<"$blk" \
+    && ok "command: the pass is excluded from the secondary count" \
+    || bad "command: nothing says the crossref pass is not a secondary — it would inflate the roster and skew the independence warning"
+fi
 
 # --- final review, B4: commands/multi-review.md must say the crossref pass runs ROUND 1 ONLY,
 # matching docs/multi-review.md ("dispatched alongside the secondaries in round 1") and spec §7
@@ -1017,7 +1030,10 @@ n="$(grep -nF 'Derive the crossref worklist here too' "$CMD" | head -1 | cut -d:
 if [[ -z "$n" ]]; then
   bad "command: step 2's crossref-worklist derivation is gone"
 else
-  ne="$(awk -v s="$n" 'NR>s && /^3\. /{print NR; exit}' "$CMD")"
+  # Window ends at the SYMCHECK paragraph too, not just at step 3: that paragraph also says
+  # "ROUND 1 ONLY", so a window running to step 3 stayed green with crossref's own statement
+  # deleted (full sweep: `command/crossref-round-1-only` SURVIVED).
+  ne="$(awk -v s="$n" 'NR>s && (/^3\. / || /Derive the symcheck worklist here too/){print NR; exit}' "$CMD")"
   [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
   blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
   grep -qiE 'round 1 only' <<<"$blk" \
@@ -1090,9 +1106,85 @@ else
   ne="$(awk -v s="$n" 'NR>s && /\*\*Keep `<doc>\.manifest`\.\*\*/{print NR; exit}' "$CMD")"
   [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
   blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
-  grep -qF '<doc>.crossref.seed' <<<"$blk" && grep -qF '<doc>.crossref.rows' <<<"$blk" \
-    && ok "command: the terminal gate's release rule covers the crossref working files" \
-    || bad "command: the terminal gate's release-rule paragraph never names <doc>.crossref.seed/<doc>.crossref.rows — they are never released (R10)"
+  # `<doc>.<pass>.rows`, not `<doc>.crossref.rows`: once a SECOND pass exists (#89's symcheck) an
+  # enumerated worklist entry is exactly the shape that silently stops covering the next one, which
+  # is the failure the paragraph's own prose warns about. Assert the by-purpose shape instead.
+  grep -qF '<doc>.crossref.seed' <<<"$blk" && grep -qF '<doc>.<pass>.rows' <<<"$blk" \
+    && ok "command: the terminal gate's release rule covers every pass's working files" \
+    || bad "command: the terminal gate's release-rule paragraph never names <doc>.crossref.seed/<doc>.<pass>.rows — a pass's working files are never released (R10)"
+fi
+
+
+# --- the symcheck pass must be derived, dispatched, merged, checked and announced ---
+# Patterns are the SYMCHECK-prefixed forms, never the bare `<M>/<M> rows verdicted]` the plan
+# sketched: that one now has two matches in this file (crossref writes the same shape), so it is
+# satisfied by the crossref line alone and would stay green with the whole symcheck branch
+# deleted. Counts confirmed 1 each in the current file, and each guard verified by deleting only
+# the symcheck line it names.
+n="$(grep -n 'multi-review-symcheck.sh rows' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the symcheck row derivation is never invoked"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^9\. /{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  grep -qF 'prompt "<doc>.symcheck" --symcheck' <<<"$blk" \
+    && ok "command: the symcheck pass is dispatched" \
+    || bad "command: nothing dispatches the symcheck pass — rows are derived and never used"
+  # `--` before the pattern: without it grep reads `--pass ...` as an option and aborts.
+  grep -qF -- '--pass "<doc>.symcheck"' <<<"$blk" \
+    && ok "command: the symcheck copy is merged as a pass" \
+    || bad "command: the symcheck copy is never merged — its defects reach nothing"
+  grep -qF 'multi-review-symcheck.sh check' <<<"$blk" \
+    && ok "command: the symcheck coverage check is run" \
+    || bad "command: the symcheck copy is never coverage-checked"
+  grep -qF 'symcheck-coverage: not applicable]' <<<"$blk" \
+    && ok "command: the not-applicable symcheck state is recorded" \
+    || bad "command: an exit-3 symcheck round leaves no durable line, so the gate has nothing to render"
+  grep -qF 'symcheck-coverage: <M>/<M> rows verdicted]' <<<"$blk" \
+    && ok "command: the complete symcheck state is recorded" \
+    || bad "command: the complete symcheck coverage state is never recorded"
+  grep -qF 'symcheck-coverage: <N>/<M> rows verdicted]' <<<"$blk" \
+    && ok "command: the incomplete symcheck state is recorded" \
+    || bad "command: the incomplete symcheck coverage state is never recorded"
+  grep -qF 'Wait on the symcheck pass here too' <<<"$blk" \
+    && ok "command: the symcheck copy is waited on with the secondaries" \
+    || bad "command: nothing waits on <doc>.symcheck — merge could run before the pass writes anything"
+fi
+grep -qF 'symcheck pass is not a secondary' "$CMD" \
+  && ok "command: the symcheck pass is excluded from the secondary count" \
+  || bad "command: nothing says the symcheck pass is not a secondary — it would inflate the roster"
+
+
+# --- the symcheck pass must say it runs ROUND 1 ONLY (fable-rd1-r2) ---
+# That sentence sat in a GAP between two windows and was covered by neither: the symcheck block
+# below windows from the `rows` invocation onward, which starts after it, and the crossref
+# round-1-only guard's window now ENDS at this paragraph (it had to, or the symcheck copy of the
+# phrase kept crossref's own guard green). So it could be deleted with the full gate green, and the
+# command would then instruct deriving and dispatching the pass on scoped round-N copies — which
+# carry only the edited hunks, not the document's shipped blocks.
+n="$(grep -nF 'Derive the symcheck worklist here too' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 2's symcheck-worklist derivation paragraph is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /multi-review-symcheck\.sh rows/{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  # TWO exact patterns, each unique in this window (counts confirmed 1 and 1), never a bare
+  # `round 1 only`: that phrase occurs TWICE here — the directive, and the prose clause "for the
+  # same reason the crossref pass is round 1 only" — so a case-insensitive match on it stays green
+  # with the directive deleted. Caught by mutating this guard's own target before trusting it.
+  # The directive and the skip instruction are separate clauses, so they get separate assertions
+  # and separate mutation entries.
+  grep -qF ', ROUND 1 ONLY**' <<<"$blk" \
+    && ok "command: step 2 states the symcheck pass is round 1 only" \
+    || bad "command: step 2 never says the symcheck pass is round 1 only — it would be derived and dispatched on scoped round-N copies"
+  grep -qF 'skip this sub-step entirely' <<<"$blk" \
+    && ok "command: step 2 says to skip the symcheck derivation on round N >= 2" \
+    || bad "command: step 2 never says to skip the symcheck derivation on a later round — steps 4/5/7/8 would act on a stale worklist"
+  grep -qiF 'every round' <<<"$blk" \
+    && bad "command: step 2 says the symcheck worklist is derived every round — contradicts round-1-only" \
+    || ok "command: step 2 does not say the symcheck worklist is derived every round"
 fi
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

@@ -443,6 +443,32 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    **Exit 0** → seed it exactly as a round-1 secondary copy would be: `cp "<doc>.baseline"
    "<doc>.crossref"`, rewrite its header the way above, then snapshot it as `<doc>.crossref.seed`
    the same way. It is now ready to dispatch alongside the secondaries, in step 4.
+
+   **Derive the symcheck worklist here too, ROUND 1 ONLY**, the same way and for the same reason
+   the crossref pass is round 1 only: it costs one dispatch per review, not one per round, and a
+   round N ≥ 2 scoped copy carries only the edited hunks, not the document's shipped blocks. **On
+   round N ≥ 2, skip this sub-step entirely** — steps 4, 5, 7 and 8's symcheck clauses then have
+   nothing to act on.
+
+   In round 1:
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-symcheck.sh rows "<doc>" > "<doc>.symcheck.rows"`.
+   It checks the document's ready-to-paste code against the repository it targets — the defect
+   class reviewer scope structurally cannot see (#89) — rather than offering a perspective on the
+   argument, so **the symcheck pass is not a secondary**: like the crossref pass it is excluded
+   from the reviewer roster resolved in §2, the secondary count, and the independence warning at
+   the terminal gate.
+
+   It runs in-harness as a subagent of YOU, the primary, whose harness already has the repository.
+   The sandboxed secondaries are asked for nothing new and their scope discipline is unchanged.
+
+   **Exit 3** → not applicable — the doc ships no ready-to-paste code blocks (the message names
+   why). **State that out loud** — a pass that silently does not run is indistinguishable at the
+   gate from one that ran and found nothing — and do NOT seed or dispatch it this round. **Do not
+   record the durable coverage line here**, for the same duplication reason as above: it is
+   written once, in step 8.
+   **Exit 0** → seed it exactly as a round-1 secondary copy would be: `cp "<doc>.baseline"
+   "<doc>.symcheck"`, rewrite its header the way above, then snapshot it as `<doc>.symcheck.seed`
+   the same way. It is now ready to dispatch alongside the secondaries, in step 4.
 3. **Provision each secondary's skill, right before dispatch.** The working root is
    **`<session-root>` — the value you captured in Arm**, and **never** `<doc>`'s own location: for
    a PR-flavor doc, `<doc>` is a scratch file under `.multi-review/reviews/` and is not the repo
@@ -558,6 +584,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.crossref" --crossref
    "<doc>.crossref.rows"`. Batching it with the secondaries here — not after they are already
    merged — is what makes the pass concurrent rather than an afterthought.
+
+   **If step 2 derived a symcheck worklist (exit 0), dispatch it here too — in this SAME response
+   block.** A `general-purpose` Agent, pointed at `<doc>.symcheck`, with the task text
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.symcheck" --symcheck
+   "<doc>.symcheck.rows"`. Unlike every other copy dispatched here, this agent MAY read repository
+   files — only what resolving a symbol the document's code names requires; the prompt states that
+   bound and forbids writes, the network, and environment or secret files.
 5. **Bound the wait, per copy — and never quarantine on the first bound hit.**
 
        "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh" "<doc>.<id>" awaiting-author \
@@ -656,6 +689,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    for it. Once its wait budget is exhausted, whatever the final exit code or marker state, move
    on: step 8's `crossref check` judges `<doc>.crossref` on what it actually contains, not on
    whether it finished.
+
+   **Wait on the symcheck pass here too, if step 4 dispatched it — with the secondaries.** Bound
+   `<doc>.symcheck` against `<doc>.symcheck.seed` with the same bound and retry timing. It has no
+   roster slot and is never quarantined either; once its wait budget is exhausted, move on —
+   step 8's `symcheck check` judges the copy on what it contains, not on whether it finished.
 6. **Verify identity, per copy that reached `awaiting-author`.**
    `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh verify-vendor --baseline
    "<doc>.baseline" "<doc>.<id>" --reviewer <id>`. Pass → admit the copy into the merge. Fail →
@@ -705,12 +743,21 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    an out-of-channel crossref verdict or finding is DROPPED rather than injected, and the
    resulting missing table then trips `crossref check`'s own disclosure guard in step 8, reported
    as `0/M` rather than silently passed.
+
+   **The symcheck pass's copy is not verified here either**, for the same reasons and with the
+   same fail-safe: `<doc>.symcheck` has no vendor to authenticate, `symcheck check` in step 8 is
+   its verification, and an out-of-channel verdict is dropped rather than injected, which then
+   trips `symcheck check`'s own disclosure guard.
 7. **Merge.** `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh merge --round <N> [--quarantined
    <id>:<reason> ...] [--pass "<doc>.crossref"] "<doc>" <admitted copies...>`. Pass `--pass
    "<doc>.crossref"` only in round 1, and only when step 2 derived a worklist (exit 0) — omit it
    on the exit-3 not-applicable round and on every round N ≥ 2, when step 2 did not run and there
    is no `<doc>.crossref` from this round to merge. Findings the pass already merged in round 1
    persist in `<doc>` like any other finding; no later round re-merges them.
+
+   Pass `--pass "<doc>.symcheck"` on the same terms and in the same invocation — round 1 only, and
+   only when step 2's symcheck derivation exited 0. Both passes may be merged in one round; each
+   `--pass` is independent of the other.
 8. **Crossref coverage.** The worklist, seed, dispatch and wait for this pass all already
    happened above (steps 2, 4 and 5) — concurrently with the secondaries, so its copy exists in
    time for step 7's merge. This step only checks and records the outcome — in ONE place, after
@@ -744,10 +791,28 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
         wired up, which is the exact failure this feature exists to close.
       - **Exit 2** → a genuine usage/infra error on YOUR side (a bad path). Fix the invocation;
         this is not a pass outcome and nothing is recorded for it.
+
+   **Symcheck coverage, in this same step and on the same terms.** Round 1 only; skipped entirely
+   on round N ≥ 2. If step 2's symcheck derivation exited 3, append
+   `> [symcheck-coverage: not applicable]` under `<doc>`'s `## Review` heading, alongside this
+   round's quarantine records. Otherwise run
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-symcheck.sh check "<doc>" "<doc>.symcheck"`, with
+   `<M>` the line count of `<doc>.symcheck.rows`:
+      - **Exit 0** → every row was verdicted; append
+        `> [symcheck-coverage: <M>/<M> rows verdicted]`.
+      - **Exit 1** → the turn is not fully trustworthy — `check`'s own message says which clause
+        failed. **Do NOT quarantine anything for it**: this pass has no roster slot, and the rows
+        it DID verdict still count. When the message is `incomplete turn: no verdict for row(s):
+        …`, let `<N>` be `<M>` minus the count of row ids it names; for any OTHER exit-1 reason
+        the table cannot be trusted at all, so `<N>` is `0`. Either way append
+        `> [symcheck-coverage: <N>/<M> rows verdicted]`. Never optional: an unrecorded exit-1 turn
+        is byte-identical at the gate to a review where this pass was never wired up.
+      - **Exit 2** → a usage/infra error on YOUR side. Fix the invocation; nothing is recorded.
 9. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain every regenerable working file this
    round's fan-out wrote beside `<doc>` — every `<doc>.<id>` and `<doc>.<id>.seed` (provider or
-   pass), `<doc>.baseline`, every `<doc>.baseline.rd<N>`, and `<doc>.crossref.rows` — the terminal
+   pass), `<doc>.baseline`, every `<doc>.baseline.rd<N>`, and every pass's derived worklist
+   (`<doc>.<pass>.rows` — `<doc>.crossref.rows`, `<doc>.symcheck.rows`) — the terminal
    gate releases them. `<doc>.manifest` is retained too, but the gate does **not** release it (see
    "Terminal gate").
 
@@ -873,8 +938,9 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
   once the engineer confirms the review is done, remove every regenerable working file this
   review created beside `<doc>` — never before the gate, since the gate is presented FROM them
   (`check-converged`/`gate-summary` read the manifest). That is EVERY `<doc>.<id>` and
-  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` included),
-  every `<doc>.baseline` and `<doc>.baseline.rd<N>`, and `<doc>.crossref.rows`. State the rule this
+  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` and
+  `<doc>.symcheck`/`<doc>.symcheck.seed` included), every `<doc>.baseline` and
+  `<doc>.baseline.rd<N>`, and every pass's derived worklist (`<doc>.<pass>.rows`). State the rule this
   way — by what it is FOR, not as a fixed list — on purpose: this repo shipped the identical
   contradiction twice already (an enumerated exception with a missing entry), and a list is
   exactly the shape that silently stops covering a working-file kind this protocol adds later.

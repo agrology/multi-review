@@ -1622,8 +1622,392 @@ mutations() {
   # provider-or-pass `.seed` pattern) — otherwise they are never released (R10).
   mutate 'command/crossref-gate-releases' 'commands/multi-review.md' replace \
     'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
-    '  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` included),' \
+    '  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` and' \
     '  `<doc>.<id>.seed` (per provider only),'
+
+  # The release rule's guard is a two-term conjunct (the seed shape AND the worklist shape), so it
+  # gets TWO entries. One entry would catch whichever term the mutation happened to touch and leave
+  # the other unfalsifiable — the ci/macos-locale-job-pinned trap. This term is the by-purpose
+  # worklist shape that replaced the enumerated `<doc>.crossref.rows` when #89 added a second pass.
+  mutate 'command/gate-releases-pass-worklist' 'commands/multi-review.md' replace \
+    'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
+    '  `<doc>.baseline.rd<N>`, and every pass'"'"'s derived worklist (`<doc>.<pass>.rows`). State the rule this' \
+    '  `<doc>.baseline.rd<N>`. State the rule this'
+
+  # ---- the symbol-check pass (#89) ----------------------------------------------------------
+  # ONE ENTRY PER GUARD, never one per function: an entry that replaces a whole function catches
+  # whichever assertion fires first and leaves its siblings with nothing that ever proved they
+  # could fail. Every `expect` below is the `bad()` TEXT, never an `ok()` label.
+
+  # core.sh sections: the Files/Interfaces scan that qualifies a section. Without it `has` is never
+  # set, every ordinal heading is dropped, and the parser reports nothing at all.
+  mutate 'core/sections-needs-block' 'scripts/multi-review-core.sh' delete \
+    'sections: expected 2 rows, got' 'multi-review-core.test.sh' \
+    '        for (j = hl[i]; j <= e; j++) if (lines[j] ~ /^\*\*(Files|Interfaces):\*\*/) has = 1'
+
+  # The exclusion direction of the same rule. Without it the filter fails OPEN — every ordinal
+  # heading emitted, with every other sections assertion still green.
+  mutate 'core/sections-excludes-blockless' 'scripts/multi-review-core.sh' delete \
+    'the block requirement is not enforced and the filter fails open' 'multi-review-core.test.sh' \
+    '        if (!has) continue'
+
+  # Fence state, checked BEFORE headings. A shell comment `# --- setup ---` inside a fenced block
+  # otherwise parses as a depth-1 heading and truncates its section, silently dropping the body.
+  # replace:3 — `if (infence) {` also opens the two pre-existing fence scanners above cmd_sections.
+  mutate 'core/sections-fence-aware' 'scripts/multi-review-core.sh' replace:3 \
+    'heading detection is fence-blind' 'multi-review-core.test.sh' \
+    '      if (infence) {' \
+    '      if (0) {'
+
+  # Fenced lines are RECORDED AS EMPTY, a separate clause from recognising the fence at all: the
+  # `has` scan reads lines[] raw, so a fenced `**Files:**` in an illustrative block would qualify a
+  # section that ships no code. Proven separately because the fence-blind mutation above leaves
+  # this assertion GREEN — the stray `#` truncates the section before the `**Files:**` is reached.
+  mutate 'core/sections-fenced-lines-blanked' 'scripts/multi-review-core.sh' replace \
+    'a section qualified on a **Files:** line that is inside a fenced block' 'multi-review-core.test.sh' \
+    '        lines[NR] = ""' \
+    '        lines[NR] = $0'
+
+  # A fence closes only with the SAME character (CommonMark). Without the char test a ``` line
+  # inside a ~~~ block closes it and the rest of the block escapes into document structure.
+  mutate 'core/sections-fence-char-matched' 'scripts/multi-review-core.sh' replace \
+    'line closed the ~~~ block' 'multi-review-core.test.sh' \
+    '        if (fc == fchar && tk >= flen) { rest = substr(fs, tk + 1); gsub(/[ \t]/, "", rest); if (rest == "") { infence = 0; flen = 0; fchar = "" } }' \
+    '        if (tk >= flen) { rest = substr(fs, tk + 1); gsub(/[ \t]/, "", rest); if (rest == "") { infence = 0; flen = 0; fchar = "" } }'
+
+  # Section boundaries use heading DEPTH, not the next ordinal heading: "Task N" and "Step N" both
+  # match the ordinal pattern, so the naive rule ends a task at its own first step.
+  mutate 'core/sections-end-by-depth' 'scripts/multi-review-core.sh' replace \
+    'depth is not being used' 'multi-review-core.test.sh' \
+    '        for (q = 1; q <= hn; q++) if (ahl[q] > hl[i] && ad[q] <= hd[i]) { e = ahl[q] - 1; break }' \
+    '        for (q = 1; q <= hn; q++) if (ahl[q] > hl[i] && ad[q] >= 1) { e = ahl[q] - 1; break }'
+
+  # sections is a parser, so its usage errors are its own: with no argument, `$1` under `set -u`
+  # aborts with an unbound-variable trace and rc=1 instead of a named usage error at rc=2.
+  mutate 'core/sections-usage-argc' 'scripts/multi-review-core.sh' delete \
+    'sections: no-arg rc=' 'multi-review-core.test.sh' \
+    '  [[ $# -ge 1 ]] || die "usage: multi-review-core.sh sections <doc>" 2'
+
+  mutate 'core/sections-missing-doc' 'scripts/multi-review-core.sh' delete \
+    'sections: missing doc rc=' 'multi-review-core.test.sh' \
+    '  [[ -f "$1" ]] || die "sections: doc not found: $1" 2'
+
+  # symcheck filters core.sh's Files-OR-Interfaces rows down to the **Files:** subset. A section
+  # declaring only interfaces describes a contract, so its fenced blocks are illustration; without
+  # this filter they become rows and the pass manufactures findings about code nobody ships.
+  mutate 'symcheck/files-sections-only' 'scripts/multi-review-symcheck.sh' replace \
+    'an illustrative block qualified' 'multi-review-symcheck.test.sh' \
+    "       && strip_fences \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then" \
+    '       && true; then'
+
+  # The strip_fences call in _file_sections is LOAD-BEARING, and this entry once claimed otherwise.
+  # It was recorded SURVIVES-BY-DESIGN on the premise that "core.sh already blanks fenced lines
+  # before symcheck ever sees them" — false. core.sh's blanking gates only which sections it
+  # EMITS; a section carrying an unfenced `**Interfaces:**` qualifies regardless of its fences, and
+  # `_file_sections` then re-reads the RAW span. So for that shape this call is the only thing
+  # between a quoted fixture's `**Files:**` and a section being treated as shipping code, with its
+  # illustrative blocks becoming worklist rows. Raised as fable-rd1-r1 on PR #97 and reproduced:
+  # correct code exits 3, the mutant emits `B1 Task 1 markdown:8-15`.
+  #
+  # A wrong SURVIVES-BY-DESIGN is worse than a missing entry: it asserts, in the table the repo
+  # trusts, that a line needs no coverage — so the gap reads as a decision rather than an omission.
+  mutate 'symcheck/file-sections-strip-fences' 'scripts/multi-review-symcheck.sh' replace \
+    'promoted an Interfaces-only section to a Files section' 'multi-review-symcheck.test.sh' \
+    "       && strip_fences \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then" \
+    "       && cat \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then"
+
+  # Block line ranges are ABSOLUTE document lines. Without the base offset a reviewer is pointed at
+  # section-relative numbers — the wrong lines, silently.
+  mutate 'symcheck/block-line-base' 'scripts/multi-review-symcheck.sh' replace \
+    "B3's range looks section-relative" 'multi-review-symcheck.test.sh' \
+    '        bstart = base + NR - 1' \
+    '        bstart = NR'
+
+  # An untagged block still gets a row. `rows` is a worklist, not a filter: pre-filtering by
+  # language silently drops the rows most likely to be defects.
+  mutate 'symcheck/untagged-block-kept' 'scripts/multi-review-symcheck.sh' delete \
+    'the untagged block was filtered out' 'multi-review-symcheck.test.sh' \
+    '        if (btag == "") btag = "-"'
+
+  # Applicability is announced, never silent: without this die a prose doc yields zero rows and
+  # exits 0, and `check` then reports a clean turn for a pass that never ran.
+  mutate 'symcheck/not-applicable-exit-3' 'scripts/multi-review-symcheck.sh' delete \
+    'want rc=3, empty' 'multi-review-symcheck.test.sh' \
+    '  (( n >= 1 )) || die "not applicable: no ready-to-paste code blocks detected" 3'
+
+  # A core.sh failure must be LOUD. `die` inside a command substitution exits only the subshell, so
+  # without the propagation the failure is printed and then discarded, the row set is empty, and
+  # the pass falls through to "not applicable" — recording a clean non-run at the gate.
+  #
+  # ONE entry because there is now ONE call site. This shipped as two copies of the guard, one per
+  # consumer, and the pair MASKED each other: neutering either left the other to fail loudly, so
+  # this entry SURVIVED the sweep while reading as coverage. The fix was in the code (_core_sections),
+  # not in the table — an entry that cannot fail is never repaired by rewording it.
+  mutate 'symcheck/core-failure-is-loud' 'scripts/multi-review-symcheck.sh' replace \
+    'the pass silently self-disables and records a clean not-applicable at the gate' 'multi-review-symcheck.test.sh' \
+    '    || die "core.sh sections failed for ${1}: $(head -1 "${TMPD}/secs.err")" 1' \
+    '    || true'
+
+  # The introduces set spans EVERY section, not just the **Files:** ones: a contract-only section
+  # still PRODUCES things later sections legitimately call, and dropping those makes every valid
+  # call read as a missing repo symbol.
+  mutate 'symcheck/introduces-all-sections' 'scripts/multi-review-symcheck.sh' replace \
+    "a contract-only section's Produces was dropped" 'multi-review-symcheck.test.sh' \
+    '  _core_sections "$doc" "${TMPD}/isecs"' \
+    '  _file_sections "$doc" > "${TMPD}/isecs"'
+
+  # strip_fences in _introduces: a plan that QUOTES a fixture carries bare `- Create:` lines inside
+  # a fence. Read raw they inflate the introduces set, so a genuinely missing symbol verdicts `new`
+  # and the defect this pass exists to catch is suppressed.
+  mutate 'symcheck/introduces-strip-fences' 'scripts/multi-review-symcheck.sh' replace \
+    "a fenced '- Create:' reached the introduces set" 'multi-review-symcheck.test.sh' \
+    '      strip_fences "${TMPD}/int.$$" | awk '"'" \
+    '      cat "${TMPD}/int.$$" | awk '"'"
+
+  # Only BACKTICKED tokens are harvested. A real `- Produces:` entry is a sentence with embedded
+  # commas; capturing the remainder makes the comma-joined introduces column undelimitable prose.
+  mutate 'symcheck/introduces-backticked-only' 'scripts/multi-review-symcheck.sh' replace \
+    'the Produces entry is not in the introduces set' 'multi-review-symcheck.test.sh' \
+    '          while (match(line, /`[^`]+`/)) {' \
+    '          while (0) {'
+
+  # `- Modify:` is EXCLUDED from the introduces set. A modified file already exists, so the symbols
+  # its block touches are precisely the ones worth checking; treating it as introduced suppresses
+  # the whole point of the pass. The mutation ADDS the arm the guard is the absence of.
+  mutate 'symcheck/introduces-excludes-modify' 'scripts/multi-review-symcheck.sh' replace \
+    'a MODIFIED file leaked into the introduces set' 'multi-review-symcheck.test.sh' \
+    '        inblk && /^- (Create|Produces):/ {' \
+    '        inblk && /^- (Create|Produces|Modify):/ {'
+
+  # The set is DOCUMENT-WIDE, not section-local: a later section legitimately calls what an earlier
+  # one creates, and scoping it per section makes every such call read as a defect.
+  mutate 'symcheck/introduces-doc-wide' 'scripts/multi-review-symcheck.sh' replace \
+    "B2 does not carry Task 1's Produces" 'multi-review-symcheck.test.sh' \
+    '  local intro; intro="$(_introduces "$doc" | tr '"'"'\n'"'"' '"'"','"'"' | sed '"'"'s/,$//'"'"')" || exit $?' \
+    '  local intro; intro=""'
+
+  # `check` on a NOT-APPLICABLE doc returns 0 — there was nothing to cover. Without it every prose
+  # doc reports a bogus 0/M at the gate.
+  mutate 'symcheck/check-na-returns-0' 'scripts/multi-review-symcheck.sh' delete \
+    'a not-applicable doc failed coverage' 'multi-review-symcheck.test.sh' \
+    '    (( rc == 3 )) && return 0'
+
+  # A rows-derivation failure at check time is INFRA (exit 2), not a turn verdict (exit 1). The
+  # command file books exit 1 as `0/M rows verdicted` — a durable statement about the reviewer's
+  # turn — so shipping exit 1 here blamed a possibly complete copy for a fault on the caller's
+  # side. Raised as fable-rd1-r3 on PR #97.
+  mutate 'symcheck/check-infra-failure-is-exit-2' 'scripts/multi-review-symcheck.sh' replace \
+    'an infra fault is booked as a turn-quality verdict' 'multi-review-symcheck.test.sh' \
+    '    die "cannot derive rows for $doc" 2' \
+    '    die "cannot derive rows for $doc" 1'
+
+  # The `## Review` scan is fence-aware. A copy that QUOTES the verdict grammar in a fence — which
+  # any document about this protocol does — would otherwise move the scan inside that fence and
+  # hide every real verdict above it, reporting a complete turn as incomplete.
+  mutate 'symcheck/verdicts-heading-fence-aware' 'scripts/multi-review-symcheck.sh' replace \
+    "a fenced '## Review' shifted the scan" 'multi-review-symcheck.test.sh' \
+    '  strip_fences "$1" > "${TMPD}/rvsrc.$$"' \
+    '  cat "$1" > "${TMPD}/rvsrc.$$"'
+
+  # CLAUSE: the disclosure header, exactly as on a [no-findings] turn. Without it a table with no
+  # `> [symcheck] — via <model>` line counts as a turn nobody can attribute.
+  mutate 'symcheck/check-disclosure' 'scripts/multi-review-symcheck.sh' replace \
+    'a table with no disclosure passed' 'multi-review-symcheck.test.sh' \
+    '    || die "symcheck table carries no '"'"'> [symcheck] — via <model>'"'"' disclosure" 1' \
+    '    || true'
+
+  # CLAUSE: one verdict per row. The join sorts unique, so two contradictory verdicts for one row
+  # would both be accepted and the turn read as complete.
+  mutate 'symcheck/check-one-verdict-per-row' 'scripts/multi-review-symcheck.sh' replace \
+    'two verdicts for the same row were accepted as complete' 'multi-review-symcheck.test.sh' \
+    '  [[ -z "${dupes// /}" ]] || die "more than one verdict for row(s): ${dupes% }" 1' \
+    '  true'
+
+  # CLAUSE: coverage. A row nobody opened and a row checked and found clean must not be the same
+  # bytes — this is the assertion the whole pass rests on.
+  mutate 'symcheck/check-missing-rows' 'scripts/multi-review-symcheck.sh' replace \
+    'a copy missing rows passed — coverage is not enforced' 'multi-review-symcheck.test.sh' \
+    '    || die "incomplete turn: no verdict for row(s): ${missing% }" 1' \
+    '    || true'
+
+  # CLAUSE: a verdict naming a row that was never emitted. Without it an agent can satisfy coverage
+  # with rows it invented.
+  mutate 'symcheck/check-unemitted-rows' 'scripts/multi-review-symcheck.sh' replace \
+    'a verdict for an unemitted row passed' 'multi-review-symcheck.test.sh' \
+    '    || die "verdict names row(s) that were never emitted: ${extra% }" 1' \
+    '    || true'
+
+  # CLAUSE: an `ok` must name what it checked. An `ok` naming nothing is byte-identical to a row
+  # nobody opened — the hazard the coverage assertion closes, one level down.
+  mutate 'symcheck/check-ok-names-symbol' 'scripts/multi-review-symcheck.sh' replace \
+    "a bare 'ok' passed — the verdict is unfalsifiable" 'multi-review-symcheck.test.sh' \
+    '    || die "ok verdict names no symbol for row(s): ${bare% }" 1' \
+    '    || true'
+
+  # CLAUSE: the verdict vocabulary. The row-id extraction accepts any `|<token>]`, so without this
+  # an invented verdict counts as coverage and reaches the gate as a complete turn.
+  mutate 'symcheck/check-verdict-vocabulary' 'scripts/multi-review-symcheck.sh' replace \
+    'an unknown verdict token counted as coverage' 'multi-review-symcheck.test.sh' \
+    '    || die "unknown verdict token on row(s): ${badtok% } (expected ok, new, none or defect:<id>)" 1' \
+    '    || true'
+
+  # CLAUSE: an EMPTY defect id must FAIL rather than be skipped — skipping it lets a defect verdict
+  # satisfy coverage while anchoring to nothing.
+  mutate 'symcheck/check-empty-defect-id' 'scripts/multi-review-symcheck.sh' replace \
+    "'defect:' with no id satisfied coverage while anchoring to nothing" 'multi-review-symcheck.test.sh' \
+    '    && die "defect verdict names an empty finding id" 1' \
+    '    && true'
+
+  # CLAUSE: every defect must name a finding present in the SAME copy. A defect recorded only in
+  # the table bypasses adjudication and never reaches the human gate's accounting.
+  mutate 'symcheck/check-defect-anchored' 'scripts/multi-review-symcheck.sh' replace \
+    'an unanchored defect passed' 'multi-review-symcheck.test.sh' \
+    "      || die \"symcheck defect names finding '\${fid}', which is not in this copy\" 1" \
+    '      || true'
+
+  # The anchor is a LITERAL index() match, never a built regex: a finding id is agent-authored
+  # text, and interpolating it into a regex lets `defect:r.` be satisfied by any finding at all.
+  # star.sh:586 records this repo being bitten by exactly that.
+  mutate 'symcheck/defect-anchor-literal' 'scripts/multi-review-symcheck.sh' replace \
+    "was satisfied by finding 'rX' — the anchor is a regex, not a literal" 'multi-review-symcheck.test.sh' \
+    "      | awk -v want=\"> [finding:\${fid}|\" 'index(\$0, want) == 1 { found = 1 } END { exit !found }' \\" \
+    "      | grep -qE \"^> \\\\[finding:\${fid}\\\\|\" \\"
+
+  # The symcheck prompt is dispatched as a general-purpose Agent that MAY read repository files, so
+  # each scope bound is its own guard and its own entry — one entry for the block would leave
+  # whichever bound was not the mutated line unfalsifiable.
+  mutate 'reviewer/symcheck-prompt-bounds-read' 'scripts/multi-review-reviewer.sh' replace \
+    'does not bound the read' 'multi-review-reviewer.test.sh' \
+    "document's code names actually requires. No whole-repo sweeps. Read and search only — do not write," \
+    "document's code names actually requires. Read and search only — do not write,"
+
+  mutate 'reviewer/symcheck-prompt-no-secrets' 'scripts/multi-review-reviewer.sh' replace \
+    'does not forbid reading secrets' 'multi-review-reviewer.test.sh' \
+    'edit, or run anything that mutates state, do not use the network, and never read environment or' \
+    'edit, or run anything that mutates state, and do not use the network, nor open configuration or'
+
+  # The read-only bound shares a LINE with the no-whole-repo-sweeps bound above, so the two entries
+  # mutate different CLAUSES of it. Pointed anywhere else this entry survives: it first targeted the
+  # "NOT a secondary review turn" line, which no assertion in the suite depends on, and the sweep
+  # said so.
+  mutate 'reviewer/symcheck-prompt-read-only' 'scripts/multi-review-reviewer.sh' replace \
+    'does not forbid writes' 'multi-review-reviewer.test.sh' \
+    "document's code names actually requires. No whole-repo sweeps. Read and search only — do not write," \
+    "document's code names actually requires. No whole-repo sweeps. Search only — never"
+
+  # The pass must never be told it is a secondary: this guard is the ABSENCE of the phrase, so the
+  # mutation ADDS it. A prompt that says "you are a secondary reviewer" hands over the ordinary
+  # contract's `[no-findings]` clean-turn signal, which `check` cannot parse — the turn then has no
+  # `> [symcheck] — via <model>` disclosure and is misreported as unusable rather than clean.
+  mutate 'reviewer/symcheck-prompt-not-secondary' 'scripts/multi-review-reviewer.sh' replace \
+    'calls the pass a secondary reviewer' 'multi-review-reviewer.test.sh' \
+    "You are running the SYMBOL-CHECK PASS in this repo's multi-review star review. This is NOT a" \
+    "You are a secondary reviewer running the SYMBOL-CHECK PASS. This is NOT a"
+
+  mutate 'reviewer/symcheck-prompt-none-verdict' 'scripts/multi-review-reviewer.sh' replace \
+    'lacks the none verdict' 'multi-review-reviewer.test.sh' \
+    '    > [symcheck:<row-id>|none] <why this block references nothing in the repository>' \
+    '    > [symcheck:<row-id>|nil] <why this block references nothing in the repository>'
+
+  # The empty-rows-file guard: `rows` never produces one (it dies exit 3 first), but a truncated
+  # redirect or a hand-built file can, and unguarded it emits a prompt asking for nothing.
+  mutate 'reviewer/symcheck-prompt-empty-rows' 'scripts/multi-review-reviewer.sh' delete \
+    'accepted an empty rows file' 'multi-review-reviewer.test.sh' \
+    '    [[ -s "$symrows" ]] || die "symcheck rows file is empty: $symrows" 2'
+
+  # --symcheck is exclusive with --reviewer. Without it resolve_id's unrecognised-flag catch-all
+  # swallows the flag and the round quietly becomes an ordinary review with rc=0.
+  mutate 'reviewer/symcheck-prompt-exclusive-flag' 'scripts/multi-review-reviewer.sh' replace \
+    'combined with --reviewer is silently dropped' 'multi-review-reviewer.test.sh' \
+    '      && die "usage: --symcheck must be the only flag after <doc-path>, not combined with --reviewer" 2' \
+    '      && true'
+
+  mutate 'reviewer/symcheck-prompt-trailing-args' 'scripts/multi-review-reviewer.sh' delete \
+    'trailing arguments after the rows file are silently ignored' 'multi-review-reviewer.test.sh' \
+    '    [[ $# -eq 0 ]] || die "usage: unexpected argument(s) after --symcheck <rows-file>: $*" 2'
+
+  # STAR_PASSES membership, proven through BOTH its consumers: gate-summary and round-stats read
+  # the same string in different code, and in the #90 build the round-stats consumer was missed.
+  mutate 'star/passes-includes-symcheck' 'scripts/multi-review-star.sh' replace \
+    'the symcheck pass got its own provider column' 'multi-review-star.test.sh' \
+    'STAR_PASSES="crossref symcheck"' \
+    'STAR_PASSES="crossref"'
+
+  # The gate's symcheck coverage reader. Without it a doc whose pass recorded coverage renders
+  # NOTHING — indistinguishable from a review where the pass was never wired up.
+  mutate 'star/gate-symcheck-rendering' 'scripts/multi-review-star.sh' replace \
+    'symcheck coverage absent from the gate' 'multi-review-star.test.sh' \
+    "    | grep -oE '^> \[symcheck-coverage: (not applicable|[0-9]+/[0-9]+ rows verdicted)\]' \\" \
+    "    | grep -oE '^> \[nosuch-coverage: (not applicable|[0-9]+/[0-9]+ rows verdicted)\]' \\"
+
+  # The INCOMPLETE marker is its own clause: a 5/6 turn rendered without it reads at the gate
+  # exactly like a complete one.
+  mutate 'star/gate-symcheck-incomplete-flag' 'scripts/multi-review-star.sh' replace \
+    'rendered without an INCOMPLETE marker' 'multi-review-star.test.sh' \
+    '        echo "Symbol-check pass: ${sx} — INCOMPLETE"' \
+    '        echo "Symbol-check pass: ${sx}"'
+
+  # commands/multi-review.md bindings. Patterns are the SYMCHECK-prefixed forms: the bare
+  # `<M>/<M> rows verdicted]` shape now has two matches in that file (crossref writes it too), so a
+  # guard phrased that way is satisfied by the crossref line with the whole symcheck branch gone.
+  mutate 'command/symcheck-dispatched' 'commands/multi-review.md' replace \
+    'nothing dispatches the symcheck pass' 'multi-review-packaging.test.sh' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.symcheck" --symcheck' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.symcheck"'
+
+  mutate 'command/symcheck-merged-as-pass' 'commands/multi-review.md' replace \
+    'the symcheck copy is never merged' 'multi-review-packaging.test.sh' \
+    '   Pass `--pass "<doc>.symcheck"` on the same terms and in the same invocation — round 1 only, and' \
+    '   Merge it on the same terms and in the same invocation — round 1 only, and'
+
+  mutate 'command/symcheck-checked' 'commands/multi-review.md' replace \
+    'the symcheck copy is never coverage-checked' 'multi-review-packaging.test.sh' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-symcheck.sh check "<doc>" "<doc>.symcheck"`, with' \
+    '   the coverage checker, with'
+
+  mutate 'command/symcheck-waited-on' 'commands/multi-review.md' replace \
+    'nothing waits on <doc>.symcheck' 'multi-review-packaging.test.sh' \
+    '   **Wait on the symcheck pass here too, if step 4 dispatched it — with the secondaries.** Bound' \
+    '   **Wait on it if step 4 dispatched it.** Bound'
+
+  mutate 'command/symcheck-na-recorded' 'commands/multi-review.md' replace \
+    'an exit-3 symcheck round leaves no durable line' 'multi-review-packaging.test.sh' \
+    '   `> [symcheck-coverage: not applicable]` under `<doc>`'"'"'s `## Review` heading, alongside this' \
+    '   a not-applicable record under `<doc>`'"'"'s `## Review` heading, alongside this'
+
+  mutate 'command/symcheck-complete-recorded' 'commands/multi-review.md' replace \
+    'the complete symcheck coverage state is never recorded' 'multi-review-packaging.test.sh' \
+    '        `> [symcheck-coverage: <M>/<M> rows verdicted]`.' \
+    '        a complete-coverage record.'
+
+  mutate 'command/symcheck-incomplete-recorded' 'commands/multi-review.md' replace \
+    'the incomplete symcheck coverage state is never recorded' 'multi-review-packaging.test.sh' \
+    '        `> [symcheck-coverage: <N>/<M> rows verdicted]`. Never optional: an unrecorded exit-1 turn' \
+    '        an incomplete-coverage record. Never optional: an unrecorded exit-1 turn'
+
+  # ROUND 1 ONLY, and the skip that enforces it — TWO entries, because they are two clauses and one
+  # entry would leave whichever was not the mutated line unfalsifiable. Raised as fable-rd1-r2 on
+  # PR #97: the sentence sat in a GAP between two windows and was covered by neither — the symcheck
+  # block windows from the `rows` invocation, which starts after it, and the crossref round-1-only
+  # guard's window ends AT this paragraph. The covering guard matches `, ROUND 1 ONLY**` and not a
+  # bare `round 1 only`: that phrase occurs twice in the paragraph (the directive, and the clause
+  # "for the same reason the crossref pass is round 1 only"), so the loose pattern stayed green with
+  # the directive deleted — verified before this entry was written.
+  mutate 'command/symcheck-round-1-only' 'commands/multi-review.md' replace \
+    'never says the symcheck pass is round 1 only' 'multi-review-packaging.test.sh' \
+    '   **Derive the symcheck worklist here too, ROUND 1 ONLY**, the same way and for the same reason' \
+    '   **Derive the symcheck worklist here too**, the same way and for the same reason'
+
+  mutate 'command/symcheck-skip-later-rounds' 'commands/multi-review.md' replace \
+    'never says to skip the symcheck derivation on a later round' 'multi-review-packaging.test.sh' \
+    '   round N ≥ 2, skip this sub-step entirely** — steps 4, 5, 7 and 8'"'"'s symcheck clauses then have' \
+    '   steps 4, 5, 7 and 8'"'"'s symcheck clauses then have'
+
+  mutate 'command/symcheck-not-a-secondary' 'commands/multi-review.md' replace \
+    'nothing says the symcheck pass is not a secondary' 'multi-review-packaging.test.sh' \
+    '   argument, so **the symcheck pass is not a secondary**: like the crossref pass it is excluded' \
+    '   argument, so it is excluded'
+
   # ---- the cross-reference pass (#90) ------------------------------------------------------
 
   # The `--pass` argv-parsing arm itself — without it `--pass <copy>` falls through to the
@@ -1670,7 +2054,7 @@ mutations() {
   # (if it somehow reached the doc another way) counted as a full secondary at the gate.
   mutate 'star/passes-constant' 'scripts/multi-review-star.sh' replace \
     'pass copy inflated the secondary count' 'multi-review-star.test.sh' \
-    'STAR_PASSES="crossref"' \
+    'STAR_PASSES="crossref symcheck"' \
     'STAR_PASSES=""'
 
   # cmd_gate_summary's STAR_PASSES exclusion from `admitted` (spec criterion 9) — without it a
@@ -1693,7 +2077,8 @@ mutations() {
   # cmd_gate_summary's crossref-coverage rendering: N==M (complete) vs N<M (INCOMPLETE) must
   # render differently — the whole point of the pass is that a partially-verdicted round is
   # visible at the gate, not indistinguishable from a fully-verdicted one.
-  mutate 'star/gate-crossref-incomplete-flag' 'scripts/multi-review-star.sh' replace \
+  # replace:1 — #89's symcheck renderer duplicates this line shape; occurrence 1 is crossref's.
+  mutate 'star/gate-crossref-incomplete-flag' 'scripts/multi-review-star.sh' replace:1 \
     'incomplete crossref coverage not flagged' 'multi-review-star.test.sh' \
     '      if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then' \
     '      if true; then'
@@ -1709,7 +2094,8 @@ mutations() {
   # _crossref_coverage reads the MOST RECENT durable coverage line, not the first (B5, final
   # review) — a first-wins reading would report a stale INCOMPLETE record over a later complete
   # round, silently understating coverage at the gate.
-  mutate 'star/crossref-coverage-most-recent' 'scripts/multi-review-star.sh' replace \
+  # replace:1 — same duplication: _symcheck_coverage carries an identical `| tail -1`.
+  mutate 'star/crossref-coverage-most-recent' 'scripts/multi-review-star.sh' replace:1 \
     'crossref coverage read a stale first record instead of the most recent' 'multi-review-star.test.sh' \
     '    | tail -1' \
     '    | head -1'
