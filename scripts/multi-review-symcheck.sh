@@ -198,7 +198,13 @@ cmd_check() { # <doc> <copy>
     rc=$?
     # Not applicable is not a failure: there was nothing to cover.
     (( rc == 3 )) && return 0
-    die "cannot derive rows for $doc" 1
+    # EXIT 2, not 1. Exit 1 is a verdict about the REVIEWER's turn, and the command file books it
+    # as `0/M rows verdicted` at the gate — so a fault on the CALLER's side (a misset
+    # MULTI_REVIEW_CORE_SH, a core.sh broken between dispatch and check) would be recorded durably
+    # as an incomplete turn against a copy that may be perfectly complete, with the real fault
+    # surviving only in scrollback. Exit 2 is the code the command file already routes to "fix the
+    # invocation; nothing is recorded" (fable-rd1-r3, PR #97).
+    die "cannot derive rows for $doc" 2
   }
   awk -F'\t' '{ print $1 }' <<< "$rows" | LC_ALL=C sort -u > "${TMPD}/want"
 

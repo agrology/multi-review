@@ -275,6 +275,15 @@ Each round records a durable coverage line alongside the round's quarantine reco
 `Symbol-check pass: <M>/<M> rows verdicted`, or `Symbol-check pass: <N>/<M> rows verdicted —
 INCOMPLETE`.
 
+**Known limits of the introduces set**, in both directions. It harvests the backticked tokens from
+`- Create:`/`- Produces:` lines, and a block ends only at a blank line — so a prose-heavy entry
+contributes grammar fragments, and an entry that follows the block with no intervening blank is
+still harvested. That over-collection is the **safe** direction: it can suppress a real missing
+symbol as `new`, never invent one. The **unsafe** direction is narrower and worth knowing: the set
+is built from ordinal sections only, so a `- Produces:` declared in a non-ordinal preamble never
+reaches it, and a later section's valid call to that interface reads as a missing repo symbol.
+Both are silent.
+
 ## Bounds & terminal state
 
 Round = one secondary fan-out pass + one primary adjudication pass. **One round is the default**:

@@ -270,6 +270,41 @@ err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
 [[ $rc != 0 ]] && grep -qF 'disclosure' <<<"$err" \
   && ok "check: a table with no '> [symcheck] — via' header fails" \
   || bad "check: a table with no disclosure passed (rc=$rc err='$err')"
+
+# --- an Interfaces-qualified section must not be turned into a Files section by a FENCED
+# `**Files:**` (fable-rd1-r1) ---
+# core.sh's fence-blanking gates only which sections it EMITS: a section carrying an unfenced
+# `**Interfaces:**` qualifies and is emitted whatever its fences contain. `_file_sections` then
+# re-reads the RAW span, so its own strip_fences is the ONLY thing standing between a quoted
+# fixture's `**Files:**` and a section being treated as shipping code. Without this the guard has
+# zero coverage: every existing fixture either has no fenced `**Files:**` (illustrative.md) or
+# declares a real one (introduces-fenced.md), so the mutant passes them all.
+D="$(mkdoc iface-fenced-files.md \
+  '# Plan' '' \
+  '### Task 1: contract only, quotes a fixture' '' '**Interfaces:**' '- Produces: `alpha`' '' \
+  '````markdown' '**Files:**' '- Create: `src/illustrative.py`' '' '```python' 'foo(1)' '```' '````' '')"
+out="$(bash "$SUT" rows "$D" 2>/dev/null)"; rc=$?
+[[ $rc == 3 && -z "$out" ]] \
+  && ok "rows: a fenced **Files:** does not make an Interfaces-only section ship code" \
+  || bad "rows: a fenced **Files:** promoted an Interfaces-only section to a Files section (rc=$rc out='$out') — illustrative blocks became worklist rows"
+
+# --- a rows-derivation failure at CHECK time is infra (exit 2), not a turn verdict (fable-rd1-r3) ---
+# The command file books exit 1 as "the verdict table cannot be trusted at all, so <N> is 0" and
+# records `0/M rows verdicted` at the gate. That is a statement about the REVIEWER's turn. A misset
+# MULTI_REVIEW_CORE_SH or a broken core.sh between the dispatch and the check is a fault on the
+# CALLER's side, and exit 2 is the code the command file already routes to "fix the invocation;
+# nothing is recorded". Booking it as 0/M blames a possibly complete copy and buries the real fault
+# in scrollback instead of the durable record.
+D="$(mkdoc infra.md '# Plan' '' '### Task 1: one' '' '**Files:**' '- Modify: `src/a.py`' '' \
+  '```python' 'foo(1)' '```' '')"
+C="$(mkcopy infra-copy.md "$D" '> [symcheck] — via test-model' '> [symcheck:B1|ok] foo() in src/a.py')"
+err="$(MULTI_REVIEW_CORE_SH=/nonexistent/core.sh bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
+[[ $rc == 2 ]] \
+  && ok "check: a rows-derivation infra failure exits 2, not 1" \
+  || bad "check: a broken core.sh exited $rc — an infra fault is booked as a turn-quality verdict and recorded as 0/M against a possibly complete copy"
+grep -qF 'core.sh sections failed' <<<"$err" \
+  && ok "check: the infra failure names its cause" \
+  || bad "check: the infra failure does not name its cause: '$err'"
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

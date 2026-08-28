@@ -1155,4 +1155,36 @@ grep -qF 'symcheck pass is not a secondary' "$CMD" \
   && ok "command: the symcheck pass is excluded from the secondary count" \
   || bad "command: nothing says the symcheck pass is not a secondary — it would inflate the roster"
 
+
+# --- the symcheck pass must say it runs ROUND 1 ONLY (fable-rd1-r2) ---
+# That sentence sat in a GAP between two windows and was covered by neither: the symcheck block
+# below windows from the `rows` invocation onward, which starts after it, and the crossref
+# round-1-only guard's window now ENDS at this paragraph (it had to, or the symcheck copy of the
+# phrase kept crossref's own guard green). So it could be deleted with the full gate green, and the
+# command would then instruct deriving and dispatching the pass on scoped round-N copies — which
+# carry only the edited hunks, not the document's shipped blocks.
+n="$(grep -nF 'Derive the symcheck worklist here too' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 2's symcheck-worklist derivation paragraph is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /multi-review-symcheck\.sh rows/{print NR; exit}' "$CMD")"
+  [[ -n "$ne" ]] || ne="$(( $(wc -l < "$CMD") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$CMD")"
+  # TWO exact patterns, each unique in this window (counts confirmed 1 and 1), never a bare
+  # `round 1 only`: that phrase occurs TWICE here — the directive, and the prose clause "for the
+  # same reason the crossref pass is round 1 only" — so a case-insensitive match on it stays green
+  # with the directive deleted. Caught by mutating this guard's own target before trusting it.
+  # The directive and the skip instruction are separate clauses, so they get separate assertions
+  # and separate mutation entries.
+  grep -qF ', ROUND 1 ONLY**' <<<"$blk" \
+    && ok "command: step 2 states the symcheck pass is round 1 only" \
+    || bad "command: step 2 never says the symcheck pass is round 1 only — it would be derived and dispatched on scoped round-N copies"
+  grep -qF 'skip this sub-step entirely' <<<"$blk" \
+    && ok "command: step 2 says to skip the symcheck derivation on round N >= 2" \
+    || bad "command: step 2 never says to skip the symcheck derivation on a later round — steps 4/5/7/8 would act on a stale worklist"
+  grep -qiF 'every round' <<<"$blk" \
+    && bad "command: step 2 says the symcheck worklist is derived every round — contradicts round-1-only" \
+    || ok "command: step 2 does not say the symcheck worklist is derived every round"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

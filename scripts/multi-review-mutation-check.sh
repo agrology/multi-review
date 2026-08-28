@@ -1700,12 +1700,19 @@ mutations() {
     "       && strip_fences \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then" \
     '       && true; then'
 
-  # The strip_fences call in _file_sections: a fenced `**Files:**` in a quoted fixture would
-  # otherwise qualify a section that ships nothing. SURVIVES BY DESIGN — core.sh sections already
-  # blanks fenced lines before symcheck ever sees them, so this is defence in depth. Recorded
-  # rather than omitted so losing that outer layer surfaces here as STALE.
+  # The strip_fences call in _file_sections is LOAD-BEARING, and this entry once claimed otherwise.
+  # It was recorded SURVIVES-BY-DESIGN on the premise that "core.sh already blanks fenced lines
+  # before symcheck ever sees them" — false. core.sh's blanking gates only which sections it
+  # EMITS; a section carrying an unfenced `**Interfaces:**` qualifies regardless of its fences, and
+  # `_file_sections` then re-reads the RAW span. So for that shape this call is the only thing
+  # between a quoted fixture's `**Files:**` and a section being treated as shipping code, with its
+  # illustrative blocks becoming worklist rows. Raised as fable-rd1-r1 on PR #97 and reproduced:
+  # correct code exits 3, the mutant emits `B1 Task 1 markdown:8-15`.
+  #
+  # A wrong SURVIVES-BY-DESIGN is worse than a missing entry: it asserts, in the table the repo
+  # trusts, that a line needs no coverage — so the gap reads as a decision rather than an omission.
   mutate 'symcheck/file-sections-strip-fences' 'scripts/multi-review-symcheck.sh' replace \
-    'SURVIVES-BY-DESIGN' 'multi-review-symcheck.test.sh' \
+    'promoted an Interfaces-only section to a Files section' 'multi-review-symcheck.test.sh' \
     "       && strip_fences \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then" \
     "       && cat \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then"
 
@@ -1784,6 +1791,15 @@ mutations() {
   mutate 'symcheck/check-na-returns-0' 'scripts/multi-review-symcheck.sh' delete \
     'a not-applicable doc failed coverage' 'multi-review-symcheck.test.sh' \
     '    (( rc == 3 )) && return 0'
+
+  # A rows-derivation failure at check time is INFRA (exit 2), not a turn verdict (exit 1). The
+  # command file books exit 1 as `0/M rows verdicted` — a durable statement about the reviewer's
+  # turn — so shipping exit 1 here blamed a possibly complete copy for a fault on the caller's
+  # side. Raised as fable-rd1-r3 on PR #97.
+  mutate 'symcheck/check-infra-failure-is-exit-2' 'scripts/multi-review-symcheck.sh' replace \
+    'an infra fault is booked as a turn-quality verdict' 'multi-review-symcheck.test.sh' \
+    '    die "cannot derive rows for $doc" 2' \
+    '    die "cannot derive rows for $doc" 1'
 
   # The `## Review` scan is fence-aware. A copy that QUOTES the verdict grammar in a fence — which
   # any document about this protocol does — would otherwise move the scan inside that fence and
@@ -1968,6 +1984,24 @@ mutations() {
     'the incomplete symcheck coverage state is never recorded' 'multi-review-packaging.test.sh' \
     '        `> [symcheck-coverage: <N>/<M> rows verdicted]`. Never optional: an unrecorded exit-1 turn' \
     '        an incomplete-coverage record. Never optional: an unrecorded exit-1 turn'
+
+  # ROUND 1 ONLY, and the skip that enforces it — TWO entries, because they are two clauses and one
+  # entry would leave whichever was not the mutated line unfalsifiable. Raised as fable-rd1-r2 on
+  # PR #97: the sentence sat in a GAP between two windows and was covered by neither — the symcheck
+  # block windows from the `rows` invocation, which starts after it, and the crossref round-1-only
+  # guard's window ends AT this paragraph. The covering guard matches `, ROUND 1 ONLY**` and not a
+  # bare `round 1 only`: that phrase occurs twice in the paragraph (the directive, and the clause
+  # "for the same reason the crossref pass is round 1 only"), so the loose pattern stayed green with
+  # the directive deleted — verified before this entry was written.
+  mutate 'command/symcheck-round-1-only' 'commands/multi-review.md' replace \
+    'never says the symcheck pass is round 1 only' 'multi-review-packaging.test.sh' \
+    '   **Derive the symcheck worklist here too, ROUND 1 ONLY**, the same way and for the same reason' \
+    '   **Derive the symcheck worklist here too**, the same way and for the same reason'
+
+  mutate 'command/symcheck-skip-later-rounds' 'commands/multi-review.md' replace \
+    'never says to skip the symcheck derivation on a later round' 'multi-review-packaging.test.sh' \
+    '   round N ≥ 2, skip this sub-step entirely** — steps 4, 5, 7 and 8'"'"'s symcheck clauses then have' \
+    '   steps 4, 5, 7 and 8'"'"'s symcheck clauses then have'
 
   mutate 'command/symcheck-not-a-secondary' 'commands/multi-review.md' replace \
     'nothing says the symcheck pass is not a secondary' 'multi-review-packaging.test.sh' \
