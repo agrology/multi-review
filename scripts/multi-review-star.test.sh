@@ -2962,6 +2962,29 @@ err="$(bash "$SUT" resolved "$RS10" 2>&1 >/dev/null)"; rc=$?
 [[ $rc -ne 0 && "$err" == *"self-resolve"* ]] && ok "resolved: the raiser cannot resolve its own finding" \
   || bad "resolved accepted a self-resolve (err='$err' rc=$rc)"
 
+# (j2) a literal TAB in the note must not shift the model out of field 3. The record is emitted as
+# TSV, so an un-normalised tab makes the model field 4 — and then the self-resolve guard compares
+# a fragment of the NOTE against the raiser and passes anything. Reproduced: gpt-5.5 closing a
+# finding gpt-5.5 raised, admitted with rc=0, and the note published truncated at the tab.
+RS11="$(mkstar rsv-tab.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  "$(printf '> [resolved:codex-rd1-a] fixed at deadbee\tand more note')" '> — via gpt-5.5')"
+err="$(bash "$SUT" resolved "$RS11" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"self-resolve"* ]] \
+  && ok "resolved: a tab in the note cannot smuggle a self-resolve past the guard" \
+  || bad "resolved let a tabbed note bypass the self-resolve guard (err='$err' rc=$rc)"
+
+# ...and the note survives whole, rather than being truncated at the tab when it is published
+RS12="$(mkstar rsv-tab-ok.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  "$(printf '> [resolved:codex-rd1-a] fixed at deadbee\tand more note')" '> — via claude-opus-4-8')"
+out="$(bash "$SUT" resolved "$RS12" 2>/dev/null)"; rc=$?
+[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee and more note"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
+  && ok "resolved: a tab in the note is normalised, keeping the record three fields" \
+  || bad "resolved emitted a tabbed note as extra fields (out='$out' rc=$rc)"
+
 # --- compose-review: the counts stop lying ---
 
 # (k) a resolved finding leaves the open worklist and lands under its own heading, with its note

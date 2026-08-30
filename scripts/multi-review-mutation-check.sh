@@ -2136,6 +2136,17 @@ mutations() {
     '        if (ptxt == "") fail("empty note on resolved record: " pid)' \
     '        if (ptxt == "" && 0) fail("empty note on resolved record: " pid)'
 
+  # Tab normalisation in the note. The record is TSV, so an un-normalised tab pushes the model into
+  # field 4 and the self-resolve check compares a fragment of the NOTE against the raiser — which
+  # passes anything. Not hypothetical: reproduced on the first version of this reader, with gpt-5.5
+  # closing a finding gpt-5.5 raised at rc=0 and the published note truncated at the tab. The
+  # covering assertion is the SELF-RESOLVE one, not a formatting one, because a guard bypass is
+  # what this line actually prevents.
+  mutate 'star/resolved-note-tab-normalised' 'scripts/multi-review-star.sh' replace \
+    'resolved let a tabbed note bypass the self-resolve guard' 'multi-review-star.test.sh' \
+    '        ptxt = substr(s, b + 1); sub(/^ /, "", ptxt); gsub(/\t/, " ", ptxt); sub(/[[:space:]]+$/, "", ptxt)' \
+    '        ptxt = substr(s, b + 1); sub(/^ /, "", ptxt); sub(/[[:space:]]+$/, "", ptxt)'
+
   # Unknown finding id. It sits IN FRONT of the not-agreed check, which would also fire on a
   # missing id — so the covering assertion matches the MESSAGE, not merely the exit code. An
   # exit-code-only assertion here would be the unfalsifiable shape section 11 is about: green

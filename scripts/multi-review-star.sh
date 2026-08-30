@@ -614,7 +614,12 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
         s = substr(line, 13)                      # after the literal "> [resolved:"
         b = index(s, "]")
         pid = substr(s, 1, b - 1)
-        ptxt = substr(s, b + 1); sub(/^ /, "", ptxt); sub(/[[:space:]]+$/, "", ptxt)
+        # A literal TAB in the note is NORMALISED, not tolerated: the record is emitted as TSV, so
+        # an un-normalised tab makes the model field 4 — and the self-resolve check below then
+        # compares a fragment of the NOTE against the raiser and passes anything. Reproduced live
+        # on the first version of this reader: gpt-5.5 closing a finding gpt-5.5 raised, rc=0, and
+        # the published note truncated at the tab.
+        ptxt = substr(s, b + 1); sub(/^ /, "", ptxt); gsub(/\t/, " ", ptxt); sub(/[[:space:]]+$/, "", ptxt)
         if (ptxt == "") fail("empty note on resolved record: " pid)
         pend = 1
       }
@@ -636,7 +641,6 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
         state[f[1]] = f[3]; raiser[f[1]] = f[2]
       }
     }
-    NF < 3 { next }
     {
       id = $1
       if (!(id in state)) fail("resolved record names an unknown finding id: " id)
