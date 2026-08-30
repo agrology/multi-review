@@ -111,6 +111,24 @@ The primary may also leave a note that is NOT a finding and never affects conver
 `> [observation] <text>` + `> — via <primary-model-id>`. In PR mode it is published with the
 review, carrying the model that raised it.
 
+From round 2 the primary may additionally record that a finding it agreed with has since been
+**fixed**: `> [resolved:<ns-id>] <what changed, at which head>` + `> — via <primary-model-id>`.
+It is an annotation on an already-agreed finding, never a response — the finding keeps its
+`[agree:]`, and convergence is unaffected. `compose-review` then lists it under **Fixed during
+review** instead of in the open worklist, and it posts no inline comment. Without it, a review
+that ran more than one round republishes every earlier-round finding as currently-open, including
+the ones the author's between-round push already fixed, and reads to its author as "you fixed
+nothing".
+
+Four rules, all enforced mechanically: the finding must exist and must be **agreed** (not
+disputed, not unanswered); at most one record per finding; and the model that **raised** the
+finding may not be the one that records it fixed, mirroring the self-response guard. Nothing can
+verify a prose finding was actually fixed, so it is a primary claim — `gate-summary` shows it as
+one before the human approves the publish.
+
+**Secondaries never write `[resolved:]`.** It belongs to the primary, exactly as `[agree:]` and
+`[dispute:]` do, and a copy carrying one fails `blind-check`.
+
 Convergence is **coverage, not consensus**: every merged finding needs exactly one
 `agree`/`dispute`; disputes are expected and do not block. The human gate settles disputes.
 

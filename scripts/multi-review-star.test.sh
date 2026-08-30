@@ -2836,6 +2836,279 @@ grep -qE '(^|[[:space:]])symcheck[[:space:]]' <<<"$out" \
 grep -qE '(^|[[:space:]])codex[[:space:]]' <<<"$out" \
   && ok "round-stats: excluding the pass did not drop the real providers" \
   || bad "round-stats: the exclusion took codex with it (out='$out')"
+
+# ============================================================================
+# `> [resolved:<ns-id>]` — a finding agreed in an earlier round and since FIXED
+# (issue #88). Without it, `compose-review` republishes every agreed finding as
+# currently-open, including ones the author's between-round push already fixed:
+# in the reported two-round run, 10 of 12 round-1 findings were fixed and the
+# composed comment still opened with a 🔴 the author had resolved. That inverts
+# the review's message ("you fixed nothing") and it fails quietly — verify and
+# check-converged both pass.
+#
+# It is NOT a response verb: `_table`'s verb set stays finding|agree|dispute, so
+# the one-response rule, coverage convergence and the manifest are untouched. It
+# is an ANNOTATION on an already-agreed finding, the same shape `[observation]`
+# uses (#63).
+# ============================================================================
+
+# --- the reader ---
+
+# (a) a well-formed resolved emits id/text/model
+RS1="$(mkstar rsv-ok.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee — the guard now runs' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" resolved "$RS1" 2>/dev/null)"; rc=$?
+[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee — the guard now runs"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
+  && ok "resolved: a well-formed record emits id/text/model" \
+  || bad "resolved did not parse a well-formed record (out='$out' rc=$rc)"
+
+# (b) an UNDISCLOSED resolved fails loud. Same rule as an undisclosed observation: a claim that a
+# finding is fixed is agent-authored content a human acts on, so it names its model or it is a
+# contract violation — never a silently dropped record.
+RS2="$(mkstar rsv-noVia.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> not a via line at all')"
+out="$(bash "$SUT" resolved "$RS2" 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 && -z "$out" ]] && ok "resolved: an undisclosed record fails loud" \
+  || bad "resolved accepted a record with no via (out='$out' rc=$rc)"
+
+# (c) a bare `> — via` naming no model is the same case, not a different one
+RS3="$(mkstar rsv-bareVia.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via ')"
+out="$(bash "$SUT" resolved "$RS3" 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 && -z "$out" ]] && ok "resolved: a via naming no model fails loud" \
+  || bad "resolved accepted an empty model (out='$out' rc=$rc)"
+
+# (d) an EMPTY note is a contract violation. "Fixed at which head, how?" is the whole payload the
+# author reads; a marker with nothing after it publishes a bare claim.
+RS4="$(mkstar rsv-empty.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] ' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" resolved "$RS4" 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 && -z "$out" ]] && ok "resolved: an empty note fails loud" \
+  || bad "resolved accepted an empty note (out='$out' rc=$rc)"
+
+# (e) a FENCED resolved is documentation — a doc about this protocol legitimately contains one
+RS5="$(mkstar rsv-fenced.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '```' '> [resolved:codex-rd1-a] a fenced EXAMPLE' '> — via claude-opus-4-8' '```')"
+out="$(bash "$SUT" resolved "$RS5" 2>/dev/null)"; rc=$?
+[[ -z "$out" && $rc -eq 0 ]] && ok "resolved: a fenced record is not live" \
+  || bad "resolved read a fenced example as a live record (out='$out' rc=$rc)"
+
+# (e2) a record at END OF INPUT with no via at all — the same violation as (b), but reached
+# through the END block rather than the next-line branch
+RS5B="$(mkstar rsv-eof.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee')"
+out="$(bash "$SUT" resolved "$RS5B" 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 && -z "$out" ]] && ok "resolved: an undisclosed record at end-of-input fails loud" \
+  || bad "resolved accepted a trailing record with no via (out='$out' rc=$rc)"
+
+# --- the cross-checks (all four fail CLOSED: a contradictory record never renders) ---
+
+# (f) unknown finding id — mirrors _table's "response to unknown finding id"
+RS6="$(mkstar rsv-unknown.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-zzz] fixed at deadbee' '> — via claude-opus-4-8')"
+err="$(bash "$SUT" resolved "$RS6" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"unknown finding id"* ]] && ok "resolved: an unknown finding id fails loud" \
+  || bad "resolved accepted an unknown finding id, or blamed the wrong thing (err='$err' rc=$rc)"
+
+# (g) the finding was DISPUTED — "rejected, and also fixed" is a contradiction, and publishing it
+# as fixed would tell the author to trust a claim the review itself refused
+RS7="$(mkstar rsv-disputed.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [dispute:codex-rd1-a] speculative' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
+err="$(bash "$SUT" resolved "$RS7" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"did not agree with"* ]] && ok "resolved: a disputed finding cannot be resolved" \
+  || bad "resolved accepted a record on a disputed finding (err='$err' rc=$rc)"
+
+# (h) the finding is still OPEN — resolving something nobody adjudicated skips the adjudication
+RS8="$(mkstar rsv-open.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
+err="$(bash "$SUT" resolved "$RS8" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"did not agree with"* ]] && ok "resolved: an unadjudicated finding cannot be resolved" \
+  || bad "resolved accepted a record on an open finding (err='$err' rc=$rc)"
+
+# (i) TWO records for one finding — which head is it fixed at? Both render, contradicting.
+RS9="$(mkstar rsv-dup.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at cafe123' '> — via claude-opus-4-8')"
+err="$(bash "$SUT" resolved "$RS9" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"duplicate resolved record"* ]] && ok "resolved: a duplicate record for one finding fails loud" \
+  || bad "resolved accepted two records for one finding (err='$err' rc=$rc)"
+
+# (j) SELF-RESOLVE — the raiser certifying its own finding fixed. Mirrors _table's self-response
+# guard: the party that raised it is not the party that gets to close it.
+RS10="$(mkstar rsv-self.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via gpt-5.5')"
+err="$(bash "$SUT" resolved "$RS10" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"self-resolve"* ]] && ok "resolved: the raiser cannot resolve its own finding" \
+  || bad "resolved accepted a self-resolve (err='$err' rc=$rc)"
+
+# --- compose-review: the counts stop lying ---
+
+# (k) a resolved finding leaves the open worklist and lands under its own heading, with its note
+CR1="$(mkstar cr-rsv.md \
+  '> [finding:codex-rd1-a|high] the fixed one' '> — via gpt-5.5' '> — risk: risk a' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [finding:codex-rd2-b|med] the still-open one' '> — via gpt-5.5' '> — risk: risk b' \
+  '> [agree:codex-rd2-b]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee — the guard now runs' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-review "$CR1" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" == *"**Agreed findings (1)**"* && $rc -eq 0 ]] \
+  && ok "compose-review: the agreed count excludes resolved findings" \
+  || bad "compose-review still counts a resolved finding as agreed (rc=$rc, got: $out)"
+[[ "$out" == *"**Fixed during review (1)**"* ]] \
+  && ok "compose-review: resolved findings get their own heading" \
+  || bad "compose-review has no fixed-during-review section (got: $out)"
+[[ "$out" == *"fixed at deadbee — the guard now runs"* ]] \
+  && ok "compose-review: the resolved note is published" \
+  || bad "compose-review dropped the resolved note (got: $out)"
+# the still-open one must be in the AGREED section, not the fixed one
+a_ln="$(printf '%s\n' "$out" | grep -n 'the still-open one' | head -1 | cut -d: -f1)"
+f_ln="$(printf '%s\n' "$out" | grep -n 'Fixed during review' | head -1 | cut -d: -f1)"
+[[ -n "$a_ln" && -n "$f_ln" && "$a_ln" -lt "$f_ln" ]] \
+  && ok "compose-review: the open worklist precedes the fixed section" \
+  || bad "compose-review put the open finding below the fixed heading (open=$a_ln fixed=$f_ln)"
+
+# (l) DORMANT with no resolved records — a review without one composes exactly as before. This is
+# the regression lock: the heading must never appear empty.
+CR2="$(mkstar cr-norsv.md \
+  '> [finding:codex-rd1-a|med] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-review "$CR2" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" != *"Fixed during review"* && "$out" == *"**Agreed findings (1)**"* && $rc -eq 0 ]] \
+  && ok "compose-review: no fixed heading when nothing was resolved" \
+  || bad "compose-review emitted an empty fixed-during-review heading (rc=$rc)"
+
+# (m) EVERY agreed finding resolved -> the agreed heading is gone, not rendered as "(0)"
+CR3="$(mkstar cr-allrsv.md \
+  '> [finding:codex-rd1-a|high] the only one' '> — via gpt-5.5' '> — risk: risk a' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-review "$CR3" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" != *"Agreed findings"* && "$out" == *"**Fixed during review (1)**"* && $rc -eq 0 ]] \
+  && ok "compose-review: an all-resolved review shows no agreed heading" \
+  || bad "compose-review rendered an empty agreed heading (rc=$rc, got: $out)"
+# ...and it must not ALSO claim there were none: every finding being fixed is the opposite of
+# "No findings.", and printing both is the same lie #88 is about, inverted.
+[[ "$out" != *"No findings."* ]] \
+  && ok "compose-review: an all-resolved review does not claim there were no findings" \
+  || bad "compose-review said No findings. on a review that raised and fixed one (got: $out)"
+
+# (n) a contract-violating resolved REFUSES to compose rather than posting a review that silently
+# omits it — the unchecked-status defect #59 shipped, in the same place
+CR4="$(mkstar cr-badrsv.md \
+  '> [finding:codex-rd1-a|med] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> not a via line at all')"
+out="$(bash "$SUT" compose-review "$CR4" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && ok "compose-review: a malformed resolved refuses to compose" \
+  || bad "compose-review composed despite a malformed resolved (rc=$rc)"
+
+# --- compose-inline: a fixed line gets no inline comment ---
+
+# (o) a resolved+anchored finding produces NO inline record. After a refresh its anchor may not
+# even land on a changed line, and a comment on code the author already fixed is noise.
+CI1="$(mkstar ci-rsv.md \
+  '> [finding:codex-rd1-a|high] the fixed one' '> — via gpt-5.5' '> — risk: risk a' '> — at scripts/foo.sh:42' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [finding:codex-rd2-b|med] the still-open one' '> — via gpt-5.5' '> — risk: risk b' '> — at scripts/bar.sh:7' \
+  '> [agree:codex-rd2-b]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" compose-inline "$CI1" 2>/dev/null)"; rc=$?
+printf '%s\n' "$out" | grep -q 'the fixed one' \
+  && bad "compose-inline posted an inline comment on a resolved finding (got: $out)" \
+  || ok "compose-inline: a resolved finding posts no inline comment"
+printf '%s\n' "$out" | grep -q 'the still-open one' \
+  && ok "compose-inline: a still-open anchored finding still posts inline" \
+  || bad "compose-inline dropped a still-open anchored finding (rc=$rc, got: $out)"
+
+# (p) compose-inline refuses on a malformed resolved rather than posting a full inline set that
+# includes lines already fixed
+CI2="$(mkstar ci-badrsv.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: risk a' '> — at scripts/foo.sh:42' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> not a via line at all')"
+bash "$SUT" compose-inline "$CI2" >/dev/null 2>&1 \
+  && bad "compose-inline composed despite a malformed resolved" \
+  || ok "compose-inline: a malformed resolved refuses to compose"
+
+# --- gate-summary: the human sees the claim before approving the publish ---
+
+# (q) the count is rendered
+GS1="$(mkstar gs-rsv.md \
+  '> [finding:codex-rd1-a|high] the fixed one' '> — via gpt-5.5' '> — risk: risk a' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" gate-summary "$GS1" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" == *"recorded fixed since"* && $rc -eq 0 ]] \
+  && ok "gate-summary: renders the resolved count" \
+  || bad "gate-summary is silent about resolved findings (rc=$rc, got: $out)"
+
+# (r) DORMANT with none — the gate summary of a review with nothing resolved is unchanged
+GS2="$(mkstar gs-norsv.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: risk a' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" gate-summary "$GS2" claude-opus-4-8 2>/dev/null)"; rc=$?
+[[ "$out" != *"recorded fixed since"* && $rc -eq 0 ]] \
+  && ok "gate-summary: no resolved line when nothing was resolved" \
+  || bad "gate-summary emitted a zero resolved line (rc=$rc)"
+
+# --- blind-check: a leaked resolved record breaks independence ---
+
+# A `[resolved:]` in a dispatched copy tells the secondary BOTH that a finding existed at that
+# spot AND that the primary already closed it — strictly more leakage than a bare `[agree:]`,
+# which blind-check already refuses.
+BR="${WORK}/blind-rsv.md"
+{ echo "# Doc"; echo; echo "## Review"; echo;
+  echo '> [resolved:codex-rd1-a] fixed at deadbee'; echo '> — via claude-opus-4-8'; } > "$BR"
+bash "$SUT" blind-check "$BR" >/dev/null 2>&1 \
+  && bad "blind-check passed a copy carrying a resolved record" \
+  || ok "blind-check: a leaked resolved record is NOT blind"
+
+# (s) a malformed record REFUSES to summarise. The gate is where the human decides to publish;
+# summarising past a contract violation hands them a number the doc does not support.
+GS3="$(mkstar gs-badrsv.md \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: risk a' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> not a via line at all')"
+bash "$SUT" gate-summary "$GS3" claude-opus-4-8 >/dev/null 2>&1 \
+  && bad "gate-summary summarised despite a malformed resolved" \
+  || ok "gate-summary: a malformed resolved refuses to summarise"
+
+# --- verify: a contradictory record is a doc/manifest-level inconsistency, caught at the handoff
+# rather than accumulating silently to the terminal gate (issue #16's rule) ---
+VR="${WORK}/vfy-rsv.md"; mkbase "$VR"
+mkcopy "${VR}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+bash "$SUT" merge --round 1 "$VR" "${VR}.codex" >/dev/null 2>&1
+printf '\n> [agree:codex-rd1-r1]\n> — via claude-opus-4-8\n' >> "$VR"
+bash "$SUT" verify "$VR" >/dev/null 2>&1 && ok "verify: a merged doc with no resolved records passes" \
+  || bad "verify rejected a clean doc once resolved parsing was added"
+cp "$VR" "${VR}.bak"
+printf '\n> [resolved:codex-rd1-nope] fixed at deadbee\n> — via claude-opus-4-8\n' >> "$VR"
+bash "$SUT" verify "$VR" >/dev/null 2>&1 \
+  && bad "verify missed a resolved naming an unknown finding" \
+  || ok "verify: detects a resolved naming an unknown finding"
+cp "${VR}.bak" "$VR"; rm -f "${VR}.bak"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

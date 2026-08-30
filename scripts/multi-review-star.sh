@@ -580,6 +580,77 @@ cmd_observations() { # <doc> -> "text<TAB>model" per observation; exit 2 on an u
   '
 }
 
+# cmd_resolved <doc> -> "ns-id\tnote\tmodel" per resolved record; exit 2 on a contract violation.
+#
+# `> [resolved:<ns-id>] <note>` + `> — via <model>` (issue #88). A finding the primary AGREED with
+# in an earlier round and has since verified fixed at the current head. Without it, compose-review
+# republishes every agreed finding as currently-open — including the ones the author fixed between
+# rounds, which is most of them — and the review reads to its author as "you fixed nothing".
+#
+# It is an ANNOTATION, not a response verb: _table's verb set stays finding|agree|dispute, so the
+# one-response rule, coverage convergence and the manifest are untouched, and a doc with no
+# resolved records renders exactly as before. Same shape [observation] uses (#63), and it lives
+# outside _table for the same reason.
+#
+# Undisclosed or empty records fail loud rather than being dropped: a claim that a defect is fixed
+# is agent-authored content a human acts on, so it names its model or it is a contract violation.
+cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
+  local doc="${1:?doc}" raw t
+  [[ -f "$doc" ]] || die "doc not found: $doc" 1
+  raw="$(review_section "$doc" | strip_fences /dev/stdin | awk '
+    function fail(m){ print "multi-review-star: " m > "/dev/stderr"; exit 2 }
+    {
+      line = $0
+      if (pend) {
+        # Same NON-SPACE requirement the observation reader uses (PR #65): a bare "> — via " would
+        # otherwise strip to an empty model and publish a disclosure naming nobody.
+        if (line ~ /^> — via [^[:space:]]/) {
+          via = line; sub(/^> — via[[:space:]]+/, "", via); sub(/[[:space:]]+$/, "", via)
+          print pid "\t" ptxt "\t" via; pend = 0; next
+        }
+        else { fail("resolved record " pid " not followed by a \"> — via <model>\" line") }
+      }
+      if (line ~ /^> \[resolved:[A-Za-z0-9_-]+]/) {
+        s = substr(line, 13)                      # after the literal "> [resolved:"
+        b = index(s, "]")
+        pid = substr(s, 1, b - 1)
+        ptxt = substr(s, b + 1); sub(/^ /, "", ptxt); sub(/[[:space:]]+$/, "", ptxt)
+        if (ptxt == "") fail("empty note on resolved record: " pid)
+        pend = 1
+      }
+    }
+    END { if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line") }
+  ')" || return 2
+  [[ -n "$raw" ]] || return 0                     # dormant: no records, nothing to cross-check
+
+  # Cross-checks against the adjudicated table. All four fail CLOSED — a contradictory record must
+  # never render, because every one of them publishes something false to the author.
+  t="$(_table "$doc")" || return 2
+  printf '%s\n' "$raw" | TBL="$t" awk -F'\t' '
+    function fail(m){ print "multi-review-star: " m > "/dev/stderr"; exit 2 }
+    BEGIN {
+      nr = split(ENVIRON["TBL"], rows, "\n")
+      for (i = 1; i <= nr; i++) {
+        if (rows[i] == "") continue
+        split(rows[i], f, "\t")
+        state[f[1]] = f[3]; raiser[f[1]] = f[2]
+      }
+    }
+    NF < 3 { next }
+    {
+      id = $1
+      if (!(id in state)) fail("resolved record names an unknown finding id: " id)
+      if (state[id] != "agreed") fail("resolved record on a finding the review did not agree with (" state[id] "): " id)
+      if (id in seen) fail("duplicate resolved record for finding: " id)
+      # Mirrors _table self-response guard: the party that raised a finding is not the party that
+      # gets to certify it closed.
+      if ($3 == raiser[id]) fail("self-resolve: the raiser of " id " cannot record it fixed")
+      seen[id] = 1
+      print
+    }
+  '
+}
+
 provider_of_copy() { # <doc> <copy> -> provider (exact suffix after "<doc>.")
   local doc="$1" copy="$2"
   local p="${copy#${doc}.}"   # exact prefix strip (r8), not ${##*.}
@@ -710,9 +781,14 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
   # silently missing an observation.
   obs="$(cmd_observations "$doc")" || die "cannot compose: contract violation in $doc" 1
 
+  # Findings agreed in an earlier round and since fixed (issue #88). Same `|| die` reasoning as the
+  # line above: an unchecked status here would publish a review whose open list silently includes
+  # work the author already did. Dormant when there are none.
+  local rsv; rsv="$(cmd_resolved "$doc")" || die "cannot compose: contract violation in $doc" 1
+
   # _table columns (tab-separated): id, raiser, state, responder, concern, dwhy, sev, risk.
   # Use awk -F'\t' to avoid bash IFS-whitespace collapsing of adjacent empty tab fields.
-  printf '%s\n' "$t" | OBS="$obs" QLIST="$qlist" QPROV="$qprov" awk -F'\t' -v primary="$primary" '
+  printf '%s\n' "$t" | OBS="$obs" QLIST="$qlist" QPROV="$qprov" RSV="$rsv" awk -F'\t' -v primary="$primary" '
     function emit(want,   lvl, i, levels) {
       split("high med low", levels, " ")
       for (lvl = 1; lvl <= 3; lvl++)
@@ -720,7 +796,15 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
           if (st[i] == want && sv[i] == levels[lvl]) print txt[i]
       print ""
     }
-    BEGIN { n=0; agreed_n=0; dissent_n=0; open_n=0; nsec=0 }
+    BEGIN {
+      n=0; agreed_n=0; dissent_n=0; open_n=0; fixed_n=0; nsec=0
+      nr = split(ENVIRON["RSV"], rrec, "\n")
+      for (ri = 1; ri <= nr; ri++) {
+        if (rrec[ri] == "") continue
+        split(rrec[ri], rf, "\t")
+        rnote[rf[1]] = rf[2]
+      }
+    }
     NF < 3 { next }
     {
       id=$1; raiser=$2; state=$3; resp=$4; concern=$5; dwhy=$6; sev=$7; risk=$8
@@ -729,19 +813,28 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
       line = emoji " " sev " — " concern " — risk: " risk
       if (state == "dissent")   line = line " — flagged by " raiser "; " resp " disputes: " dwhy
       else if (state == "open") line = line " — raised by " raiser ", no response yet"
+      # An agreed finding with a resolved record is NOT part of the open worklist. Leaving it in
+      # the agreed list is the whole of issue #88: it tells the author to fix what they fixed.
+      # cmd_resolved has already refused any record whose finding is not agreed, so the state
+      # test here cannot admit a disputed or unanswered one.
+      else if (state == "agreed" && (id in rnote)) { state = "fixed"; line = line " — ✅ " rnote[id] }
       n++; st[n]=state; sv[n]=sev; txt[n]=line
       if (state == "agreed")       agreed_n++
       else if (state == "dissent") dissent_n++
       else if (state == "open")    open_n++
+      else if (state == "fixed")   fixed_n++
     }
     END {
       printf "## Multi-review\n\n"
-      if (agreed_n == 0 && dissent_n == 0 && open_n == 0) {
+      if (agreed_n == 0 && dissent_n == 0 && open_n == 0 && fixed_n == 0) {
         printf "No findings.\n\n"
       } else {
         if (agreed_n  > 0) { printf "**Agreed findings (%d)**\n", agreed_n;  emit("agreed") }
         if (dissent_n > 0) { printf "**Disagreements (%d)**\n",   dissent_n; emit("dissent") }
         if (open_n    > 0) { printf "**Open / unresolved (%d)**\n", open_n;  emit("open") }
+        # Last among the finding sections: what the author still has to act on comes first, and
+        # what the review is reporting closed is confirmation rather than work.
+        if (fixed_n   > 0) { printf "**Fixed during review (%d)**\n", fixed_n; emit("fixed") }
       }
       # Primary observations (issue #63). Each line carries its OWN via (codex-rd1-r1): nothing
       # restricts [observation] to the primary — cmd_observations requires a via line and never
@@ -785,9 +878,13 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
   '
 }
 
-cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored finding
-  local doc="${1:?doc}" t
+cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored+unresolved finding
+  local doc="${1:?doc}" t rsv_ids
   t="$(_table "$doc")" || die "cannot compose inline: contract violation in $doc" 1
+  # Findings recorded fixed (issue #88) get no inline comment. Two reasons, either sufficient: a
+  # comment on code the author has already fixed is noise, and after a `refresh` the anchor may no
+  # longer land on a changed line at all, so the remap would either fail or point somewhere new.
+  rsv_ids="$(cmd_resolved "$doc" | awk -F"\t" 'NF{print $1}')" || die "cannot compose inline: contract violation in $doc" 1
   local rec id raiser state resp concern sev risk anchor path start end body emoji
   while IFS= read -r rec; do
     [[ -n "$rec" ]] || continue
@@ -799,6 +896,7 @@ cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored f
     sev="$(awk -F'\t' '{print $7}' <<< "$rec")"
     risk="$(awk -F'\t' '{print $8}' <<< "$rec")"
     [[ "$state" == "agreed" ]] || continue
+    printf '%s\n' "$rsv_ids" | grep -qxF "$id" && continue
     anchor="$(anchor_of "$doc" "$id")" || die "cannot compose inline: contract violation in $doc" 1
     [[ -n "$anchor" ]] || continue
     path="$(awk -F'\t' '{print $1}' <<< "$anchor")"
@@ -974,8 +1072,10 @@ cmd_blind_check() { # <copy> -> 0 blind, 1 carries a prior round (offenders on s
 
   live="$(strip_fences "$copy")"
   # Every control line a previous round leaves behind: a secondary's findings, and the primary's
-  # responses/observations. Any one of them means this copy is not blind.
-  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|no-findings)[]:]' || true)"
+  # responses/observations/resolutions. Any one of them means this copy is not blind. A leaked
+  # `[resolved:]` is strictly worse than a bare `[agree:]` — it names a defect AND tells the
+  # secondary the primary already closed it (issue #88).
+  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)"
   # The footer mirrors the merged manifest, so its presence alone proves the copy was merged into.
   # ANCHORED to the footer's real shape — a whole line, opening at column 1 and closing on the same
   # line — the way merge and _structural_consistency already count it. An unanchored substring also
@@ -1010,6 +1110,10 @@ _structural_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
   # finding id (issue #16 symptoms 1 & 3-orphan). Capture the parsed table: it is the AUTHORITATIVE
   # list of findings the rest of the tool (open-findings, coverage, gate-summary) can see.
   local tbl; tbl="$(_table "$doc")" || return 1
+  # resolved records (#88) — the same cross-checks the composers apply, run from the one place
+  # verify, merge and check-converged all share, so a contradictory record fails at the handoff
+  # instead of first surfacing when the review is being published.
+  cmd_resolved "$doc" >/dev/null || { echo "multi-review-star: verify: undisclosed or contradictory [resolved:] record" >&2; return 1; }
   # a merged doc always has a manifest.
   [[ -f "${doc}.manifest" ]] || { echo "multi-review-star: verify: no manifest (never merged): ${doc}.manifest" >&2; return 1; }
 
@@ -1391,6 +1495,20 @@ cmd_gate_summary() {
       printf "Primary agreed with %d findings, DISPUTED %d (of %d across %d secondaries).\n\n", a+0, d+0, n+0, nsec+0
       if(d>0){ print "Disputes (high→low):"; emit("dissent"); print "" }
     }'
+
+  # Findings agreed earlier and recorded fixed since (issue #88). The gate is where a human decides
+  # whether to publish, and "10 of these 12 are already fixed" changes that decision — so the claim
+  # is shown here BEFORE the publish, not only inside the composed comment. It is a primary claim
+  # and is labelled as one: nothing can mechanically verify that a prose finding was fixed, so the
+  # human gate is the only thing standing behind it. Dormant when there are none.
+  local rsv rsv_n
+  rsv="$(cmd_resolved "$doc")" || die "gate-summary: contract violation in $doc" 1
+  rsv_n="$(printf '%s\n' "$rsv" | grep -c . || true)"
+  if [[ "$rsv_n" -gt 0 ]]; then
+    echo "Of those agreed, ${rsv_n} recorded fixed since (primary claim, not mechanically verified):"
+    printf '%s\n' "$rsv" | awk -F'\t' 'NF{ printf "  - %s — %s (via %s)\n", $1, $2, $3 }'
+    echo
+  fi
 
   # Evidentiary quality of the review, not just its findings. A `high`/`med` claim with no stated
   # mechanism is the shape that was consistently speculative (issue #29), and the gate is where a
@@ -1779,6 +1897,7 @@ main() {
     available) cmd_available "$@" ;;
     open-findings) cmd_open_findings "$@" ;;
     observations) cmd_observations "$@" ;;
+    resolved) cmd_resolved "$@" ;;
     check-primary-id) cmd_check_primary_id "$@" ;;
     merge) cmd_merge "$@" ;;
     verify) cmd_verify "$@" ;;

@@ -770,7 +770,7 @@ mutations() {
   # still pass while the gate reports N INDEPENDENT secondaries.
   mutate 'star/blind-check-records' 'scripts/multi-review-star.sh' replace \
     "a copy carrying round 1's findings passed as blind" 'multi-review-star.test.sh' \
-    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)\"" \
     '  records=""'
 
   # The footer is an independent tell: it mirrors the merged manifest, so its presence alone proves
@@ -794,8 +794,8 @@ mutations() {
   # exact blind spot #50 exists to close, and every other guard still passes.
   mutate 'star/blind-check-no-findings' 'scripts/multi-review-star.sh' replace \
     "a copy carrying a previous round's [no-findings] passed as blind (issue #50)" 'multi-review-star.test.sh' \
-    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\"" \
-    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation)[]:]' || true)\""
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved)[]:]' || true)\""
 
   # Without the die, a copy that claims it found nothing while appending findings merges those
   # findings AND reports the turn as clean — the gate reads a contradiction as a clean turn.
@@ -2099,6 +2099,147 @@ mutations() {
     'crossref coverage read a stale first record instead of the most recent' 'multi-review-star.test.sh' \
     '    | tail -1' \
     '    | head -1'
+
+  # --- `> [resolved:]` (issue #88) -------------------------------------------------------------
+  # Every one of these guards decides whether something FALSE reaches the author: a resolved
+  # record either closes a finding the review did not agree with, or leaves a fixed one on the
+  # open worklist. The composers are the last step before publication, so a guard that cannot
+  # fail here is a guard that publishes the lie #88 is about.
+
+  # The via requirement. Without the fail(), a record with no disclosure is silently DROPPED — the
+  # finding quietly returns to the open list and the review under-reports what was fixed, with no
+  # error anywhere. Same rule the observation reader enforces for the same reason.
+  mutate 'star/resolved-via-required' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted a record with no via' 'multi-review-star.test.sh' \
+    '        else { fail("resolved record " pid " not followed by a \"> — via <model>\" line") }' \
+    '        else { pend = 0; next }'
+
+  # The END-of-input arm of the same requirement, reached when the record is the LAST thing in the
+  # doc — which is exactly where a primary appending records lands. Not redundant with the entry
+  # above: that one fires on the next-line branch and this one cannot be reached through it.
+  mutate 'star/resolved-via-required-eof' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted a trailing record with no via' 'multi-review-star.test.sh' \
+    '    END { if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line") }' \
+    '    END { }'
+
+  # The non-empty model requirement. A bare "> — via " strips to an empty model and publishes a
+  # fix claim attributed to nobody — the one thing CLAUDE.md section 8 requires of agent content.
+  mutate 'star/resolved-via-nonempty' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted an empty model' 'multi-review-star.test.sh' \
+    '        if (line ~ /^> — via [^[:space:]]/) {' \
+    '        if (line ~ /^> — via/) {'
+
+  # The non-empty note requirement. The note is the entire payload the author reads ("fixed at
+  # which head, how?"); without it the record publishes a bare assertion under a fixed heading.
+  mutate 'star/resolved-note-required' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted an empty note' 'multi-review-star.test.sh' \
+    '        if (ptxt == "") fail("empty note on resolved record: " pid)' \
+    '        if (ptxt == "" && 0) fail("empty note on resolved record: " pid)'
+
+  # Unknown finding id. It sits IN FRONT of the not-agreed check, which would also fire on a
+  # missing id — so the covering assertion matches the MESSAGE, not merely the exit code. An
+  # exit-code-only assertion here would be the unfalsifiable shape section 11 is about: green
+  # whether or not this line exists.
+  mutate 'star/resolved-unknown-id' 'scripts/multi-review-star.sh' delete \
+    'resolved accepted an unknown finding id, or blamed the wrong thing' 'multi-review-star.test.sh' \
+    '      if (!(id in state)) fail("resolved record names an unknown finding id: " id)'
+
+  # Not-agreed. "The review rejected this, and also it is fixed" is a contradiction, and rendering
+  # it publishes as closed a defect the review declined to accept — or closes one nobody
+  # adjudicated at all, skipping the adjudication step entirely.
+  mutate 'star/resolved-must-be-agreed' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted a record on a disputed finding' 'multi-review-star.test.sh' \
+    '      if (state[id] != "agreed") fail("resolved record on a finding the review did not agree with (" state[id] "): " id)' \
+    '      if (0) fail("resolved record on a finding the review did not agree with (" state[id] "): " id)'
+
+  # Duplicate records for one finding. Two notes naming different heads both render, so the
+  # published review contradicts itself about where the fix landed.
+  mutate 'star/resolved-duplicate' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted two records for one finding' 'multi-review-star.test.sh' \
+    '      if (id in seen) fail("duplicate resolved record for finding: " id)' \
+    '      if (0 && id in seen) fail("duplicate resolved record for finding: " id)'
+
+  # Self-resolve. Mirrors _table self-response guard: a secondary that raised a finding must not
+  # also certify it closed, which would let one party both open and shut its own item.
+  mutate 'star/resolved-self-resolve' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted a self-resolve' 'multi-review-star.test.sh' \
+    '      if ($3 == raiser[id]) fail("self-resolve: the raiser of " id " cannot record it fixed")' \
+    '      if (0 && $3 == raiser[id]) fail("self-resolve: the raiser of " id " cannot record it fixed")'
+
+  # The reclassification itself — the line that IS issue #88. Without it a resolved finding stays
+  # in the agreed count and the composed comment tells the author to fix what they already fixed.
+  mutate 'star/compose-review-resolved-reclassify' 'scripts/multi-review-star.sh' delete \
+    'compose-review still counts a resolved finding as agreed' 'multi-review-star.test.sh' \
+    '      else if (state == "agreed" && (id in rnote)) { state = "fixed"; line = line " — ✅ " rnote[id] }'
+
+  # The fixed section. Without it the reclassified findings are counted out of the agreed list and
+  # then rendered nowhere — silently deleting them from the published review, which is worse than
+  # the bug being fixed.
+  mutate 'star/compose-review-fixed-section' 'scripts/multi-review-star.sh' delete \
+    'compose-review has no fixed-during-review section' 'multi-review-star.test.sh' \
+    '        if (fixed_n   > 0) { printf "**Fixed during review (%d)**\n", fixed_n; emit("fixed") }'
+
+  # The fixed_n term in the no-findings test. Without it, a review whose every finding was fixed
+  # prints "No findings." above a section listing them — the same false message, inverted.
+  mutate 'star/compose-review-no-findings-counts-fixed' 'scripts/multi-review-star.sh' replace \
+    'compose-review said No findings. on a review that raised and fixed one' 'multi-review-star.test.sh' \
+    '      if (agreed_n == 0 && dissent_n == 0 && open_n == 0 && fixed_n == 0) {' \
+    '      if (agreed_n == 0 && dissent_n == 0 && open_n == 0) {'
+
+  # The status check on the resolved read. The pipefail-vs-unchecked-status distinction #59 shipped:
+  # without `|| die` the refusal prints to stderr and compose carries on, publishing a review whose
+  # open list silently includes work the author already did.
+  mutate 'star/compose-review-resolved-status' 'scripts/multi-review-star.sh' replace \
+    'compose-review composed despite a malformed resolved' 'multi-review-star.test.sh' \
+    '  local rsv; rsv="$(cmd_resolved "$doc")" || die "cannot compose: contract violation in $doc" 1' \
+    '  local rsv; rsv="$(cmd_resolved "$doc")"'
+
+  # compose-inline skipping resolved findings. Without it the author gets an inline comment on a
+  # line they already fixed — and after a refresh that anchor may point at unrelated code.
+  mutate 'star/compose-inline-skip-resolved' 'scripts/multi-review-star.sh' delete \
+    'compose-inline posted an inline comment on a resolved finding' 'multi-review-star.test.sh' \
+    "    printf '%s\n' \"\$rsv_ids\" | grep -qxF \"\$id\" && continue"
+
+  # The same status check on the inline path, which pr.sh calls independently of compose-review
+  # (see cmd_post_review): a malformed doc must fail the post, never degrade to a full inline set.
+  mutate 'star/compose-inline-resolved-status' 'scripts/multi-review-star.sh' replace \
+    'compose-inline composed despite a malformed resolved' 'multi-review-star.test.sh' \
+    '  rsv_ids="$(cmd_resolved "$doc" | awk -F"\t" '"'"'NF{print $1}'"'"')" || die "cannot compose inline: contract violation in $doc" 1' \
+    '  rsv_ids="$(cmd_resolved "$doc" | awk -F"\t" '"'"'NF{print $1}'"'"')"'
+
+  # blind-check must treat a leaked resolved record as non-blind. It leaks strictly more than the
+  # `[agree:]` already in this class: the defect AND the fact the primary closed it.
+  mutate 'star/blind-check-resolved' 'scripts/multi-review-star.sh' replace \
+    'blind-check passed a copy carrying a resolved record' 'multi-review-star.test.sh' \
+    "  records=\"\$(printf '%s\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\""
+
+  # The verify/merge handoff check. Without it a contradictory record first surfaces at publish
+  # time, which is issue #16 rule (fail loud at the handoff, do not accumulate to the gate).
+  mutate 'star/verify-resolved-consistency' 'scripts/multi-review-star.sh' replace \
+    'verify missed a resolved naming an unknown finding' 'multi-review-star.test.sh' \
+    '  cmd_resolved "$doc" >/dev/null || { echo "multi-review-star: verify: undisclosed or contradictory [resolved:] record" >&2; return 1; }' \
+    '  true'
+
+  # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
+  # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent
+  # gate summary means the human approves a claim they were never shown.
+  mutate 'star/gate-resolved-line' 'scripts/multi-review-star.sh' delete \
+    'gate-summary is silent about resolved findings' 'multi-review-star.test.sh' \
+    '    echo "Of those agreed, ${rsv_n} recorded fixed since (primary claim, not mechanically verified):"'
+
+  # ...and stays dormant at zero, so a review with nothing resolved reads exactly as it did before.
+  mutate 'star/gate-resolved-dormant' 'scripts/multi-review-star.sh' replace \
+    'gate-summary emitted a zero resolved line' 'multi-review-star.test.sh' \
+    '  if [[ "$rsv_n" -gt 0 ]]; then' \
+    '  if [[ "$rsv_n" -ge 0 ]]; then'
+
+  # The status check on the gate path. Same shape as the composers: summarising past a contract
+  # violation hands the human a number the document does not support.
+  mutate 'star/gate-resolved-status' 'scripts/multi-review-star.sh' replace \
+    'gate-summary summarised despite a malformed resolved' 'multi-review-star.test.sh' \
+    '  rsv="$(cmd_resolved "$doc")" || die "gate-summary: contract violation in $doc" 1' \
+    '  rsv="$(cmd_resolved "$doc")"'
 
   # The crossref prompt's empty-rows-file guard — `rows` itself never produces an empty file
   # (it dies exit 3 first), but a hand-built or truncated one can, and unguarded this would

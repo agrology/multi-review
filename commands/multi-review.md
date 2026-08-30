@@ -873,7 +873,30 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    naming the model that raised it, so a defect you found yourself reaches the author. A
    missing `> — via` line is a contract error, and now a publishing one: `compose-review`
    refuses to compose without it.
-4. Decide: **converge**, or re-enter `awaiting-secondaries` for another round.
+4. **Round N ≥ 2 only — record what the author already fixed.** You have just re-read a
+   refreshed diff at a new head. For every finding you agreed with in an EARLIER round that this
+   push has fixed, append:
+
+       > [resolved:<ns-id>] <what changed, at which head>
+       > — via <primary-model-id>
+
+   Leave the finding's `[agree:]` in place — this is an annotation, not a response, and
+   convergence is unaffected. `compose-review` then lists it under **Fixed during review** rather
+   than in the open worklist, and `compose-inline` posts no comment on the line.
+
+   **Skipping this is not neutral.** Everything you agreed to in round 1 is still in the doc, and
+   without a record the composed review republishes all of it as currently-open — in the run that
+   filed issue #88, 10 of 12 round-1 findings had been fixed and the comment still opened with a
+   🔴 the author had resolved. To the author that reads as "you fixed nothing", and it costs them
+   a pass through items already closed. Nothing else catches it: `verify` passes,
+   `check-converged` passes, and the composed body looks well-formed.
+
+   Record only what you **checked in the refreshed diff**. It is a claim a human approves at the
+   gate and nothing can verify it mechanically, so `gate-summary` prints it as a primary claim.
+   The helpers refuse a record that names an unknown finding, one you disputed or never answered,
+   a second record for the same finding, or one disclosed under the raiser's own model id.
+
+5. Decide: **converge**, or re-enter `awaiting-secondaries` for another round.
 
    First run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh round-stats "<doc>"`. It prints
    the per-round × per-provider counts, the trend, any dry streaks, and a `verdict:` line.
