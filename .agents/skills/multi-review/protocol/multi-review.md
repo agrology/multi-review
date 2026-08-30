@@ -127,7 +127,14 @@ verify a prose finding was actually fixed, so it is a primary claim — `gate-su
 one before the human approves the publish.
 
 **Secondaries never write `[resolved:]`.** It belongs to the primary, exactly as `[agree:]` and
-`[dispute:]` do, and a copy carrying one fails `blind-check`.
+`[dispute:]` do. Both directions are checked: a copy *seeded* with one fails `blind-check`, and a
+copy that *comes back* having authored one fails `channel-check` and is quarantined — without
+that second check a reviewer-authored record merges verbatim and publishes another provider's
+finding as fixed under the primary's own review.
+
+A record may only name a finding from an **earlier** round. It describes a fix the author pushed
+between rounds, so on a current-round finding there was no between; `cmd_resolved` refuses one,
+reading the round from the document's own state marker.
 
 Convergence is **coverage, not consensus**: every merged finding needs exactly one
 `agree`/`dispute`; disputes are expected and do not block. The human gate settles disputes.

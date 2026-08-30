@@ -2985,6 +2985,48 @@ out="$(bash "$SUT" resolved "$RS12" 2>/dev/null)"; rc=$?
   && ok "resolved: a tab in the note is normalised, keeping the record three fields" \
   || bad "resolved emitted a tabbed note as extra fields (out='$out' rc=$rc)"
 
+# --- earlier-round only (fable-rd1-r4 + codex-rd1-r1, raised independently by two vendors) ---
+
+# `[resolved:]` describes a fix the author pushed BETWEEN rounds. A record on a CURRENT-round
+# finding cannot: there was no between. Publishing it removes an item the author must still act on
+# from the worklist AND drops its inline comment — issue #88's harm exactly inverted. The rule was
+# documented ("From round 2") and enforced by nothing.
+# mkstar emits no state marker, so these fixtures carry one explicitly.
+mkround() { local p="${WORK}/$1" rd="$2"; shift 2
+  { echo "# Doc"; echo "<!-- multi-review: awaiting-primary · round ${rd}/5 -->";
+    echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo; printf '%s\n' "$@"; } > "$p"; echo "$p"; }
+
+# same-round record -> refused
+RR1="$(mkround rsv-same-round.md 1 \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
+err="$(bash "$SUT" resolved "$RR1" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"round"* ]] \
+  && ok "resolved: a record on a CURRENT-round finding is refused" \
+  || bad "resolved accepted a same-round record (err='$err' rc=$rc)"
+
+# earlier-round record in a later round -> accepted
+RR2="$(mkround rsv-earlier-round.md 2 \
+  '> [finding:codex-rd1-a|high] a concern' '> — via gpt-5.5' '> — risk: some risk' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
+out="$(bash "$SUT" resolved "$RR2" 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 && "$out" == "codex-rd1-a"$'\t'"fixed at deadbee"$'\t'"claude-opus-4-8" ]] \
+  && ok "resolved: an earlier-round record in a later round is accepted" \
+  || bad "resolved refused a legitimate earlier-round record (out='$out' rc=$rc)"
+
+# a CURRENT-round finding in round 2 is still refused, alongside a legitimate earlier-round one
+RR3="$(mkround rsv-mixed-round.md 2 \
+  '> [finding:codex-rd1-a|high] earlier' '> — via gpt-5.5' '> — risk: r' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
+  '> [finding:codex-rd2-b|med] current' '> — via gpt-5.5' '> — risk: r' \
+  '> [agree:codex-rd2-b]' '> — via claude-opus-4-8' \
+  '> [resolved:codex-rd2-b] fixed at deadbee' '> — via claude-opus-4-8')"
+err="$(bash "$SUT" resolved "$RR3" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && ok "resolved: a round-2 record during round 2 is refused" \
+  || bad "resolved accepted a same-round record in a later round (err='$err' rc=$rc)"
+
 # --- compose-review: the counts stop lying ---
 
 # (k) a resolved finding leaves the open worklist and lands under its own heading, with its note
@@ -3094,6 +3136,34 @@ out="$(bash "$SUT" gate-summary "$GS2" claude-opus-4-8 2>/dev/null)"; rc=$?
 [[ "$out" != *"recorded fixed since"* && $rc -eq 0 ]] \
   && ok "gate-summary: no resolved line when nothing was resolved" \
   || bad "gate-summary emitted a zero resolved line (rc=$rc)"
+
+# --- channel-check: a reviewer must not author a PRIMARY-only resolved record (fable-rd1-r1) ---
+
+# blind-check protects the SEED direction only — it runs before dispatch. Nothing checked what a
+# copy came BACK with, and `namespace_blocks` copies a returned review section verbatim (it
+# rewrites `[finding:` ids and nothing else). Reproduced on PR #102: a round-2 copy carrying
+# `> [resolved:codex-rd1-a]` under its own via merged with rc=0, landed in the doc, and was
+# accepted by `cmd_resolved` — publishing another provider's finding as "Fixed during review",
+# indistinguishable from a primary claim.
+CCS="${WORK}/cc-rsv.seed"; CCC="${WORK}/cc-rsv.copy"
+{ echo "# D"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$CCS"
+cp "$CCS" "$CCC"
+# The copy also raises a REAL finding. Without it the turn adds nothing else and is already
+# refused by the non-response arm — which would make this assertion pass whether or not the
+# resolved guard exists, i.e. a test that cannot fail. Isolate the guard.
+printf '> [finding:a|med] a real concern\n> — via gemini-pro-latest\n> — risk: r\n' >> "$CCC"
+printf '> [resolved:codex-rd1-a] fixed at abc123\n> — via gemini-pro-latest\n' >> "$CCC"
+bash "$SUT" channel-check --seed "$CCS" "$CCC" >/dev/null 2>&1 \
+  && bad "channel-check admitted a copy that authored a primary-only resolved record" \
+  || ok "channel-check: a reviewer-authored resolved record is refused"
+
+# ...and a copy that adds ordinary findings is unaffected — the guard keys on the marker, not on
+# the copy having grown
+CCF="${WORK}/cc-rsv-ok.copy"; cp "$CCS" "$CCF"
+printf '> [finding:a|med] a real concern\n> — via gemini-pro-latest\n> — risk: r\n' >> "$CCF"
+bash "$SUT" channel-check --seed "$CCS" "$CCF" >/dev/null 2>&1 \
+  && ok "channel-check: an ordinary finding turn still passes" \
+  || bad "channel-check false-failed a normal reviewer turn"
 
 # --- blind-check: a leaked resolved record breaks independence ---
 
