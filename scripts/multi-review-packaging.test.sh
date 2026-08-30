@@ -1187,4 +1187,18 @@ else
     || ok "command: step 2 does not say the symcheck worklist is derived every round"
 fi
 
+# --- the re-fan branch must run `verify` BEFORE bumping the marker (fable-rd2-r1) ---
+# cmd_resolved's earlier-round check reads the round from the marker AT CALL TIME, so a
+# `[resolved:]` record written against a current-round finding is only visible while the marker
+# still names the round it was written in. Bump first and it reads as an earlier-round record and
+# passes every later consumer. Converging catches it; re-fanning is the path that does not, so
+# scheduling this check is what makes the guard reachable on that path at all.
+RFV="${ROOT}/commands/multi-review.md"
+n="$(grep -n 'Edit the marker directly' "$RFV" | head -1 | cut -d: -f1)"
+if [[ -n "$n" ]] && sed -n "1,${n}p" "$RFV" | tail -16 | grep -q 'verify.*BEFORE you touch the marker'; then
+  ok "command: the re-fan branch runs verify before the marker bump"
+else
+  bad "command: nothing schedules verify before the marker bump — the earlier-round guard is unreachable on the re-fan path (fable-rd2-r1)"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

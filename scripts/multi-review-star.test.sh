@@ -3027,6 +3027,19 @@ err="$(bash "$SUT" resolved "$RR3" 2>&1 >/dev/null)"; rc=$?
 [[ $rc -ne 0 ]] && ok "resolved: a round-2 record during round 2 is refused" \
   || bad "resolved accepted a same-round record in a later round (err='$err' rc=$rc)"
 
+# A MALFORMED state marker is not the same as an absent one (codex-rd2-r1). `core.sh marker`
+# exits 1 for both, so an unchecked read leaves `cur` empty and the earlier-round guard silently
+# stands down — on a live review document, which is exactly where it must not.
+RRB="${WORK}/rsv-bad-marker.md"
+{ echo "# Doc"; echo "<!-- multi-review: nonsense-state -->"; echo "<!-- multi-review-mode: star -->";
+  echo; echo "## Review"; echo;
+  echo '> [finding:codex-rd2-b|high] a concern'; echo '> — via gpt-5.5'; echo '> — risk: r';
+  echo '> [agree:codex-rd2-b]'; echo '> — via claude-opus-4-8';
+  echo '> [resolved:codex-rd2-b] fixed at deadbee'; echo '> — via claude-opus-4-8'; } > "$RRB"
+err="$(bash "$SUT" resolved "$RRB" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && ok "resolved: a malformed state marker refuses rather than standing down" \
+  || bad "resolved treated a malformed marker as markerless and skipped the round guard (err='$err' rc=$rc)"
+
 # --- compose-review: the counts stop lying ---
 
 # (k) a resolved finding leaves the open worklist and lands under its own heading, with its note

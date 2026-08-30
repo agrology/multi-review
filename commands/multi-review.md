@@ -934,6 +934,19 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    a saturated reviewer can still catch something in newly written text. Surface the streak at
    the gate and let the engineer decide.
 
+   **Run `verify` BEFORE you touch the marker** — not optional on the re-fan branch:
+
+       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh verify "<doc>"
+
+   `cmd_resolved`'s earlier-round check reads the round from the marker **at call time**, so a
+   `[resolved:]` record written against a CURRENT-round finding is only visible while the marker
+   still names the round it was written in. Bump to `<N+1>` first and that same record reads as
+   an earlier-round one and passes every later consumer — merge's pre-check, `check-converged`,
+   `compose-review`, `gate-summary` — so a premature "fixed" claim publishes as a valid primary
+   claim (fable-rd2-r1). Converging catches it (the terminal check runs at the same round
+   number); re-fanning is the path that does not, which is why the check belongs here rather
+   than after the edit.
+
    Edit the marker directly:
    - **Converge** → state word only: `awaiting-primary` → `converged` (same round number).
    - **Another round** → `awaiting-primary · round <N>/<MAX>` → `awaiting-secondaries · round
