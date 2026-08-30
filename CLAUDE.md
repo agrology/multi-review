@@ -346,9 +346,9 @@ If you are asked to review a doc that is under a multi-review review, read
       > — via <your-model-id>
 
   Mutually exclusive with findings; never emit both in one turn.
-- **Do not respond to findings.** `[agree:]`/`[dispute:]` belong to the primary, and a response
-  disclosed under the same model id as the finding's raiser fails the self-response guard. Do
-  not decide convergence either.
+- **Do not respond to findings.** `[agree:]`/`[dispute:]`/`[resolved:]` belong to the primary, and
+  a response disclosed under the same model id as the finding's raiser fails the self-response
+  guard. Do not decide convergence either.
 - **Flip the marker last:** after writing every finding, change `awaiting-reviewer` →
   `awaiting-author` as your final edit (the flip is the handoff). Never set any other state, and
   never edit the primary's doc or another provider's copy.
