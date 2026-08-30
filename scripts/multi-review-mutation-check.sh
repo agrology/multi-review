@@ -2136,6 +2136,32 @@ mutations() {
     '        if (ptxt == "") fail("empty note on resolved record: " pid)' \
     '        if (ptxt == "" && 0) fail("empty note on resolved record: " pid)'
 
+  # The RETURN-path guard (fable-rd1-r1, PR #102). blind-check protects only the seed direction —
+  # it runs before dispatch — so nothing examined what a copy came BACK with, and namespace_blocks
+  # copies a returned review section verbatim. Reproduced: a round-2 copy carrying
+  # `> [resolved:codex-rd1-a]` under its own via merged rc=0 and was accepted by cmd_resolved,
+  # publishing another provider finding as fixed under the primary own review.
+  mutate 'star/channel-check-reviewer-resolved' 'scripts/multi-review-star.sh' replace \
+    'channel-check admitted a copy that authored a primary-only resolved record' 'multi-review-star.test.sh' \
+    '  if (( added_resolved > 0 )); then' \
+    '  if false; then'
+
+  # Its capture pair. Counting additions against the WRONG file pair (the finding captures) makes
+  # the guard structurally unable to fire while still reading correctly — the exact shape section
+  # 11 exists to catch, and the first version of this fix shipped that way for one test run.
+  mutate 'star/channel-check-resolved-capture' 'scripts/multi-review-star.sh' replace \
+    'channel-check admitted a copy that authored a primary-only resolved record' 'multi-review-star.test.sh' \
+    '  added_resolved="$(LC_ALL=C comm -13 "$sr" "$cr" | grep -c '"'"'^'"'"' || true)"' \
+    '  added_resolved=0'
+
+  # EARLIER-ROUND-ONLY (fable-rd1-r4 + codex-rd1-r1, two vendors independently). A record on a
+  # current-round finding cannot describe a between-rounds fix; publishing it drops the item from
+  # the worklist and suppresses its inline comment — issue #88 harm inverted.
+  mutate 'star/resolved-earlier-round-only' 'scripts/multi-review-star.sh' replace \
+    'resolved accepted a same-round record' 'multi-review-star.test.sh' \
+    '        if (rd + 0 >= cur + 0) fail("resolved record on a round-" rd " finding while the review is in round " cur " — only an EARLIER round can have been fixed since: " id)' \
+    '        if (0) fail("resolved record on a round-" rd " finding while the review is in round " cur " — only an EARLIER round can have been fixed since: " id)'
+
   # Tab normalisation in the note. The record is TSV, so an un-normalised tab pushes the model into
   # field 4 and the self-resolve check compares a fragment of the NOTE against the raiser — which
   # passes anything. Not hypothetical: reproduced on the first version of this reader, with gpt-5.5

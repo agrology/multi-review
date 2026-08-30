@@ -7,6 +7,7 @@
 #   available
 #   open-findings <doc>
 #   observations <doc>
+#   resolved <doc>          -> "ns-id\tnote\tmodel" per `> [resolved:]` record (issue #88)
 #   merge --round N [--quarantined p:reason ...] [--pass <copy> ...] <doc> <copy> ...
 #   check-converged <doc>
 #   gate-summary <doc> <primary-model-id>
@@ -631,7 +632,12 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
   # Cross-checks against the adjudicated table. All four fail CLOSED — a contradictory record must
   # never render, because every one of them publishes something false to the author.
   t="$(_table "$doc")" || return 2
-  printf '%s\n' "$raw" | TBL="$t" awk -F'\t' '
+  # The round this document is currently in, read from its own state marker. Empty when the doc
+  # carries no marker — a file that is not under a live review (a unit fixture, a hand-built
+  # example), where "which round is this" has no answer and the check below stands down.
+  local cur_round
+  cur_round="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')"
+  printf '%s\n' "$raw" | TBL="$t" awk -F'\t' -v cur="${cur_round:-}" '
     function fail(m){ print "multi-review-star: " m > "/dev/stderr"; exit 2 }
     BEGIN {
       nr = split(ENVIRON["TBL"], rows, "\n")
@@ -649,6 +655,17 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
       # Mirrors _table self-response guard: the party that raised a finding is not the party that
       # gets to certify it closed.
       if ($3 == raiser[id]) fail("self-resolve: the raiser of " id " cannot record it fixed")
+      # EARLIER ROUND ONLY (fable-rd1-r4 + codex-rd1-r1, raised independently by two vendors).
+      # A record describes a fix the author pushed BETWEEN rounds; on a CURRENT-round finding
+      # there was no between, so the claim cannot be true. Publishing it drops the item from the
+      # worklist AND suppresses its inline comment — issue #88 harm, exactly inverted. The rule
+      # was documented and enforced by nothing, which is the shape this repo keeps having to fix.
+      # Round is the FIRST "-rd<n>" in the ns-id, the same parse _structural_consistency uses:
+      # robust to a hyphenated provider and to a later "-rd<n>" inside a namespaced id.
+      if (cur != "" && match(id, /-rd[0-9]+/)) {
+        rd = substr(id, RSTART + 3, RLENGTH - 3) + 0
+        if (rd + 0 >= cur + 0) fail("resolved record on a round-" rd " finding while the review is in round " cur " — only an EARLIER round can have been fixed since: " id)
+      }
       seen[id] = 1
       print
     }
@@ -955,8 +972,9 @@ cmd_channel_check() {
   [[ -f "$base" ]] || die "seed not found: $base" 2
   [[ -n "$copy" && -f "$copy" ]] || die "copy not found: ${copy:-<unset>}" 2
 
-  local sa sv ca cv sn cn added_total added_visible signalled stray
+  local sa sv ca cv sn cn sr cr added_total added_visible signalled stray added_resolved
   sa="$(mktemp)" && sv="$(mktemp)" && ca="$(mktemp)" && cv="$(mktemp)" && sn="$(mktemp)" && cn="$(mktemp)" \
+    && sr="$(mktemp)" && cr="$(mktemp)" \
     || die "cannot create temp files for channel-check" 2
   # ALL finding lines anywhere in the file...
   # LC_ALL=C so sort/comm agree byte-wise regardless of the caller's locale.
@@ -975,6 +993,11 @@ cmd_channel_check() {
   # them instead.
   review_section "$base" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$sn" || true
   review_section "$copy" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$cn" || true
+  # ...and the primary-only resolved marker, same fence-stripped review-section idiom: any doc
+  # about this protocol legitimately shows a FENCED example of the grammar, and the PR scratch
+  # under review is exactly such a doc.
+  review_section "$base" | strip_fences /dev/stdin | grep '^> \[resolved:' 2>/dev/null | LC_ALL=C sort > "$sr" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[resolved:' 2>/dev/null | LC_ALL=C sort > "$cr" || true
 
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
@@ -987,13 +1010,30 @@ cmd_channel_check() {
   # lines, so re-matching the tag here would put the pattern in TWO places — and a mutation in
   # either one would be masked by the other, leaving both individually untestable.
   signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^' || true)"
-  rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn"
+
+  # A reviewer must never author a `> [resolved:]` record (fable-rd1-r1, PR #102). blind-check
+  # protects only the SEED direction — it runs before dispatch — and nothing examined what a copy
+  # came BACK with: `namespace_blocks` copies a returned review section verbatim, rewriting
+  # `[finding:` ids and nothing else. Reproduced: a round-2 copy carrying
+  # `> [resolved:codex-rd1-a]` under its own via merged with rc=0, landed in the doc, and was
+  # accepted by cmd_resolved — publishing another provider is finding as "Fixed during review",
+  # indistinguishable from a primary claim.
+  #
+  # Scoped to `resolved` DELIBERATELY. The identical return-path hole exists for `[agree:]`,
+  # `[dispute:]` and `[observation]`, and predates this marker — flagged, not swept up here
+  # (working agreement 1.3). Widening the alternation is a separate, deliberate change.
+  added_resolved="$(LC_ALL=C comm -13 "$sr" "$cr" | grep -c '^' || true)"
+  rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn" "$sr" "$cr"
 
   # Issue #50. The signal and real findings are mutually exclusive: a reviewer cannot have
   # nothing to raise while raising things. A copy carrying both is self-contradictory, and the
   # ambiguity is not harmless — merge would ingest the findings while the signal tells the gate
   # the turn was clean. Checked here rather than at merge so the copy is still attributable to
   # ONE provider and the natural remedy (quarantine that secondary) is still available.
+  if (( added_resolved > 0 )); then
+    rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn" "$sr" "$cr"
+    die "the copy authored ${added_resolved} '> [resolved:' record(s) — that marker is the PRIMARY's, never a reviewer's. Merging would publish another provider's finding as fixed under the primary's own review." 1
+  fi
   if (( signalled > 0 && added_total > 0 )); then
     die "the copy claims '[no-findings]' while adding ${added_total} finding(s) — a turn cannot be both clean and raising concerns. Merging would ingest the findings while the gate reports the turn as clean." 1
   fi
