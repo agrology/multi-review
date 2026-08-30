@@ -2154,6 +2154,23 @@ mutations() {
     '  added_resolved="$(LC_ALL=C comm -13 "$sr" "$cr" | grep -c '"'"'^'"'"' || true)"' \
     '  added_resolved=0'
 
+  # A MALFORMED marker must refuse, not degrade (codex-rd2-r1). `core.sh marker` exits 1 for both
+  # "absent" and "unparseable", so without this the round check silently stands down on a LIVE
+  # review document — the one place it must not — while still reading correctly.
+  mutate 'star/resolved-malformed-marker-refused' 'scripts/multi-review-star.sh' replace \
+    'resolved treated a malformed marker as markerless' 'multi-review-star.test.sh' \
+    '  if [[ -z "$cur_round" ]] && grep -q '"'"'^<!-- multi-review:'"'"' "$doc"; then' \
+    '  if false; then'
+
+  # The command file must SCHEDULE verify before the re-fan marker bump (fable-rd2-r1). The
+  # earlier-round check reads the round at call time, so on the re-fan path a premature record
+  # becomes retroactively legal once the marker advances; nothing in the scripts can see that,
+  # which is why the scheduling itself is the guard and is asserted in packaging.
+  mutate 'command/refan-verify-before-bump' 'commands/multi-review.md' replace \
+    'nothing schedules verify before the marker bump' 'multi-review-packaging.test.sh' \
+    '   **Run `verify` BEFORE you touch the marker** — not optional on the re-fan branch:' \
+    '   Optionally run verify at some point.'
+
   # EARLIER-ROUND-ONLY (fable-rd1-r4 + codex-rd1-r1, two vendors independently). A record on a
   # current-round finding cannot describe a between-rounds fix; publishing it drops the item from
   # the worklist and suppresses its inline comment — issue #88 harm inverted.

@@ -635,8 +635,16 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
   # The round this document is currently in, read from its own state marker. Empty when the doc
   # carries no marker — a file that is not under a live review (a unit fixture, a hand-built
   # example), where "which round is this" has no answer and the check below stands down.
-  local cur_round
-  cur_round="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')"
+  #
+  # A MALFORMED marker is NOT that case (codex-rd2-r1). `core.sh marker` exits 1 for both, so an
+  # unchecked read leaves cur empty and the round check silently stands down on a live review —
+  # the one place it must not. Distinguish them by whether a marker line exists at all, and
+  # refuse rather than degrade when one does but will not parse.
+  local cur_round=""
+  cur_round="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')" || cur_round=""
+  if [[ -z "$cur_round" ]] && grep -q '^<!-- multi-review:' "$doc"; then
+    die "cannot read the review round: ${doc} carries a state marker that does not parse — a resolved record cannot be checked against an unreadable round" 2
+  fi
   printf '%s\n' "$raw" | TBL="$t" awk -F'\t' -v cur="${cur_round:-}" '
     function fail(m){ print "multi-review-star: " m > "/dev/stderr"; exit 2 }
     BEGIN {
@@ -999,6 +1007,17 @@ cmd_channel_check() {
   review_section "$base" | strip_fences /dev/stdin | grep '^> \[resolved:' 2>/dev/null | LC_ALL=C sort > "$sr" || true
   review_section "$copy" | strip_fences /dev/stdin | grep '^> \[resolved:' 2>/dev/null | LC_ALL=C sort > "$cr" || true
 
+  # A reviewer must never author a `> [resolved:]` record (fable-rd1-r1, PR #102). blind-check
+  # protects only the SEED direction — it runs before dispatch — and nothing examined what a copy
+  # came BACK with: `namespace_blocks` copies a returned review section verbatim, rewriting
+  # `[finding:` ids and nothing else. Reproduced: a round-2 copy carrying
+  # `> [resolved:codex-rd1-a]` under its own via merged with rc=0, landed in the doc, and was
+  # accepted by cmd_resolved — publishing another provider is finding as "Fixed during review",
+  # indistinguishable from a primary claim.
+  #
+  # Scoped to `resolved` DELIBERATELY. The identical return-path hole exists for `[agree:]`,
+  # `[dispute:]` and `[observation]`, and predates this marker — flagged, not swept up here
+  # (working agreement 1.3). Widening the alternation is a separate, deliberate change.
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
   added_total="$(LC_ALL=C comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
@@ -1011,29 +1030,18 @@ cmd_channel_check() {
   # either one would be masked by the other, leaving both individually untestable.
   signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^' || true)"
 
-  # A reviewer must never author a `> [resolved:]` record (fable-rd1-r1, PR #102). blind-check
-  # protects only the SEED direction — it runs before dispatch — and nothing examined what a copy
-  # came BACK with: `namespace_blocks` copies a returned review section verbatim, rewriting
-  # `[finding:` ids and nothing else. Reproduced: a round-2 copy carrying
-  # `> [resolved:codex-rd1-a]` under its own via merged with rc=0, landed in the doc, and was
-  # accepted by cmd_resolved — publishing another provider is finding as "Fixed during review",
-  # indistinguishable from a primary claim.
-  #
-  # Scoped to `resolved` DELIBERATELY. The identical return-path hole exists for `[agree:]`,
-  # `[dispute:]` and `[observation]`, and predates this marker — flagged, not swept up here
-  # (working agreement 1.3). Widening the alternation is a separate, deliberate change.
   added_resolved="$(LC_ALL=C comm -13 "$sr" "$cr" | grep -c '^' || true)"
   rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn" "$sr" "$cr"
+
+  if (( added_resolved > 0 )); then
+    die "the copy authored ${added_resolved} '> [resolved:' record(s) — that marker is the PRIMARY's, never a reviewer's. Merging would publish another provider's finding as fixed under the primary's own review." 1
+  fi
 
   # Issue #50. The signal and real findings are mutually exclusive: a reviewer cannot have
   # nothing to raise while raising things. A copy carrying both is self-contradictory, and the
   # ambiguity is not harmless — merge would ingest the findings while the signal tells the gate
   # the turn was clean. Checked here rather than at merge so the copy is still attributable to
   # ONE provider and the natural remedy (quarantine that secondary) is still available.
-  if (( added_resolved > 0 )); then
-    rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn" "$sr" "$cr"
-    die "the copy authored ${added_resolved} '> [resolved:' record(s) — that marker is the PRIMARY's, never a reviewer's. Merging would publish another provider's finding as fixed under the primary's own review." 1
-  fi
   if (( signalled > 0 && added_total > 0 )); then
     die "the copy claims '[no-findings]' while adding ${added_total} finding(s) — a turn cannot be both clean and raising concerns. Merging would ingest the findings while the gate reports the turn as clean." 1
   fi

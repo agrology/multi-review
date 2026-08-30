@@ -134,7 +134,9 @@ finding as fixed under the primary's own review.
 
 A record may only name a finding from an **earlier** round. It describes a fix the author pushed
 between rounds, so on a current-round finding there was no between; `cmd_resolved` refuses one,
-reading the round from the document's own state marker.
+reading the round from the document's own state marker. That read happens **at call time**, so
+the primary runs `verify` before advancing the marker to the next round — after the bump a
+same-round record reads as an earlier-round one.
 
 Convergence is **coverage, not consensus**: every merged finding needs exactly one
 `agree`/`dispute`; disputes are expected and do not block. The human gate settles disputes.
