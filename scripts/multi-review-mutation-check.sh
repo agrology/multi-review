@@ -2344,10 +2344,17 @@ mutations() {
 
   # A MISSING rows file must be a usage error, never a fallback to re-derivation: falling back
   # reintroduces #95 at exactly the moment the caller believed the check was pinned.
+  #
+  # The neuter substitutes another absent path rather than the empty string. `rowsfile=""` makes
+  # `awk … "$rowsfile"` fall back to STDIN, and with no tty attached that blocks forever — it
+  # stalled a sweep for 3h49m holding the lock, which is the "no per-suite timeout" limit this
+  # runner documents, and it would hang the CI job the same way. Production cannot reach that
+  # state (the `--rows ""` guard rejects an empty value and this guard rejects a missing file), so
+  # the fix belongs here rather than as defensive code for a case that cannot occur (§1.2).
   mutate 'crossref/check-rows-missing-is-usage-error' 'scripts/multi-review-crossref.sh' replace \
     'a missing rows file did not fail as not-found' 'multi-review-crossref.test.sh' \
     '    [[ -f "$rowsfile" ]] || die "rows file not found: $rowsfile" 2' \
-    '    [[ -f "$rowsfile" ]] || rowsfile=""'
+    '    [[ -f "$rowsfile" ]] || rowsfile="/nonexistent/rows"'
 
   # An EMPTY rows file is truncation, not "nothing to cover". `rows` never emits one (it exits 3
   # first), so passing it would report a turn that verdicted nothing as fully covered.
