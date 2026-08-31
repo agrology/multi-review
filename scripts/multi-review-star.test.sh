@@ -3178,6 +3178,47 @@ bash "$SUT" channel-check --seed "$CCS" "$CCF" >/dev/null 2>&1 \
   && ok "channel-check: an ordinary finding turn still passes" \
   || bad "channel-check false-failed a normal reviewer turn"
 
+# The same hole exists for every OTHER primary-only marker (issue #103). Convergence is coverage —
+# every merged finding needs exactly one response — so a secondary that can supply that response
+# can close a finding it was never meant to adjudicate, and `check-converged` passes.
+# Each case raises a REAL finding alongside the rogue line, so the non-response arm cannot make
+# the assertion pass vacuously (the trap that made the first version of the resolved test green
+# before its guard existed).
+ccprobe() { # <label> <rogue-line...> -> refuses?
+  local label="$1"; shift
+  local c="${WORK}/cc-${label}.copy"; cp "$CCS" "$c"
+  printf '> [finding:a|med] a real concern\n> — via gemini-pro-latest\n> — risk: r\n' >> "$c"
+  printf '%s\n' "$@" >> "$c"
+  bash "$SUT" channel-check --seed "$CCS" "$c" >/dev/null 2>&1 \
+    && bad "channel-check admitted a copy that authored a primary-only ${label} line" \
+    || ok "channel-check: a reviewer-authored ${label} line is refused"
+}
+ccprobe agree      '> [agree:codex-rd1-a]' '> — via gemini-pro-latest'
+ccprobe dispute    '> [dispute:codex-rd1-a] not a real defect' '> — via gemini-pro-latest'
+ccprobe observation '> [observation] a note only the primary may leave' '> — via gemini-pro-latest'
+
+# A FENCED example of each is documentation, not an authored line. The doc most likely to be
+# reviewed by this protocol is a doc ABOUT this protocol, so this is the #68 false-positive class:
+# the instructed remedy for a false NOT-BLIND/refusal is to re-seed, which reproduces the same
+# bytes and fails again.
+CCFENCE="${WORK}/cc-fenced.copy"; cp "$CCS" "$CCFENCE"
+printf '> [finding:a|med] a real concern\n> — via gemini-pro-latest\n> — risk: r\n' >> "$CCFENCE"
+printf '```\n> [agree:codex-rd1-a]\n> [dispute:codex-rd1-b] x\n> [observation] y\n> [resolved:codex-rd1-c] z\n```\n' >> "$CCFENCE"
+bash "$SUT" channel-check --seed "$CCS" "$CCFENCE" >/dev/null 2>&1 \
+  && ok "channel-check: fenced examples of the primary markers are not treated as authored" \
+  || bad "channel-check refused a copy whose primary-marker lines are all inside a fence"
+
+# An `[observation]` carries NO id, so it must be matched EXACTLY — not through the shared
+# `[]:]` class used for the id-bearing markers. Under that class a malformed `[observation: …]`
+# beside real findings would refuse a turn that should be admitted: fable-rd2-r4's harm, the same
+# way it bit `[no-findings]` (see star/channel-check-signal-strict).
+CCOBS="${WORK}/cc-obs-malformed.copy"; cp "$CCS" "$CCOBS"
+printf '> [finding:a|med] a real concern\n> — via gemini-pro-latest\n> — risk: r\n' >> "$CCOBS"
+printf '> [observation: not the real marker] prose a reviewer might legitimately write\n' >> "$CCOBS"
+bash "$SUT" channel-check --seed "$CCS" "$CCOBS" >/dev/null 2>&1 \
+  && ok "channel-check: a malformed observation-shaped line does not refuse a real turn" \
+  || bad "channel-check refused a turn over an [observation:-shaped line that is not the marker"
+
 # --- blind-check: a leaked resolved record breaks independence ---
 
 # A `[resolved:]` in a dispatched copy tells the secondary BOTH that a finding existed at that

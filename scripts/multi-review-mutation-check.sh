@@ -2142,17 +2142,17 @@ mutations() {
   # `> [resolved:codex-rd1-a]` under its own via merged rc=0 and was accepted by cmd_resolved,
   # publishing another provider finding as fixed under the primary own review.
   mutate 'star/channel-check-reviewer-resolved' 'scripts/multi-review-star.sh' replace \
-    'channel-check admitted a copy that authored a primary-only resolved record' 'multi-review-star.test.sh' \
-    '  if (( added_resolved > 0 )); then' \
+    'channel-check admitted a copy that authored a primary-only resolved line' 'multi-review-star.test.sh' \
+    '  if (( added_primary > 0 )); then' \
     '  if false; then'
 
   # Its capture pair. Counting additions against the WRONG file pair (the finding captures) makes
   # the guard structurally unable to fire while still reading correctly — the exact shape section
   # 11 exists to catch, and the first version of this fix shipped that way for one test run.
   mutate 'star/channel-check-resolved-capture' 'scripts/multi-review-star.sh' replace \
-    'channel-check admitted a copy that authored a primary-only resolved record' 'multi-review-star.test.sh' \
-    '  added_resolved="$(LC_ALL=C comm -13 "$sr" "$cr" | grep -c '"'"'^'"'"' || true)"' \
-    '  added_resolved=0'
+    'channel-check admitted a copy that authored a primary-only resolved line' 'multi-review-star.test.sh' \
+    '  added_primary="$(LC_ALL=C comm -13 "$sprim" "$cprim" | grep -c '"'"'^'"'"' || true)"' \
+    '  added_primary=0'
 
   # A MALFORMED marker must refuse, not degrade (codex-rd2-r1). `core.sh marker` exits 1 for both
   # "absent" and "unparseable", so without this the round check silently stands down on a LIVE
@@ -2170,6 +2170,42 @@ mutations() {
     'nothing schedules verify before the marker bump' 'multi-review-packaging.test.sh' \
     '   **Run `verify` BEFORE you touch the marker** — not optional on the re-fan branch:' \
     '   Optionally run verify at some point.'
+
+  # One entry per marker dropped from the alternation (issue #103) — the same shape
+  # star/blind-check-no-findings uses, and for the same reason: a single entry on the whole line
+  # cannot show that EACH tag is load-bearing, so losing one silently would still read as covered.
+  #
+  # `[agree:]` is the worst of the three. Convergence is COVERAGE — every merged finding needs
+  # exactly one response — so a secondary supplying that response closes a finding it was never
+  # meant to adjudicate, and check-converged passes on a review whose adjudication is not the
+  # primary's.
+  mutate 'star/channel-check-reviewer-agree' 'scripts/multi-review-star.sh' replace \
+    'channel-check admitted a copy that authored a primary-only agree line' 'multi-review-star.test.sh' \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true"
+
+  mutate 'star/channel-check-reviewer-dispute' 'scripts/multi-review-star.sh' replace \
+    'channel-check admitted a copy that authored a primary-only dispute line' 'multi-review-star.test.sh' \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true"
+
+  # `[observation]` also pins the EXACT match. Widening it to the `[]:]` class the id-bearing
+  # markers use would refuse a turn carrying a malformed `[observation: …]` beside real findings —
+  # fable-rd2-r4 harm, the same way it bit `[no-findings]`. The covering assertion is the
+  # malformed-line one, so this entry proves the exactness, not merely the presence, of the tag.
+  mutate 'star/channel-check-reviewer-observation' 'scripts/multi-review-star.sh' replace \
+    'channel-check refused a turn over an [observation:-shaped line that is not the marker' 'multi-review-star.test.sh' \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved|observation)[]:]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true"
+
+  # The SEED-side capture is deliberately redundant behind the copy-side one above: `comm -13`
+  # reports what the COPY added, so a pattern only the seed side would match adds nothing to the
+  # result. Recorded rather than omitted (section 11) so losing the copy-side narrowing surfaces
+  # here — the same reasoning as star/channel-check-signal-strict-seed.
+  mutate 'star/channel-check-primary-capture-seed' 'scripts/multi-review-star.sh' replace \
+    'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
+    "  review_section \"\$base\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$sprim\" || true" \
+    "  review_section \"\$base\" | strip_fences /dev/stdin | grep -E '^> \\[(finding):' 2>/dev/null | LC_ALL=C sort > \"\$sprim\" || true"
 
   # EARLIER-ROUND-ONLY (fable-rd1-r4 + codex-rd1-r1, two vendors independently). A record on a
   # current-round finding cannot describe a between-rounds fix; publishing it drops the item from
