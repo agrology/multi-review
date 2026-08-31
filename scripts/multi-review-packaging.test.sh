@@ -1221,5 +1221,21 @@ if (( xrc_n > 0 )) && (( xrc_missing == 0 )); then
 else
   bad "command: crossref check is not passed --rows — it re-derives, and an author edit turns a complete turn into INCOMPLETE (#95) (found=$xrc_n missing=$xrc_missing)"
 fi
+# --- the re-fan triggers must stay bounded (issue #106) ---
+# Both rules are prose, so packaging is the only thing that can notice them being dropped. The
+# failure they prevent is not a crash: it is a review that runs nine rounds without ever finding a
+# `high`, because the new-logic trigger is satisfied by construction after every productive round.
+RFB="${ROOT}/commands/multi-review.md"
+grep -q 'new-logic trigger fires AT MOST ONCE per review' "$RFB" \
+  && ok "command: the new-logic re-fan trigger is bounded to one use per review" \
+  || bad "command: the new-logic re-fan trigger is unbounded — it is a tautology, so the loop it guards has no fixed point (#106)"
+grep -q 'From round 3, re-fan only for a .med. or higher' "$RFB" \
+  && ok "command: later rounds carry a med-or-higher re-fan floor" \
+  || bad "command: no severity floor on later rounds — low-severity churn alone can re-fan indefinitely (#106)"
+# The `high` trigger must stay UNbounded: a non-trivial fix to a high is the one case where
+# re-review reliably earns its cost, and bounding it would trade the loop's cost for its value.
+grep -q 'high. trigger is deliberately NOT bounded' "$RFB" \
+  && ok "command: the high-severity re-fan trigger is explicitly left unbounded" \
+  || bad "command: the high trigger's exemption is not stated — a later edit will bound it along with the others (#106)"
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

@@ -2162,6 +2162,28 @@ mutations() {
     '  if [[ -z "$cur_round" ]] && grep -q '"'"'^<!-- multi-review:'"'"' "$doc"; then' \
     '  if false; then'
 
+  # --- re-fan bounds (issue #106) ---------------------------------------------------------------
+  # Measured on agrology/MCP-enterprise#285: nine rounds, 32 findings, ZERO `high`, new-finding
+  # rate 6,5,2,2,6,5,3,3 that never decayed. Prose rules, so packaging is the only thing that can
+  # see them go — which is exactly why each needs its own entry rather than one for the section.
+
+  mutate 'command/refan-new-logic-bounded' 'commands/multi-review.md' replace \
+    'the new-logic re-fan trigger is unbounded' 'multi-review-packaging.test.sh' \
+    '   **The new-logic trigger fires AT MOST ONCE per review** (issue #106). Read it literally and it' \
+    '   The new-logic trigger may fire whenever it applies. Read it literally and it'
+
+  mutate 'command/refan-severity-floor' 'commands/multi-review.md' replace \
+    'no severity floor on later rounds' 'multi-review-packaging.test.sh' \
+    '   **From round 3, re-fan only for a `med` or higher.** A round that agreed to nothing above `low`' \
+    '   Any severity may justify another round. A round that agreed to nothing above `low`'
+
+  # The high trigger's exemption is a rule too: without it stated, the next edit that bounds the
+  # others takes it along, and the one case where re-review reliably pays stops happening.
+  mutate 'command/refan-high-exempt' 'commands/multi-review.md' replace \
+    "the high trigger's exemption is not stated" 'multi-review-packaging.test.sh' \
+    '   The `high` trigger is deliberately NOT bounded. A non-trivial fix to a `high` is the one case' \
+    '   The `high` trigger is bounded the same way. A non-trivial fix to a `high` is the one case'
+
   # The command file must SCHEDULE verify before the re-fan marker bump (fable-rd2-r1). The
   # earlier-round check reads the round at call time, so on the re-fan path a premature record
   # becomes retroactively legal once the marker advances; nothing in the scripts can see that,
