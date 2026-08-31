@@ -1013,6 +1013,18 @@ cmd_channel_check() {
   review_section "$base" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$sprim" || true
   review_section "$copy" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$cprim" || true
 
+  # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
+  # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
+  added_total="$(LC_ALL=C comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
+  added_visible="$(LC_ALL=C comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
+  # Issue #50 (design §3 rule 3). Judged the same way: additions relative to the SEED, not
+  # presence anywhere in the copy — a reviewer is never blamed for a `[no-findings]` line it
+  # inherited (e.g. a stale prior round) rather than claimed itself.
+  # Count the additions themselves. The captures above already restricted these files to signal
+  # lines, so re-matching the tag here would put the pattern in TWO places — and a mutation in
+  # either one would be masked by the other, leaving both individually untestable.
+  signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^' || true)"
+
   # A reviewer must never author a PRIMARY-ONLY control line (issue #103; the `resolved` arm was
   # PR #102 fable-rd1-r1). blind-check protects only the SEED direction — it runs before dispatch —
   # and nothing examined what a copy came BACK with: `namespace_blocks` copies a returned review
@@ -1026,18 +1038,6 @@ cmd_channel_check() {
   # Judged as ADDITIONS relative to the seed, not presence anywhere in the copy, so a reviewer is
   # never blamed for a line it inherited. Nothing legitimate carries one: blind-check refuses a
   # seed containing any of these markers, which is the same property from the other side.
-  # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
-  # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
-  added_total="$(LC_ALL=C comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
-  added_visible="$(LC_ALL=C comm -13 "$sv" "$cv" | grep -c '^> \[finding:' || true)"
-  # Issue #50 (design §3 rule 3). Judged the same way: additions relative to the SEED, not
-  # presence anywhere in the copy — a reviewer is never blamed for a `[no-findings]` line it
-  # inherited (e.g. a stale prior round) rather than claimed itself.
-  # Count the additions themselves. The captures above already restricted these files to signal
-  # lines, so re-matching the tag here would put the pattern in TWO places — and a mutation in
-  # either one would be masked by the other, leaving both individually untestable.
-  signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^' || true)"
-
   added_primary="$(LC_ALL=C comm -13 "$sprim" "$cprim" | grep -c '^' || true)"
   rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn" "$sprim" "$cprim"
 
