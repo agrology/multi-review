@@ -2142,7 +2142,7 @@ mutations() {
   # `> [resolved:codex-rd1-a]` under its own via merged rc=0 and was accepted by cmd_resolved,
   # publishing another provider finding as fixed under the primary own review.
   mutate 'star/channel-check-reviewer-resolved' 'scripts/multi-review-star.sh' replace \
-    'channel-check admitted a copy that authored a primary-only resolved line' 'multi-review-star.test.sh' \
+    'channel-check admitted a copy that authored a primary-only resolved record' 'multi-review-star.test.sh' \
     '  if (( added_primary > 0 )); then' \
     '  if false; then'
 
@@ -2150,7 +2150,7 @@ mutations() {
   # the guard structurally unable to fire while still reading correctly — the exact shape section
   # 11 exists to catch, and the first version of this fix shipped that way for one test run.
   mutate 'star/channel-check-resolved-capture' 'scripts/multi-review-star.sh' replace \
-    'channel-check admitted a copy that authored a primary-only resolved line' 'multi-review-star.test.sh' \
+    'channel-check admitted a copy that authored a primary-only resolved record' 'multi-review-star.test.sh' \
     '  added_primary="$(LC_ALL=C comm -13 "$sprim" "$cprim" | grep -c '"'"'^'"'"' || true)"' \
     '  added_primary=0'
 
