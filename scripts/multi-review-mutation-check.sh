@@ -2351,9 +2351,17 @@ mutations() {
 
   # An EMPTY rows file is truncation, not "nothing to cover". `rows` never emits one (it exits 3
   # first), so passing it would report a turn that verdicted nothing as fully covered.
-  mutate 'crossref/check-rows-empty-rejected' 'scripts/multi-review-crossref.sh' delete \
-    'an empty rows file passed as complete coverage' 'multi-review-crossref.test.sh' \
-    '    [[ -s "$rowsfile" ]] || die "rows file is empty: $rowsfile" 2'
+  mutate 'crossref/check-rows-yields-no-rows' 'scripts/multi-review-crossref.sh' delete \
+    'a whitespace-only rows file reported a zero-verdict turn as covered' 'multi-review-crossref.test.sh' \
+    '    [[ -s "${TMPD}/want" ]] || die "rows file yields no rows (truncated?): $rowsfile" 2'
+
+  # The empty --rows VALUE guard (fable-rd1-r1). Without it, `--rows "$var"` with an unset variable
+  # sets rowsfile="" and the `[[ -n "$rowsfile" ]]` branch selects RE-DERIVATION — silently
+  # reintroducing #95 at exactly the moment the caller believed the check was pinned. Reproduced:
+  # exits 1 "incomplete turn: no verdict for row(s): S3" instead of the promised usage error.
+  mutate 'crossref/check-rows-empty-value-rejected' 'scripts/multi-review-crossref.sh' delete \
+    "check --rows '': fell back to re-derivation" 'multi-review-crossref.test.sh' \
+    '              [[ -n "$2" ]] || die "--rows requires a non-empty value" 2'
 
   # #96: the NO RECORD arm. The issue calls this out specifically — a branch that is never reached
   # is the classic unfalsifiable guard, so it must be demonstrated failing rather than assumed.

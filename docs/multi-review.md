@@ -222,8 +222,11 @@ it to the worklist the pass was dispatched with.** Without it, `check` re-derive
 document *as it is now* — but between dispatch and check the primary has been agreeing with
 findings and editing the doc, which is its job, and an edit that adds a section changes the derived
 row set. Rows the pass was never given then surface as missing verdicts, and a complete turn reports
-INCOMPLETE. A rows file that is missing or empty is a usage error rather than a silent fallback to
-re-derivation.
+INCOMPLETE. A `--rows` value that is missing, empty, or names a file that yields no rows is a usage error
+rather than a silent fallback to re-derivation. The truncation check keys on the **derived row
+count**, not the file's size: a file holding only blank lines has a non-zero size but produces no
+rows, and against a copy that verdicted nothing there is then neither a missing row nor an extra
+one — so the turn would report as fully covered.
 
 | outcome | meaning |
 |---|---|

@@ -353,7 +353,7 @@ bash "$SUT" check "$TD" "$TC" --rows "${WORK}/toctou.rows" >/dev/null 2>&1 \
 # that were never emitted" check — an empty want-set makes every verdict an extra — so an
 # exit-code-only assertion passes with this guard deleted and cannot fail.
 err="$(bash "$SUT" check "$TD" "$TC" --rows "${WORK}/empty.rows" 2>&1 >/dev/null)"; rc=$?
-[[ $rc -ne 0 ]] && grep -qF 'rows file is empty' <<<"$err" \
+[[ $rc -ne 0 ]] && grep -qF 'yields no rows' <<<"$err" \
   && ok "check --rows: an empty rows file is refused as truncation" \
   || bad "check --rows: an empty rows file passed as complete coverage (rc=$rc err='$err')"
 
@@ -366,6 +366,36 @@ err="$(bash "$SUT" check "$TD" "$TC" --rows "${WORK}/does-not-exist.rows" 2>&1 >
 [[ $rc -eq 2 ]] && grep -qF 'rows file not found' <<<"$err" \
   && ok "check --rows: a missing rows file is a usage error, not a silent re-derivation" \
   || bad "check --rows: a missing rows file did not fail as not-found (rc=$rc err='$err')"
+
+# Three holes in the rows-file guards, all one root cause: they tested PROXIES for "this file
+# yields at least one row" rather than the property itself (PR #105 review, fable-rd1-r1/r2 and
+# codex-rd1-r1 — the last two found independently by both vendors).
+
+# (a) an EMPTY --rows VALUE must not select the re-derive path. A caller passing `--rows "$var"`
+# with an unset variable would silently reintroduce #95, with no usage error anywhere.
+err="$(bash "$SUT" check "$TD" "$TC" --rows "" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 2 ]] && grep -qF 'rows' <<<"$err" \
+  && ok "check --rows: an empty value is a usage error, not a silent fallback to re-derivation" \
+  || bad "check --rows '': fell back to re-derivation (rc=$rc err='$err')"
+
+# (b) a WHITESPACE-ONLY rows file passes `[[ -s ]]` but yields no rows once blank lines are
+# dropped. Against a copy that verdicted nothing there is then no missing row and no extra row —
+# so the turn reports as FULLY COVERED. Reproduced exiting 0 before the fix: the exact outcome
+# the guard's own comment says it refuses.
+printf '\n' > "${WORK}/ws.rows"
+DISC="${WORK}/disc-only.copy"
+{ cat "$TD"; echo; echo '## Review'; echo; echo '> [crossref] — via test-model'; } > "$DISC"
+err="$(bash "$SUT" check "$TD" "$DISC" --rows "${WORK}/ws.rows" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && grep -qF 'no rows' <<<"$err" \
+  && ok "check --rows: a whitespace-only rows file is refused as truncation" \
+  || bad "check --rows: a whitespace-only rows file reported a zero-verdict turn as covered (rc=$rc err='$err')"
+
+# (c) the guard must key on the DERIVED row count, so a file of blank lines and a file of zero
+# bytes are refused identically — one property, one check, no proxy to drift.
+printf '\n\n\n' > "${WORK}/ws3.rows"
+bash "$SUT" check "$TD" "$DISC" --rows "${WORK}/ws3.rows" >/dev/null 2>&1 \
+  && bad "check --rows: a multi-blank-line rows file passed as coverage" \
+  || ok "check --rows: blank-line-only rows files are refused however many lines they have"
 
 # --- _review_verdicts guards: scoped to the LAST '## Review' heading, with fences stripped ---
 # Previously asserted only by a code comment — Task 4 exists to eliminate exactly this class.

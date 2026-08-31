@@ -202,7 +202,9 @@ cmd_check() { # <doc> <copy> [--rows <file>]
   local doc="" copy="" rowsfile="" pos=0
   while (( $# )); do
     case "$1" in
-      --rows) (( $# >= 2 )) || die "--rows requires a value" 2; rowsfile="$2"; shift 2 ;;
+      --rows) (( $# >= 2 )) || die "--rows requires a value" 2
+              [[ -n "$2" ]] || die "--rows requires a non-empty value" 2
+              rowsfile="$2"; shift 2 ;;
       *) case $pos in
            0) doc="$1" ;;
            1) copy="$1" ;;
@@ -226,14 +228,21 @@ cmd_check() { # <doc> <copy> [--rows <file>]
   #
   # A supplied file is authoritative and is never quietly abandoned: a MISSING one is a usage error
   # rather than a fallback to re-derivation, because falling back would reintroduce the defect at
-  # exactly the moment the caller believed it was pinned. An EMPTY one is a contract error for the
-  # same reason `rows` itself refuses to emit one — it means truncation, and treating it as "no
-  # rows to cover" would report a turn that verdicted nothing as fully covered.
+  # exactly the moment the caller believed it was pinned. So is an EMPTY --rows VALUE: `--rows
+  # "$var"` with an unset variable would otherwise select the re-derive path silently.
+  #
+  # The truncation guard keys on the DERIVED ROW COUNT, not on the file's size (PR #105 review,
+  # fable-rd1-r2 and codex-rd1-r1, found independently by both vendors). `[[ -s ]]` tests bytes
+  # while the want-set builder drops blank lines, so a file holding a single newline passed the
+  # guard and produced zero rows — and against a copy that verdicted nothing there is then no
+  # missing row and no extra row, so `check` exited 0 and reported a turn that verdicted NOTHING
+  # as fully covered. Building the set first and asserting IT is non-empty removes the proxy: one
+  # property, one check, nothing to drift apart.
   local rows rc=0
   if [[ -n "$rowsfile" ]]; then
     [[ -f "$rowsfile" ]] || die "rows file not found: $rowsfile" 2
-    [[ -s "$rowsfile" ]] || die "rows file is empty: $rowsfile" 2
     awk -F'\t' 'NF { print $1 }' "$rowsfile" | LC_ALL=C sort -u > "${TMPD}/want"
+    [[ -s "${TMPD}/want" ]] || die "rows file yields no rows (truncated?): $rowsfile" 2
   else
     rows="$(cmd_rows "$doc")" || {
       rc=$?
