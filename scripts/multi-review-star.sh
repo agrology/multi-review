@@ -1605,6 +1605,23 @@ cmd_gate_summary() {
       fi
     fi
     echo
+  else
+    # No durable line. Silence used to mean two different things — the doc had no sectioned
+    # structure and nobody recorded anything, OR the primary skipped the crossref wiring — so a
+    # review that never ran the pass produced a gate summary byte-identical to one from before
+    # the feature shipped (issue #96). Spec section 6 calls the announcement REQUIRED; that was
+    # enforced by prose alone, which is the class of guarantee `[no-findings]` exists to replace.
+    #
+    # Derive applicability here instead of trusting the record. Only the EXIT CODE is used, never
+    # the rows: this runs on the final doc, which by now carries every merged finding, so a count
+    # derived here would be the same unreliable re-derivation issue #95 is about. Applicability is
+    # stable under merging — findings are quote lines under `## Review`, not sections.
+    "${STAR_DIR}/multi-review-crossref.sh" rows "$doc" >/dev/null 2>&1
+    case $? in
+      3) : ;;   # not applicable: nothing was ever expected, stay dormant (the PR-scratch case)
+      0) echo "Cross-reference pass: NO RECORD — the pass was applicable and nothing was recorded"; echo ;;
+      *) echo "Cross-reference pass: applicability could not be determined — treat as unrecorded"; echo ;;
+    esac
   fi
 
   # symbol-check pass coverage (#89), same three renderings and the same dormancy rule as the

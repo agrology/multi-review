@@ -2763,6 +2763,41 @@ printf '%s' "$out_noxr" | grep -q 'Cross-reference pass' \
   && bad "gate-summary: crossref line leaked with no coverage recorded" \
   || ok "gate-summary: crossref line absent when nothing was recorded (dormant)"
 
+# --- gate-summary derives APPLICABILITY itself rather than trusting the record (issue #96) ---
+# Rendering only when a durable line is present made silence mean two different things: the doc had
+# no sectioned structure and nobody recorded anything, OR the primary skipped the crossref wiring
+# entirely. A review that never ran the pass produced a gate summary byte-identical to one from
+# before the feature shipped — the exact silence the pass exists to eliminate, one level up.
+# Spec section 6 calls the announcement REQUIRED; until now that was enforced by prose only.
+mkxrdoc() { local p="${WORK}/$1"; shift
+  { echo "# Plan"; echo '<!-- multi-review-mode: star -->'; echo
+    echo '### Task 1: one'; echo; echo '**Files:**'; echo '- Modify: `scripts/a.sh`'; echo; echo 'Edit `scripts/a.sh`.'; echo
+    echo '### Task 2: two'; echo; echo '**Files:**'; echo '- Modify: `scripts/a.sh`'; echo; echo 'Edit `scripts/a.sh`.'; echo
+    echo "## Review"; echo; printf '%s\n' "$@"; } > "$p"; echo "$p"; }
+
+# applicable + NOTHING recorded -> say so; this is the arm that must be demonstrated failing,
+# since a branch that is never reached is the classic unfalsifiable guard
+XR_NOREC="$(mkxrdoc xr-norecord.md)"
+out="$(bash "$SUT" gate-summary "$XR_NOREC" claude-opus-5 2>/dev/null)"
+grep -qF 'NO RECORD' <<<"$out" \
+  && ok "gate-summary: an applicable doc with no crossref record says NO RECORD" \
+  || bad "gate-summary: a skipped crossref pass is silent — indistinguishable from a pre-1.26 review (#96)"
+
+# applicable + recorded -> unchanged; the probe must not disturb a review that did run the pass
+XR_REC="$(mkxrdoc xr-recorded.md '> [crossref-coverage: 4/4 rows verdicted]')"
+out="$(bash "$SUT" gate-summary "$XR_REC" claude-opus-5 2>/dev/null)"
+grep -qF '4/4 rows verdicted' <<<"$out" && ! grep -qF 'NO RECORD' <<<"$out" \
+  && ok "gate-summary: an applicable doc that recorded coverage renders it, not NO RECORD" \
+  || bad "gate-summary: the applicability probe disturbed a review that did run the pass (got: $out)"
+
+# NOT applicable + nothing recorded -> stays dormant. A PR scratch has no sectioned structure, so
+# this is the common case; a NO RECORD line there would be noise on every PR review.
+XR_DORMANT="$(mkstar xr-dormant-unsectioned.md '> [finding:codex-rd1-a|low] x' '> — via gpt-5.5' '> — risk: r')"
+out="$(bash "$SUT" gate-summary "$XR_DORMANT" claude-opus-5 2>/dev/null)"
+grep -q 'Cross-reference pass' <<<"$out" \
+  && bad "gate-summary: an unsectioned doc emitted a crossref line (got: $out)" \
+  || ok "gate-summary: an unsectioned doc stays dormant, with or without a record"
+
 # --- _crossref_coverage: the MOST RECENT recorded line wins (B5, final review) ---
 # Two durable coverage lines can exist in one doc (an earlier turn's stale/incomplete record,
 # superseded by a later complete one). The gate must read the LAST one — a first-wins reading

@@ -198,21 +198,51 @@ _review_verdicts() { # <copy> -> the fence-stripped review section
   rm -f "${TMPD}/rv.$$"
 }
 
-cmd_check() { # <doc> <copy>
-  [[ $# -ge 2 ]] || die "usage: multi-review-crossref.sh check <doc> <copy>" 2
-  local doc="$1"
-  local copy="$2"
+cmd_check() { # <doc> <copy> [--rows <file>]
+  local doc="" copy="" rowsfile="" pos=0
+  while (( $# )); do
+    case "$1" in
+      --rows) (( $# >= 2 )) || die "--rows requires a value" 2; rowsfile="$2"; shift 2 ;;
+      *) case $pos in
+           0) doc="$1" ;;
+           1) copy="$1" ;;
+           *) die "unexpected argument: $1" 2 ;;
+         esac
+         pos=$((pos + 1)); shift ;;
+    esac
+  done
+  [[ -n "$doc" && -n "$copy" ]] || die "usage: multi-review-crossref.sh check <doc> <copy> [--rows <file>]" 2
   [[ -f "$doc"  ]] || die "doc not found: $doc" 2
   [[ -f "$copy" ]] || die "copy not found: $copy" 2
 
+  # The worklist to judge against is the one the pass was DISPATCHED with, when the caller can
+  # name it (issue #95). Re-deriving from the doc compares the verdicts against a row set that may
+  # no longer be the one anybody was given: the primary's job between dispatch and check is to
+  # agree with findings and EDIT the document, and an edit that adds a section changes the derived
+  # rows, so rows the pass never saw surface as missing verdicts. Reproduced live on the first real
+  # document the pass ran against — 25/25 against the dispatched baseline, INCOMPLETE against the
+  # edited doc. An INCOMPLETE at the gate is meant to mean "the pass skipped rows"; there it meant
+  # "the author did their job".
+  #
+  # A supplied file is authoritative and is never quietly abandoned: a MISSING one is a usage error
+  # rather than a fallback to re-derivation, because falling back would reintroduce the defect at
+  # exactly the moment the caller believed it was pinned. An EMPTY one is a contract error for the
+  # same reason `rows` itself refuses to emit one — it means truncation, and treating it as "no
+  # rows to cover" would report a turn that verdicted nothing as fully covered.
   local rows rc=0
-  rows="$(cmd_rows "$doc")" || {
-    rc=$?
-    # Not applicable is not a failure: there was nothing to cover.
-    (( rc == 3 )) && return 0
-    die "cannot derive rows for $doc" 1
-  }
-  awk -F'\t' '{ print $1 }' <<< "$rows" | LC_ALL=C sort -u > "${TMPD}/want"
+  if [[ -n "$rowsfile" ]]; then
+    [[ -f "$rowsfile" ]] || die "rows file not found: $rowsfile" 2
+    [[ -s "$rowsfile" ]] || die "rows file is empty: $rowsfile" 2
+    awk -F'\t' 'NF { print $1 }' "$rowsfile" | LC_ALL=C sort -u > "${TMPD}/want"
+  else
+    rows="$(cmd_rows "$doc")" || {
+      rc=$?
+      # Not applicable is not a failure: there was nothing to cover.
+      (( rc == 3 )) && return 0
+      die "cannot derive rows for $doc" 1
+    }
+    awk -F'\t' '{ print $1 }' <<< "$rows" | LC_ALL=C sort -u > "${TMPD}/want"
+  fi
 
   local rv; rv="$(_review_verdicts "$copy")"
 
