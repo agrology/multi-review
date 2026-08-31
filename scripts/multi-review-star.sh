@@ -980,9 +980,9 @@ cmd_channel_check() {
   [[ -f "$base" ]] || die "seed not found: $base" 2
   [[ -n "$copy" && -f "$copy" ]] || die "copy not found: ${copy:-<unset>}" 2
 
-  local sa sv ca cv sn cn sr cr added_total added_visible signalled stray added_resolved
+  local sa sv ca cv sn cn sprim cprim added_total added_visible signalled stray added_primary
   sa="$(mktemp)" && sv="$(mktemp)" && ca="$(mktemp)" && cv="$(mktemp)" && sn="$(mktemp)" && cn="$(mktemp)" \
-    && sr="$(mktemp)" && cr="$(mktemp)" \
+    && sprim="$(mktemp)" && cprim="$(mktemp)" \
     || die "cannot create temp files for channel-check" 2
   # ALL finding lines anywhere in the file...
   # LC_ALL=C so sort/comm agree byte-wise regardless of the caller's locale.
@@ -1001,23 +1001,31 @@ cmd_channel_check() {
   # them instead.
   review_section "$base" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$sn" || true
   review_section "$copy" | strip_fences /dev/stdin | grep '^> \[no-findings]' 2>/dev/null | LC_ALL=C sort > "$cn" || true
-  # ...and the primary-only resolved marker, same fence-stripped review-section idiom: any doc
-  # about this protocol legitimately shows a FENCED example of the grammar, and the PR scratch
-  # under review is exactly such a doc.
-  review_section "$base" | strip_fences /dev/stdin | grep '^> \[resolved:' 2>/dev/null | LC_ALL=C sort > "$sr" || true
-  review_section "$copy" | strip_fences /dev/stdin | grep '^> \[resolved:' 2>/dev/null | LC_ALL=C sort > "$cr" || true
-
-  # A reviewer must never author a `> [resolved:]` record (fable-rd1-r1, PR #102). blind-check
-  # protects only the SEED direction — it runs before dispatch — and nothing examined what a copy
-  # came BACK with: `namespace_blocks` copies a returned review section verbatim, rewriting
-  # `[finding:` ids and nothing else. Reproduced: a round-2 copy carrying
-  # `> [resolved:codex-rd1-a]` under its own via merged with rc=0, landed in the doc, and was
-  # accepted by cmd_resolved — publishing another provider is finding as "Fixed during review",
-  # indistinguishable from a primary claim.
+  # ...and every PRIMARY-ONLY marker, same fence-stripped review-section idiom: any doc about this
+  # protocol legitimately shows a FENCED example of the grammar, and the doc most likely to be
+  # reviewed by this protocol is a doc about it. Review-section scoping also keeps a PR scratch
+  # safe, whose `## PR description` and `## Diff` quote the grammar above the review channel.
   #
-  # Scoped to `resolved` DELIBERATELY. The identical return-path hole exists for `[agree:]`,
-  # `[dispute:]` and `[observation]`, and predates this marker — flagged, not swept up here
-  # (working agreement 1.3). Widening the alternation is a separate, deliberate change.
+  # `[observation]` is matched EXACTLY — `]` and nothing else — NOT through the `[]:]` class the
+  # id-bearing markers use. It carries no id, so under that class a malformed `[observation: …]`
+  # beside real findings would refuse a turn that must be admitted: fable-rd2-r4 harm, the same way
+  # it bit `[no-findings]` (see star/channel-check-signal-strict).
+  review_section "$base" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$sprim" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$cprim" || true
+
+  # A reviewer must never author a PRIMARY-ONLY control line (issue #103; the `resolved` arm was
+  # PR #102 fable-rd1-r1). blind-check protects only the SEED direction — it runs before dispatch —
+  # and nothing examined what a copy came BACK with: `namespace_blocks` copies a returned review
+  # section verbatim, rewriting `[finding:` ids and nothing else. Reproduced: a round-2 copy
+  # carrying `> [resolved:codex-rd1-a]` under its own via merged with rc=0, landed in the doc, and
+  # was accepted by cmd_resolved — publishing another provider is finding as fixed under the
+  # primary own review. `[agree:]` takes the identical path, and there it is worse: convergence is
+  # COVERAGE, so a secondary supplying the one required response can close a finding it was never
+  # meant to adjudicate, and check-converged passes.
+  #
+  # Judged as ADDITIONS relative to the seed, not presence anywhere in the copy, so a reviewer is
+  # never blamed for a line it inherited. Nothing legitimate carries one: blind-check refuses a
+  # seed containing any of these markers, which is the same property from the other side.
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
   added_total="$(LC_ALL=C comm -13 "$sa" "$ca" | grep -c '^> \[finding:' || true)"
@@ -1030,11 +1038,11 @@ cmd_channel_check() {
   # either one would be masked by the other, leaving both individually untestable.
   signalled="$(LC_ALL=C comm -13 "$sn" "$cn" | grep -c '^' || true)"
 
-  added_resolved="$(LC_ALL=C comm -13 "$sr" "$cr" | grep -c '^' || true)"
-  rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn" "$sr" "$cr"
+  added_primary="$(LC_ALL=C comm -13 "$sprim" "$cprim" | grep -c '^' || true)"
+  rm -f "$sa" "$sv" "$ca" "$cv" "$sn" "$cn" "$sprim" "$cprim"
 
-  if (( added_resolved > 0 )); then
-    die "the copy authored ${added_resolved} '> [resolved:' record(s) — that marker is the PRIMARY's, never a reviewer's. Merging would publish another provider's finding as fixed under the primary's own review." 1
+  if (( added_primary > 0 )); then
+    die "the copy authored ${added_primary} primary-only control line(s) — '[agree:', '[dispute:', '[resolved:' and '[observation]' belong to the PRIMARY, never to a reviewer. Merging would let a secondary adjudicate or close a finding under the primary's own review." 1
   fi
 
   # Issue #50. The signal and real findings are mutually exclusive: a reviewer cannot have

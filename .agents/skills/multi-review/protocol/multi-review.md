@@ -126,11 +126,13 @@ finding may not be the one that records it fixed, mirroring the self-response gu
 verify a prose finding was actually fixed, so it is a primary claim — `gate-summary` shows it as
 one before the human approves the publish.
 
-**Secondaries never write `[resolved:]`.** It belongs to the primary, exactly as `[agree:]` and
-`[dispute:]` do. Both directions are checked: a copy *seeded* with one fails `blind-check`, and a
-copy that *comes back* having authored one fails `channel-check` and is quarantined — without
-that second check a reviewer-authored record merges verbatim and publishes another provider's
-finding as fixed under the primary's own review.
+**Secondaries never write `[resolved:]`** — nor `[agree:]`, `[dispute:]` or `[observation]`.
+All four belong to the primary, and both directions are checked: a copy *seeded* with one fails
+`blind-check`, and a copy that *comes back* having authored one fails `channel-check`, which
+quarantines that provider. Without the second check such a line merges verbatim: a `[resolved:]`
+publishes another provider's finding as fixed, and an `[agree:]` is worse still — convergence is
+coverage, so a secondary supplying the one required response closes a finding it was never meant
+to adjudicate, and `check-converged` passes.
 
 A record may only name a finding from an **earlier** round. It describes a fix the author pushed
 between rounds, so on a current-round finding there was no between; `cmd_resolved` refuses one,
