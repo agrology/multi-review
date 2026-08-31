@@ -349,16 +349,23 @@ bash "$SUT" check "$TD" "$TC" --rows "${WORK}/toctou.rows" >/dev/null 2>&1 \
 # exits 3 first), so an empty file means truncation, and silently passing would report a turn
 # that verdicted nothing as fully covered
 : > "${WORK}/empty.rows"
-bash "$SUT" check "$TD" "$TC" --rows "${WORK}/empty.rows" >/dev/null 2>&1 \
-  && bad "check --rows: an empty rows file passed as complete coverage" \
-  || ok "check --rows: an empty rows file is refused"
+# Asserts the MESSAGE. A non-zero exit alone is satisfied by the downstream "verdict names rows
+# that were never emitted" check — an empty want-set makes every verdict an extra — so an
+# exit-code-only assertion passes with this guard deleted and cannot fail.
+err="$(bash "$SUT" check "$TD" "$TC" --rows "${WORK}/empty.rows" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && grep -qF 'rows file is empty' <<<"$err" \
+  && ok "check --rows: an empty rows file is refused as truncation" \
+  || bad "check --rows: an empty rows file passed as complete coverage (rc=$rc err='$err')"
 
 # a MISSING rows file is a usage error (exit 2), never a silent fallback to re-derivation:
 # falling back would reintroduce #95 exactly when the caller believed it was pinned
-bash "$SUT" check "$TD" "$TC" --rows "${WORK}/does-not-exist.rows" >/dev/null 2>&1; rc=$?
-[[ $rc -eq 2 ]] \
+# Also asserts the MESSAGE, and for the same reason: the two rows-file guards sit adjacent, so a
+# mutation that neuters this one falls through to the empty-file guard and still exits 2. Naming
+# the message is what separates them.
+err="$(bash "$SUT" check "$TD" "$TC" --rows "${WORK}/does-not-exist.rows" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 2 ]] && grep -qF 'rows file not found' <<<"$err" \
   && ok "check --rows: a missing rows file is a usage error, not a silent re-derivation" \
-  || bad "check --rows: a missing rows file did not exit 2 (rc=$rc)"
+  || bad "check --rows: a missing rows file did not fail as not-found (rc=$rc err='$err')"
 
 # --- _review_verdicts guards: scoped to the LAST '## Review' heading, with fences stripped ---
 # Previously asserted only by a code comment — Task 4 exists to eliminate exactly this class.

@@ -2345,7 +2345,7 @@ mutations() {
   # A MISSING rows file must be a usage error, never a fallback to re-derivation: falling back
   # reintroduces #95 at exactly the moment the caller believed the check was pinned.
   mutate 'crossref/check-rows-missing-is-usage-error' 'scripts/multi-review-crossref.sh' replace \
-    'a missing rows file did not exit 2' 'multi-review-crossref.test.sh' \
+    'a missing rows file did not fail as not-found' 'multi-review-crossref.test.sh' \
     '    [[ -f "$rowsfile" ]] || die "rows file not found: $rowsfile" 2' \
     '    [[ -f "$rowsfile" ]] || rowsfile=""'
 
