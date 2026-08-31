@@ -921,11 +921,36 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    - you agreed to a **`high`**-severity finding and your fix was non-trivial — the fix is now the
      least-reviewed code in the change, and highs are where the real defects were;
    - your between-round edits introduced **new logic** (not wording, not a comment, not a test
-     name) that no reviewer has seen;
+     name) that no reviewer has seen — **and this trigger has not already been used in this
+     review** (see the bound below);
    - the engineer asked for depth on this review.
 
    Otherwise converge, even when the round found plenty. "It found things" is not a reason to go
    again — round 1 finding a lot is the system working, not evidence that round 2 will.
+
+   **The new-logic trigger fires AT MOST ONCE per review** (issue #106). Read it literally and it
+   can never be false: every `agree` obliges an edit, and any edit that is not purely cosmetic is
+   new logic no reviewer has seen — so the trigger is satisfied by construction after every
+   productive round. It is not a condition, it is a tautology, and the loop it guards has no fixed
+   point.
+
+   The bound is *once* rather than *never* because the first round of fixes genuinely is the
+   least-reviewed code in the change — that is issue #29's original observation and it still
+   holds. The fifth round of fixes to the same predicate is not: by then the review is reviewing
+   itself. Measured on `agrology/MCP-enterprise#285` — nine rounds, 32 findings, **zero `high`**,
+   and a new-finding rate of 6, 5, 2, 2, 6, 5, 3, 3 that never decayed, so no `verdict:` line ever
+   stopped it. Its own round-8 turn records the mechanism: the round-8 delta fixed `fable-rd7-r2`
+   and created `codex-rd9-r1` in the same predicate, which had then been wrong in three
+   consecutive rounds.
+
+   **From round 3, re-fan only for a `med` or higher.** A round that agreed to nothing above `low`
+   has not found the kind of defect that justifies another fan-out, and `low`-severity churn is
+   what a self-reviewing loop produces once it runs out of real material. On #285 this floor would
+   have ended the review days earlier without losing a single `high`, because there were none.
+
+   The `high` trigger is deliberately NOT bounded. A non-trivial fix to a `high` is the one case
+   where re-review reliably earns its cost, and a review that keeps surfacing `high`s is not the
+   failure mode this bound addresses.
 
    When you do re-fan, `round-stats`' `verdict:` line still bounds it: stop as soon as a round
    goes dry, the rate stops falling, or the ceiling is hit. Run it **after the merge**, in this
