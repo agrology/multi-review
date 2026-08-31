@@ -770,7 +770,16 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    **If step 2 exited 3 (not applicable) this round**, under `<doc>`'s `## Review` heading,
    alongside this round's quarantine records (written by step 7's merge, so they exist by now),
    append: `> [crossref-coverage: not applicable]`. Otherwise, run
-   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref"`.
+   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref" --rows
+   "<doc>.crossref.rows"`.
+
+   **`--rows` is not optional.** It pins the check to the worklist the pass was DISPATCHED with.
+   Without it `check` re-derives the rows from the document *as it is now* — and between dispatch
+   and here the primary has been agreeing with findings and editing the doc, which is its job. An
+   edit that adds a section changes the derived row set, so rows the pass was never given surface
+   as missing verdicts and a complete turn reports INCOMPLETE (issue #95). A missing rows file is
+   a usage error rather than a silent re-derivation, so a typo here fails loudly instead of
+   quietly reintroducing the defect.
       - **Exit 0** → every row was verdicted. Let `<M>` be the worklist's row count (the number
         of lines in `<doc>.crossref.rows` from step 2). Under `<doc>`'s `## Review` heading,
         alongside this round's quarantine records, append:

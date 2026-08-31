@@ -311,6 +311,55 @@ err="$(bash "$SUT" check "$D" "$C" 2>&1 >/dev/null)"; rc=$?
   && ok "check: a table with no '> [crossref] — via' header fails" \
   || bad "check: a table with no disclosure passed (rc=$rc err='$err')"
 
+# --- check --rows: verdict against the worklist AS DISPATCHED, not as the doc is now (issue #95)
+# `check` re-derived its `want` set from the CURRENT doc, but the pass verdicted the worklist it
+# was GIVEN. The primary's normal job between those two points is to agree with findings and edit
+# the document — and an edit that adds a section changes the derived row set, so rows the pass was
+# never handed appear as missing verdicts. Reproduced live on the first real document the pass ran
+# against: 25/25 against the dispatched baseline, INCOMPLETE against the edited doc. An INCOMPLETE
+# at the gate is meant to mean "the pass skipped rows"; there it meant "the author did their job".
+TD="$(mkdoc toctou.md \
+  '# Plan' '' \
+  '### Task 1: one' '' '**Files:**' '- Modify: `scripts/a.sh`' '' 'Edit `scripts/a.sh`.' '' \
+  '### Task 2: two' '' '**Files:**' '- Modify: `scripts/a.sh`' '' 'Edit `scripts/a.sh`.' '')"
+bash "$SUT" rows "$TD" 2>/dev/null | awk -F'\t' '{print $1}' > "${WORK}/toctou.rows"
+tlines=('> [crossref] — via test-model')
+while IFS= read -r r; do [[ -n "$r" ]] && tlines+=("> [crossref:${r}|ok]"); done < "${WORK}/toctou.rows"
+TC="$(mkcopy toctou-copy.md "$TD" "${tlines[@]}")"
+
+# baseline: the turn is complete against the doc as dispatched
+bash "$SUT" check "$TD" "$TC" >/dev/null 2>&1 \
+  && ok "check: the dispatched worklist verdicts complete before any edit" \
+  || bad "check: the fixture is wrong — complete coverage rejected before any edit"
+
+# the primary now does its job: agrees with a finding and adds a section
+printf '%s\n' '' '### Task 3: added while adjudicating' '' '**Files:**' '- Modify: `scripts/b.sh`' '' 'Edit `scripts/b.sh`.' >> "$TD"
+
+# re-derivation now invents rows the pass was never given
+bash "$SUT" check "$TD" "$TC" >/dev/null 2>&1 \
+  && bad "check: the fixture no longer reproduces #95 — re-derivation did not change the row set" \
+  || ok "check: re-derivation alone reports the edited doc as incomplete (the #95 symptom)"
+
+# ...and pinning it to the worklist as dispatched reports the turn honestly
+bash "$SUT" check "$TD" "$TC" --rows "${WORK}/toctou.rows" >/dev/null 2>&1 \
+  && ok "check --rows: verdicts against the dispatched worklist, so an author edit cannot deflate coverage" \
+  || bad "check --rows: a complete turn still reported incomplete after an author edit (#95)"
+
+# an EMPTY rows file is a contract error, not "nothing to check" — `rows` never emits one (it
+# exits 3 first), so an empty file means truncation, and silently passing would report a turn
+# that verdicted nothing as fully covered
+: > "${WORK}/empty.rows"
+bash "$SUT" check "$TD" "$TC" --rows "${WORK}/empty.rows" >/dev/null 2>&1 \
+  && bad "check --rows: an empty rows file passed as complete coverage" \
+  || ok "check --rows: an empty rows file is refused"
+
+# a MISSING rows file is a usage error (exit 2), never a silent fallback to re-derivation:
+# falling back would reintroduce #95 exactly when the caller believed it was pinned
+bash "$SUT" check "$TD" "$TC" --rows "${WORK}/does-not-exist.rows" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] \
+  && ok "check --rows: a missing rows file is a usage error, not a silent re-derivation" \
+  || bad "check --rows: a missing rows file did not exit 2 (rc=$rc)"
+
 # --- _review_verdicts guards: scoped to the LAST '## Review' heading, with fences stripped ---
 # Previously asserted only by a code comment — Task 4 exists to eliminate exactly this class.
 
@@ -347,9 +396,12 @@ err="$(bash "$SUT" rows 2>&1 >/dev/null)"; rc=$?
   || bad "rows: missing argument rc=$rc err='$err' (want rc=2, multi-review-crossref: prefix)"
 
 err="$(bash "$SUT" check 2>&1 >/dev/null)"; rc=$?
-[[ $rc == 2 ]] && grep -qF 'multi-review-crossref:' <<<"$err" \
-  && ok "check: missing arguments exit 2 with the usage prefix" \
-  || bad "check: missing arguments rc=$rc err='$err' (want rc=2, multi-review-crossref: prefix)"
+# Asserts the USAGE text, not merely the prefix and exit code. Without the argument guard, an
+# empty <doc> falls through to the file-existence check and still exits 2 with the prefix — so a
+# prefix-only assertion would pass with the guard deleted, and could not fail.
+[[ $rc == 2 ]] && grep -qF 'usage: multi-review-crossref.sh check' <<<"$err" \
+  && ok "check: missing arguments exit 2 with the usage message" \
+  || bad "check: missing arguments rc=$rc err='$err' (want rc=2 and the check usage message)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

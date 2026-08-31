@@ -217,7 +217,13 @@ Under the copy's `## Review` heading, alongside the disclosure line every turn c
   block in the same copy, adjudicated like any other finding — a defect recorded only in the
   verdict table bypasses adjudication and never reaches the human gate's accounting.
 
-`multi-review-crossref.sh check <doc> <copy>` judges the turn:
+`multi-review-crossref.sh check <doc> <copy> --rows <rows-file>` judges the turn. **`--rows` pins
+it to the worklist the pass was dispatched with.** Without it, `check` re-derives the rows from the
+document *as it is now* — but between dispatch and check the primary has been agreeing with
+findings and editing the doc, which is its job, and an edit that adds a section changes the derived
+row set. Rows the pass was never given then surface as missing verdicts, and a complete turn reports
+INCOMPLETE. A rows file that is missing or empty is a usage error rather than a silent fallback to
+re-derivation.
 
 | outcome | meaning |
 |---|---|
@@ -243,6 +249,14 @@ Each round records a durable coverage line alongside the round's quarantine reco
 `Cross-reference pass: <M>/<M> rows verdicted`, or `Cross-reference pass: <N>/<M> rows verdicted —
 INCOMPLETE` — so an unchecked relation is visible at the human gate rather than indistinguishable
 from a clean pass.
+
+When **no** line was recorded, `gate-summary` does not simply stay quiet: it derives applicability
+itself (`rows` exit 3 vs 0) and renders `Cross-reference pass: NO RECORD — the pass was applicable
+and nothing was recorded`. Trusting the record alone made silence mean two different things — a doc
+with no sectioned structure, or a primary that skipped the wiring — so a review that never ran the
+pass produced a gate summary byte-identical to one from before the pass existed. Only the exit code
+is used, never the rows: this runs on the final doc, where a re-derived *count* would be unreliable
+for the reason above, while applicability is stable under merging.
 
 ## Symbol-check pass
 

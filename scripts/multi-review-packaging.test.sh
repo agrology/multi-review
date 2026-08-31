@@ -1201,4 +1201,15 @@ else
   bad "command: nothing schedules verify before the marker bump — the earlier-round guard is unreachable on the re-fan path (fable-rd2-r1)"
 fi
 
+# --- step 8 must pin `crossref check` to the dispatched worklist (issue #95) ---
+# The --rows plumbing is inert unless the caller passes it, and the failure is quiet: check simply
+# re-derives, and a complete turn reports INCOMPLETE at the gate after the primary edits the doc.
+XRC="${ROOT}/commands/multi-review.md"
+n="$(grep -n 'multi-review-crossref.sh check' "$XRC" | head -1 | cut -d: -f1)"
+if [[ -n "$n" ]] && sed -n "${n},$((n+2))p" "$XRC" | grep -q -- '--rows'; then
+  ok "command: crossref check is pinned to the dispatched rows file"
+else
+  bad "command: crossref check is not passed --rows — it re-derives, and an author edit turns a complete turn into INCOMPLETE (#95)"
+fi
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

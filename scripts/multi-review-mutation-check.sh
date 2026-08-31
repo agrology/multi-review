@@ -1487,8 +1487,8 @@ mutations() {
   # untrustworthy turn even though nothing was ever expected to be verdicted.
   mutate 'crossref/check-not-applicable-ok' 'scripts/multi-review-crossref.sh' replace \
     'the rc==3 short-circuit is not in effect' 'multi-review-crossref.test.sh' \
-    '    (( rc == 3 )) && return 0' \
-    '    (( 0 )) && return 0'
+    '      (( rc == 3 )) && return 0' \
+    '      (( 0 )) && return 0'
 
   # check clause 1: a row with no verdict at all is an incomplete turn, not a passing one.
   mutate 'crossref/check-missing-rows' 'scripts/multi-review-crossref.sh' replace \
@@ -1529,8 +1529,8 @@ mutations() {
   # (exit 1) — the two must stay distinguishable so a caller can tell "you invoked me wrong"
   # from "the reviewer's turn is untrustworthy".
   mutate 'crossref/usage-exit-2' 'scripts/multi-review-crossref.sh' delete \
-    'want rc=2, multi-review-crossref: prefix' 'multi-review-crossref.test.sh' \
-    '  [[ $# -ge 2 ]] || die "usage: multi-review-crossref.sh check <doc> <copy>" 2'
+    'want rc=2 and the check usage message' 'multi-review-crossref.test.sh' \
+    '  [[ -n "$doc" && -n "$copy" ]] || die "usage: multi-review-crossref.sh check <doc> <copy> [--rows <file>]" 2'
 
   # _review_verdicts must fence-strip the same way _table does (star.sh) — a verdict line
   # quoted inside a fenced example in the Review section is documentation, not a real verdict.
@@ -2330,6 +2330,54 @@ mutations() {
     'gate-summary summarised despite a malformed resolved' 'multi-review-star.test.sh' \
     '  rsv="$(cmd_resolved "$doc")" || die "gate-summary: contract violation in $doc" 1' \
     '  rsv="$(cmd_resolved "$doc")"'
+
+  # --- crossref coverage honesty (issues #95 / #96) ---------------------------------------------
+
+  # #95: `check` must judge against the worklist AS DISPATCHED. Re-deriving compares the verdicts
+  # to a row set nobody was given — the primary edits the doc between dispatch and check, which is
+  # its job — so a complete turn reports INCOMPLETE. Reproduced live: 25/25 against the dispatched
+  # baseline, incomplete against the edited doc.
+  mutate 'crossref/check-rows-pinned' 'scripts/multi-review-crossref.sh' replace \
+    'a complete turn still reported incomplete after an author edit' 'multi-review-crossref.test.sh' \
+    '  if [[ -n "$rowsfile" ]]; then' \
+    '  if false; then'
+
+  # A MISSING rows file must be a usage error, never a fallback to re-derivation: falling back
+  # reintroduces #95 at exactly the moment the caller believed the check was pinned.
+  mutate 'crossref/check-rows-missing-is-usage-error' 'scripts/multi-review-crossref.sh' replace \
+    'a missing rows file did not exit 2' 'multi-review-crossref.test.sh' \
+    '    [[ -f "$rowsfile" ]] || die "rows file not found: $rowsfile" 2' \
+    '    [[ -f "$rowsfile" ]] || rowsfile=""'
+
+  # An EMPTY rows file is truncation, not "nothing to cover". `rows` never emits one (it exits 3
+  # first), so passing it would report a turn that verdicted nothing as fully covered.
+  mutate 'crossref/check-rows-empty-rejected' 'scripts/multi-review-crossref.sh' delete \
+    'an empty rows file passed as complete coverage' 'multi-review-crossref.test.sh' \
+    '    [[ -s "$rowsfile" ]] || die "rows file is empty: $rowsfile" 2'
+
+  # #96: the NO RECORD arm. The issue calls this out specifically — a branch that is never reached
+  # is the classic unfalsifiable guard, so it must be demonstrated failing rather than assumed.
+  # Without it, a review that skipped the crossref wiring renders byte-identically to one from
+  # before the feature shipped.
+  mutate 'star/gate-crossref-no-record' 'scripts/multi-review-star.sh' replace \
+    'a skipped crossref pass is silent' 'multi-review-star.test.sh' \
+    '      0) echo "Cross-reference pass: NO RECORD — the pass was applicable and nothing was recorded"; echo ;;' \
+    '      0) : ;;'
+
+  # ...and the exit-3 arm that keeps it dormant. Without it every PR review — whose scratch has no
+  # sectioned structure — would carry a spurious NO RECORD line, which is how a true signal gets
+  # trained into noise.
+  mutate 'star/gate-crossref-dormant-when-not-applicable' 'scripts/multi-review-star.sh' replace \
+    'an unsectioned doc emitted a crossref line' 'multi-review-star.test.sh' \
+    '      3) : ;;   # not applicable: nothing was ever expected, stay dormant (the PR-scratch case)' \
+    '      3) echo "Cross-reference pass: NO RECORD — the pass was applicable and nothing was recorded"; echo ;;'
+
+  # The command file must actually PASS --rows; the plumbing is inert otherwise and the failure is
+  # quiet (check simply re-derives). Instruction-shaped guard, so packaging covers it.
+  mutate 'command/crossref-check-rows-pinned' 'commands/multi-review.md' replace \
+    'crossref check is not passed --rows' 'multi-review-packaging.test.sh' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref" --rows' \
+    '   `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-crossref.sh check "<doc>" "<doc>.crossref"'
 
   # The crossref prompt's empty-rows-file guard — `rows` itself never produces an empty file
   # (it dies exit 3 first), but a hand-built or truncated one can, and unguarded this would
