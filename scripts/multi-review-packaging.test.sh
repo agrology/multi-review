@@ -1205,11 +1205,21 @@ fi
 # The --rows plumbing is inert unless the caller passes it, and the failure is quiet: check simply
 # re-derives, and a complete turn reports INCOMPLETE at the gate after the primary edits the doc.
 XRC="${ROOT}/commands/multi-review.md"
-n="$(grep -n 'multi-review-crossref.sh check' "$XRC" | head -1 | cut -d: -f1)"
-if [[ -n "$n" ]] && sed -n "${n},$((n+2))p" "$XRC" | grep -q -- '--rows'; then
-  ok "command: crossref check is pinned to the dispatched rows file"
+# EVERY invocation must carry --rows, not merely the first one found (fable-rd2-r3). Pinning to
+# `head -1` meant any earlier mention added later — prose, a prompt template — silently re-targets
+# the window, so the real step-8 call could lose --rows with this guard still green.
+# The occurrence count is asserted too: zero matches would otherwise pass the loop vacuously,
+# which is the same shape as a guard that cannot fail.
+xrc_n=0; xrc_missing=0
+while IFS= read -r n; do
+  [[ -n "$n" ]] || continue
+  xrc_n=$((xrc_n + 1))
+  sed -n "${n},$((n+2))p" "$XRC" | grep -q -- '--rows' || xrc_missing=$((xrc_missing + 1))
+done < <(grep -n 'multi-review-crossref.sh check' "$XRC" | cut -d: -f1)
+if (( xrc_n > 0 )) && (( xrc_missing == 0 )); then
+  ok "command: every crossref check invocation is pinned to the dispatched rows file ($xrc_n found)"
 else
-  bad "command: crossref check is not passed --rows — it re-derives, and an author edit turns a complete turn into INCOMPLETE (#95)"
+  bad "command: crossref check is not passed --rows — it re-derives, and an author edit turns a complete turn into INCOMPLETE (#95) (found=$xrc_n missing=$xrc_missing)"
 fi
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

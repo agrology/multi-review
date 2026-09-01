@@ -2798,6 +2798,21 @@ grep -q 'Cross-reference pass' <<<"$out" \
   && bad "gate-summary: an unsectioned doc emitted a crossref line (got: $out)" \
   || ok "gate-summary: an unsectioned doc stays dormant, with or without a record"
 
+# The FOURTH arm: `rows` exiting anything other than 0 or 3 (fable-rd2-r1). Within gate-summary
+# the doc's existence is already validated, so the only realistic producer is the crossref script
+# itself failing to run — a broken or partial install. That must say "couldn't tell" rather than
+# fall silent, because silence is the failure #96 exists to close.
+# Tested by building a STAR_DIR whose crossref.sh is a stub that fails: star.sh resolves its
+# siblings from its own location, so copying the scripts and replacing that one is enough.
+XRDIR="${WORK}/broken-install"; mkdir -p "$XRDIR"
+cp "${DIR}"/multi-review-*.sh "$XRDIR"/ 2>/dev/null
+printf '#!/usr/bin/env bash\nexit 9\n' > "$XRDIR/multi-review-crossref.sh"; chmod +x "$XRDIR/multi-review-crossref.sh"
+XR_BROKEN="$(mkxrdoc xr-broken-install.md)"
+out="$(bash "$XRDIR/multi-review-star.sh" gate-summary "$XR_BROKEN" claude-opus-5 2>/dev/null)"
+grep -qF 'applicability could not be determined' <<<"$out" \
+  && ok "gate-summary: a crossref probe that cannot run says so rather than falling silent" \
+  || bad "gate-summary: an unrunnable crossref probe is silent — indistinguishable from a doc with no sections (fable-rd2-r1)"
+
 # --- _crossref_coverage: the MOST RECENT recorded line wins (B5, final review) ---
 # Two durable coverage lines can exist in one doc (an earlier turn's stale/incomplete record,
 # superseded by a later complete one). The gate must read the LAST one — a first-wins reading
