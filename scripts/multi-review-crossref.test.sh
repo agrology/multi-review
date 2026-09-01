@@ -86,7 +86,7 @@ e="$(awk -F'\t' '$4=="Task 1"{print $3}' <<<"$secs")"
 # A fence-blind _sections truncates Task 1's section before it reaches `scripts/shared.sh`, so no
 # pair row is ever emitted for it — checking _sections alone would miss that failure mode.
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair" && $4=="scripts/shared.sh"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair" && $4=="scripts/shared.sh"' <<<"$out")" \
   && ok "rows: fence-aware heading detection yields a pair row for scripts/shared.sh" \
   || bad "rows: no pair row for scripts/shared.sh — fence-blind heading detection truncated the section"
 
@@ -108,7 +108,7 @@ e="$(awk -F'\t' '$4=="Task 1"{print $3}' <<<"$secs")"
 # A depth-blind _sections ends Task 1 at its own Step 1 heading, before it reaches
 # `scripts/shared.sh`, so no pair row is ever emitted for it.
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair" && $4=="scripts/shared.sh"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair" && $4=="scripts/shared.sh"' <<<"$out")" \
   && ok "rows: depth-based section boundaries yield a pair row for scripts/shared.sh" \
   || bad "rows: no pair row for scripts/shared.sh — depth-blind boundaries truncated the section"
 
@@ -128,7 +128,7 @@ D="$(mkdoc union.md \
   '**Files:**' '- Modify: `scripts/mutation-check.sh`' '' \
   'Add the new entries.' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair" && $4=="scripts/mutation-check.sh"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair" && $4=="scripts/mutation-check.sh"' <<<"$out")" \
   && ok "rows: a pair is generated when only ONE side declared the shared file" \
   || bad "rows: no pair row for scripts/mutation-check.sh — the union rule is not in effect, and this repo's own shipped defect would survive"
 n="$(awk -F'\t' '$2=="pair"' <<<"$out" | wc -l | tr -d ' ')"
@@ -143,7 +143,7 @@ D="$(mkdoc fenced.md \
   '### Task 2: also real' '' '**Files:**' '- Modify: `scripts/other.sh`' '' \
   'Mentions `scripts/fenced-only.sh` in prose.' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair"' <<<"$out")" \
   && bad "rows: a path inside a fenced block manufactured a pair" \
   || ok "rows: fenced-block paths do not manufacture pairs"
 
@@ -155,7 +155,7 @@ D="$(mkdoc linespec.md \
   '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
   'See `scripts/a.sh:42` for context.' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair" && $4=="scripts/a.sh"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair" && $4=="scripts/a.sh"' <<<"$out")" \
   && ok "rows: a trailing line-spec (path:42) is stripped so it pairs with the bare path" \
   || bad "rows: no pair row for scripts/a.sh — a trailing line-spec is not stripped, so path:42 != path"
 
@@ -171,7 +171,7 @@ D="$(mkdoc barefilter.md \
   '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
   'Also uses the `TMPD` scratch dir.' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair"' <<<"$out")" \
   && bad "rows: a bare non-path backticked token (TMPD) manufactured a pair" \
   || ok "rows: a bare non-path backticked token does not manufacture a pair"
 
@@ -184,7 +184,7 @@ D="$(mkdoc slashonly.md \
   '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
   'Also see `docs/design-notes`.' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair" && $4=="docs/design-notes"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair" && $4=="docs/design-notes"' <<<"$out")" \
   && ok "rows: a slash path with no recognised extension still pairs (slash term alone)" \
   || bad "rows: no pair row for docs/design-notes — the slash disjunct is not doing independent work"
 
@@ -197,7 +197,7 @@ D="$(mkdoc extonly.md \
   '### Task 2: second' '' '**Files:**' '- Modify: `scripts/b.sh`' '' \
   'Also reads `config.yml`.' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$2=="pair" && $4=="config.yml"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$2=="pair" && $4=="config.yml"' <<<"$out")" \
   && ok "rows: a bare filename with a recognised extension still pairs (extension term alone)" \
   || bad "rows: no pair row for config.yml — the extension disjunct is not doing independent work"
 
@@ -210,10 +210,10 @@ if [[ ! -f "$F" ]]; then
   bad "fixture missing: $F"
 else
   out="$(bash "$SUT" rows "$F" 2>/dev/null)"
-  awk -F'\t' '$2=="pair" && $4=="scripts/multi-review-mutation-check.sh"' <<<"$out" | grep -q . \
+  grep -q . <<<"$(awk -F'\t' '$2=="pair" && $4=="scripts/multi-review-mutation-check.sh"' <<<"$out")" \
     && ok "rows: the fixture's named-only/declared-only pair is generated" \
     || bad "rows: the union pair is absent — a declaration-only pair set would ship"
-  awk -F'\t' '$2=="iface"' <<<"$out" | grep -q . \
+  grep -q . <<<"$(awk -F'\t' '$2=="iface"' <<<"$out")" \
     && ok "rows: the fixture yields an interface row" \
     || bad "rows: no iface row from the fixture (expected once Task 3 lands)"
 fi
@@ -231,7 +231,7 @@ out="$(bash "$SUT" rows "$D" 2>/dev/null)"
 n="$(awk -F'\t' '$2=="iface"' <<<"$out" | wc -l | tr -d ' ')"
 [[ "$n" == 2 ]] && ok "rows: one iface row per Consumes entry (got $n)" \
   || bad "rows: expected 2 iface rows, got $n"
-awk -F'\t' '$2=="iface" && $3=="Task 3"' <<<"$out" | grep -q 'omega' \
+grep -q 'omega' <<<"$(awk -F'\t' '$2=="iface" && $3=="Task 3"' <<<"$out")" \
   && ok "rows: an unmatched Consumes still produces a row for the reviewer to verdict" \
   || bad "rows: the unmatched Consumes entry produced no row — the defect would be invisible"
 

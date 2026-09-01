@@ -329,7 +329,7 @@ _locate_diff() { # <scratch> -> "<body-start> <body-end>"; exit 3 if not EXACTLY
   # the position, decides which candidate is the window, which is why fence-awareness is moot here.
   while read -r s e; do
     d="$(awk -v s="$s" -v e="$e" 'NR >= s && NR <= e' "$scratch" | _diff_digest)"
-    if printf '%s\n' "$recs" | grep -qxF "$d"; then n=$((n + 1)); got="$s $e"; fi
+    if grep -qxF "$d" <<<"$recs"; then n=$((n + 1)); got="$s $e"; fi
   done < <(awk '
     /^## / {
       if (h) { print (h + 1) " " (NR - 1); h = 0 }

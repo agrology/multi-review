@@ -925,7 +925,7 @@ cmd_compose_inline() { # <doc> -> "path\tstart\tend\tbody" per agreed+anchored+u
     sev="$(awk -F'\t' '{print $7}' <<< "$rec")"
     risk="$(awk -F'\t' '{print $8}' <<< "$rec")"
     [[ "$state" == "agreed" ]] || continue
-    printf '%s\n' "$rsv_ids" | grep -qxF "$id" && continue
+    grep -qxF "$id" <<<"$rsv_ids" && continue
     anchor="$(anchor_of "$doc" "$id")" || die "cannot compose inline: contract violation in $doc" 1
     [[ -n "$anchor" ]] || continue
     path="$(awk -F'\t' '{print $1}' <<< "$anchor")"

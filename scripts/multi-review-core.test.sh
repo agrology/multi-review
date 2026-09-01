@@ -221,7 +221,7 @@ out="$(bash "$SUT" sections "$SD" 2>/dev/null)"; rc=$?
 n="$(printf '%s\n' "$out" | grep -c . || true)"
 [[ "$n" == 2 ]] && ok "sections: one row per qualifying section (got $n)" \
   || bad "sections: expected 2 rows, got $n — the preamble may have qualified"
-awk -F'\t' '$4=="Task 1"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$4=="Task 1"' <<<"$out")" \
   && ok "sections: the short id is the ordinal heading prefix" \
   || bad "sections: no row with short id 'Task 1'"
 
@@ -259,7 +259,7 @@ out="$(bash "$SUT" sections "$SD" 2>/dev/null)"
 n="$(printf '%s\n' "$out" | grep -c . || true)"
 [[ "$n" == 1 ]] && ok "sections: an ordinal heading with no Files/Interfaces block is excluded (got $n)" \
   || bad "sections: expected 1 row, got $n — the block requirement is not enforced and the filter fails open"
-awk -F'\t' '$4=="Task 2"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$4=="Task 2"' <<<"$out")" \
   && ok "sections: the surviving row is the one that declares a block" \
   || bad "sections: the wrong section survived the block filter"
 
@@ -274,7 +274,7 @@ printf '%s\n' \
   '````markdown' '# Fixture' '' '**Files:**' '- Create: `src/illustrative.py`' '' '```bash' 'echo hi' '```' '````' '' \
   '### Task 2: real' '' '**Files:**' '- Modify: `src/real.py`' '' > "$SD"
 out="$(bash "$SUT" sections "$SD" 2>/dev/null)"
-awk -F'\t' '$4=="Task 1"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$4=="Task 1"' <<<"$out")" \
   && bad "sections: a section qualified on a **Files:** line that is inside a fenced block" \
   || ok "sections: a fenced **Files:** does not qualify a section"
 

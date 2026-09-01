@@ -29,8 +29,8 @@ fi
 # --- no BARE script refs remain in command markdown ---
 f="${ROOT}/commands/multi-review.md"
 if [[ -f "$f" ]]; then
-  if grep -nE '(^|[^/A-Za-z_])scripts/multi-review-[a-z-]+\.sh' "$f" \
-       | grep -vq 'CLAUDE_PLUGIN_ROOT'; then
+  refs="$(grep -nE '(^|[^/A-Za-z_])scripts/multi-review-[a-z-]+\.sh' "$f")"
+  if [[ -n "$refs" ]] && grep -vq 'CLAUDE_PLUGIN_ROOT' <<<"$refs"; then
     bad "bare scripts/ ref (no \${CLAUDE_PLUGIN_ROOT}) in $(basename "$f")"
   else
     ok "no bare scripts/ refs in $(basename "$f")"
@@ -51,7 +51,7 @@ if [[ -f "$f" ]]; then
   n="$(grep -n 'codex:codex-rescue' "$f" | head -1 | cut -d: -f1)"
   if [[ -z "$n" ]]; then
     bad "no codex:codex-rescue dispatch instruction in $(basename "$f")"
-  elif sed -n "${n},$((n+2))p" "$f" | grep -q -- '--background'; then
+  elif grep -q -- '--background' <<<"$(sed -n "${n},$((n+2))p" "$f")"; then
     ok "codex dispatch requests a background companion job"
   else
     bad "codex dispatch lacks --background — a foreground task is killed at the 10-min window before it writes findings"
@@ -71,7 +71,7 @@ if [[ -f "$f" ]]; then
   n="$(grep -n 'codex:codex-rescue' "$f" | head -1 | cut -d: -f1)"
   if [[ -z "$n" ]]; then
     bad "no codex:codex-rescue dispatch instruction in $(basename "$f")"
-  elif sed -n "${n},$((n+2))p" "$f" | grep -q -- '--effort high'; then
+  elif grep -q -- '--effort high' <<<"$(sed -n "${n},$((n+2))p" "$f")"; then
     ok "codex dispatch requests high reasoning effort"
   else
     bad "codex dispatch lacks --effort high — codex defaults to effort none, and a 32s turn reviews the protocol instead of the document"
@@ -135,7 +135,7 @@ if [[ -f "$DR" ]]; then
     bad "multi-review.md no longer documents --session-root at all (the #66 contract vanished)"
   elif ! grep -qF -- '--session-root "<session-root>"' "$DR"; then
     bad "multi-review.md does not pass --session-root as the captured <session-root> placeholder (fable-rd1-r1)"
-  elif printf '%s\n' "$sr_lines" | grep -qE -- '--session-root[[:space:]]*"?\$\('; then
+  elif grep -qE -- '--session-root[[:space:]]*"?\$\(' <<<"$sr_lines"; then
     bad "multi-review.md inlines a command substitution into --session-root — it re-resolves per invocation (fable-rd1-r1/rd2-r3)"
   else
     ok "--session-root is a captured placeholder, and no occurrence inlines a substitution (fable-rd2-r3)"
@@ -175,11 +175,11 @@ fi
 # --- §1 extracts --reviewers (only) and classifies on the positional, not raw $ARGUMENTS ---
 if [[ -f "$DR" ]]; then
   sec1="$(awk '/^## 1\. Resolve the argument/{flag=1} flag{print} flag && /^## 2\./{exit}' "$DR")"
-  echo "$sec1" | grep -q -- '--reviewers' && ok "§1 extracts --reviewers" \
+  grep -q -- '--reviewers' <<<"$sec1" && ok "§1 extracts --reviewers" \
     || bad "§1 does not extract --reviewers"
-  echo "$sec1" | grep -q -- '--attended' && bad "§1 still mentions --attended" \
+  grep -q -- '--attended' <<<"$sec1" && bad "§1 still mentions --attended" \
     || ok "§1 no longer splits --attended"
-  echo "$sec1" | grep -qF 'multi-review-pr.sh parse "<positional>"' \
+  grep -qF 'multi-review-pr.sh parse "<positional>"' <<<"$sec1" \
     && ok "PR classification runs on the positional, not raw \$ARGUMENTS" \
     || bad "PR classification does not run on <positional>"
   grep -qF 'multi-review-pr.sh parse "$ARGUMENTS"' "$DR" \
@@ -692,7 +692,7 @@ if [[ -f "$DR" ]]; then
   sde="$(awk -v s="$sd" 'NR>s && /Then prove the copy is BLIND/ {print NR; exit}' "$DR")"
   if [[ -z "$sd" || -z "$sde" ]]; then
     bad "cannot delimit the seed-snapshot step in $(basename "$DR")"
-  elif sed -n "${sd},$((sde-1))p" "$DR" | grep -qF 'rm -f "<doc>.<id>.multi-review.log"'; then
+  elif grep -qF 'rm -f "<doc>.<id>.multi-review.log"' <<<"$(sed -n "${sd},$((sde-1))p" "$DR")"; then
     ok "the previous round's dispatch log is cleared synchronously, in the seeding step"
   else
     bad "nothing clears the previous round's dispatch log before dispatch — a pre-wait read can quarantine a just-launched reviewer on round N-1's status line"
@@ -760,7 +760,7 @@ grep -q -- '`--allow-missing`' "$CMD" \
 
 # §1 must EXTRACT it, or `/multi-review <doc> --allow-missing` folds the flag into the doc path
 n="$(grep -n 'Extract `--reviewers`' "$CMD" | head -1 | cut -d: -f1)"
-[[ -n "$n" ]] && sed -n "${n}p" "$CMD" | grep -q -- '--allow-missing' \
+[[ -n "$n" ]] && grep -q -- '--allow-missing' <<<"$(sed -n "${n}p" "$CMD")" \
   && ok "command: §1 extracts --allow-missing alongside --reviewers" \
   || bad "command: §1 does not extract --allow-missing (line $n)"
 
@@ -777,8 +777,8 @@ n="$(grep -n '<ids,comma,joined>' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
   bad "command: resume-rebuild anchor '<ids,comma,joined>' not found — the guard's anchor is gone"
 else
-  sed -n "${n}p" "$CMD" | grep -q -- 'resolve-set' \
-    && sed -n "${n}p" "$CMD" | grep -q -- '--resume' \
+  grep -q -- 'resolve-set' <<<"$(sed -n "${n}p" "$CMD")" \
+    && grep -q -- '--resume' <<<"$(sed -n "${n}p" "$CMD")" \
     && ok "command: the resume rebuild passes --resume" \
     || bad "command: resume rebuild lacks --resume (line $n): $(sed -n "${n}p" "$CMD")"
 fi
@@ -795,7 +795,7 @@ n="$(grep -n '<ids,comma,joined>' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
   bad "command: resume-rebuild anchor '<ids,comma,joined>' not found — the guard's anchor is gone"
 else
-  sed -n "${n},$((n+3))p" "$CMD" | grep -q 'UNDISPATCHABLE' \
+  grep -q 'UNDISPATCHABLE' <<<"$(sed -n "${n},$((n+3))p" "$CMD")" \
     && ok "command: the resume-rebuild block captures UNDISPATCHABLE lines" \
     || bad "command: resume-rebuild block never mentions UNDISPATCHABLE — the quarantine-binding rule routes past this path"
 fi
@@ -1195,7 +1195,7 @@ fi
 # scheduling this check is what makes the guard reachable on that path at all.
 RFV="${ROOT}/commands/multi-review.md"
 n="$(grep -n 'Edit the marker directly' "$RFV" | head -1 | cut -d: -f1)"
-if [[ -n "$n" ]] && sed -n "1,${n}p" "$RFV" | tail -16 | grep -q 'verify.*BEFORE you touch the marker'; then
+if [[ -n "$n" ]] && grep -q 'verify.*BEFORE you touch the marker' <<<"$(sed -n "1,${n}p" "$RFV" | tail -16)"; then
   ok "command: the re-fan branch runs verify before the marker bump"
 else
   bad "command: nothing schedules verify before the marker bump — the earlier-round guard is unreachable on the re-fan path (fable-rd2-r1)"
@@ -1214,7 +1214,7 @@ xrc_n=0; xrc_missing=0
 while IFS= read -r n; do
   [[ -n "$n" ]] || continue
   xrc_n=$((xrc_n + 1))
-  sed -n "${n},$((n+2))p" "$XRC" | grep -q -- '--rows' || xrc_missing=$((xrc_missing + 1))
+  grep -q -- '--rows' <<<"$(sed -n "${n},$((n+2))p" "$XRC")" || xrc_missing=$((xrc_missing + 1))
 done < <(grep -n 'multi-review-crossref.sh check' "$XRC" | cut -d: -f1)
 if (( xrc_n > 0 )) && (( xrc_missing == 0 )); then
   ok "command: every crossref check invocation is pinned to the dispatched rows file ($xrc_n found)"
@@ -1263,5 +1263,28 @@ P47="${ROOT}/scripts/multi-review-reviewer.sh"
 grep -q 'Severity is CONSEQUENCE IF TRUE' "$P47" \
   && ok "prompt: severity is defined as consequence, not confidence" \
   || bad "prompt: severity still reads as confidence — an ungroundable but catastrophic finding gets filed low, where the primary may defer it (#47 §3)"
+
+
+# --- issue #110: nothing may pipe into an early-exiting matcher under `pipefail` ---
+# `grep -q` exits on its FIRST match, closing the pipe while the producer is still writing; the
+# producer dies of SIGPIPE and `set -o pipefail` (every script here sets it) reports the pipeline
+# as 141. That status IS the assertion in a suite and IS control flow in a script, so a correct
+# check goes false intermittently — measured at 3 failures in 400 runs of a real assertion on an
+# idle machine, and worse under load. Feed the matcher a herestring instead: no pipe, nothing to
+# signal, and the producer always runs to completion. `||` is not a pipe, so it is not matched;
+# quoted lines are excluded because the mutation table holds source excerpts as DATA, not as
+# pipelines this shell ever runs.
+sigpipe_sq="'"; sigpipe_hits=""; sigpipe_n=0
+for f in "${ROOT}"/scripts/*.sh; do
+  while IFS= read -r hit; do
+    [[ -z "$hit" ]] && continue
+    sigpipe_n=$((sigpipe_n + 1))
+    [[ $sigpipe_n -le 3 ]] && sigpipe_hits="${sigpipe_hits} $(basename "$f"):${hit%%:*}"
+  done < <(grep -nE '(^|[^|&>])\|[[:space:]]*grep +-[a-zA-Z]*q' "$f" \
+             | grep -vE "^[0-9]+:[[:space:]]*(#|${sigpipe_sq}|\")")
+done
+[[ $sigpipe_n -eq 0 ]] \
+  && ok "no pipeline feeds grep -q under pipefail (SIGPIPE cannot fake a failed check)" \
+  || bad "${sigpipe_n} pipeline(s) feed grep -q under pipefail — SIGPIPE (141) reads as a failed check (#110), e.g.${sigpipe_hits}"
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

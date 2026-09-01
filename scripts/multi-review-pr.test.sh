@@ -139,7 +139,7 @@ grep -q '^## Review'         "$OUT" && ok "seed: review section"      || bad "se
 
 # seed writes NO mode hint — the command's star Arm inserts the star header (mode hint + status
 # marker) after the H1, so seeding one would create a duplicate. (Star-universal, PR-B B1.)
-awk '/^## /{exit} {print}' "$OUT" | grep -qF 'multi-review-mode' && bad "seed must not stamp a mode hint (Arm does)" || ok "seed: no mode hint (Arm inserts star header)"
+grep -qF 'multi-review-mode' <<<"$(awk '/^## /{exit} {print}' "$OUT")" && bad "seed must not stamp a mode hint (Arm does)" || ok "seed: no mode hint (Arm inserts star header)"
 
 # diff fence sized to 4 (diff contains a 3-backtick run)
 grep -qx '````' "$OUT" && ok "seed: diff fence sized up to 4" || bad "seed fence not sized up"
@@ -391,10 +391,10 @@ EOF
 
 recdiff "$DV"
 vl="$(bash "$SUT" diff-valid-lines "$DV" 2>/dev/null)"
-printf '%s\n' "$vl" | grep -qF 'foo.sh	1' && ok "diff-valid-lines: foo context line 1" || bad "diff-valid-lines foo:1 (got: $vl)"
-printf '%s\n' "$vl" | grep -qF 'foo.sh	2' && ok "diff-valid-lines: foo added line 2" || bad "diff-valid-lines foo:2"
-printf '%s\n' "$vl" | grep -qF 'foo.sh	3' && ok "diff-valid-lines: foo context line 3" || bad "diff-valid-lines foo:3"
-printf '%s\n' "$vl" | grep -qF 'bar.sh	11' && ok "diff-valid-lines: bar added line 11" || bad "diff-valid-lines bar:11"
+grep -qF 'foo.sh	1' <<<"$vl" && ok "diff-valid-lines: foo context line 1" || bad "diff-valid-lines foo:1 (got: $vl)"
+grep -qF 'foo.sh	2' <<<"$vl" && ok "diff-valid-lines: foo added line 2" || bad "diff-valid-lines foo:2"
+grep -qF 'foo.sh	3' <<<"$vl" && ok "diff-valid-lines: foo context line 3" || bad "diff-valid-lines foo:3"
+grep -qF 'bar.sh	11' <<<"$vl" && ok "diff-valid-lines: bar added line 11" || bad "diff-valid-lines bar:11"
 
 bash "$SUT" validate-anchor "$DV" foo.sh 2     && ok "validate-anchor: valid single line" || bad "validate-anchor foo:2 should pass"
 bash "$SUT" validate-anchor "$DV" foo.sh 1 3   && ok "validate-anchor: valid range" || bad "validate-anchor foo:1-3 should pass"
@@ -1219,7 +1219,7 @@ bash "$SUT" diff-valid-lines "$W7" >/dev/null 2>&1 \
 # reader that drops it digests different bytes than the writer and every read fails.
 W8="$(mkpr w8.md "${WORK}/w-review.desc" "${WORK}/w.diff")"
 span="$(bash "$SUT" diff-span "$W8")"
-awk -v e="${span##* }" 'NR==e' "$W8" | grep -q '^$' \
+grep -q '^$' <<<"$(awk -v e="${span##* }" 'NR==e' "$W8")" \
   && ok "byte-extent: the located body's last line is the trailing blank the writer emitted" \
   || bad "byte-extent: reader's body end does not match the writer's composed body"
 bash "$SUT" diff-valid-lines "$W8" >/dev/null 2>&1 \

@@ -1038,6 +1038,16 @@ mutations() {
     '  for a in "$@"; do [[ "$a" == "$want" ]] && return 0; done' \
     '  printf "%s\\n" "$@" | grep -qx -- "$want" && return 0'
 
+  # Issue #110 — the repo-wide form of the entry above. #52 fixed argv_has, ONE site; the same
+  # `producer | grep -q` defect was live at 83 other places, six of them in shipped scripts where a
+  # false 141 is a wrong ANSWER and not merely a re-run. A lint in packaging is what stops the idiom
+  # coming back, so reverting any rewritten site to the pipe form must trip it. The plant is in a
+  # production script deliberately: it proves the lint sees past the suites it was written for.
+  mutate 'packaging/no-pipe-into-grep-q' 'scripts/multi-review-pr.sh' replace \
+    'feed grep -q under pipefail' 'multi-review-packaging.test.sh' \
+    '    if grep -qxF "$d" <<<"$recs"; then n=$((n + 1)); got="$s $e"; fi' \
+    '    if printf '"'"'%s\n'"'"' "$recs" | grep -qxF "$d"; then n=$((n + 1)); got="$s $e"; fi'
+
   # fable-rd1-r3. Accepting an EMPTY --session-root sends the basis silently back to the companion
   # — the behaviour the flag replaces — and "" is exactly what a failed capture yields, since
   # `git rev-parse --show-toplevel` prints nothing outside a repo. The missing-value guard (S5) does
@@ -1697,7 +1707,7 @@ mutations() {
   # this filter they become rows and the pass manufactures findings about code nobody ships.
   mutate 'symcheck/files-sections-only' 'scripts/multi-review-symcheck.sh' replace \
     'an illustrative block qualified' 'multi-review-symcheck.test.sh' \
-    "       && strip_fences \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then" \
+    "       && grep -qE '^\*\*Files:\*\*' <<<\"\$(strip_fences \"\${TMPD}/sec.\$\$\")\"; then" \
     '       && true; then'
 
   # The strip_fences call in _file_sections is LOAD-BEARING, and this entry once claimed otherwise.
@@ -1713,8 +1723,8 @@ mutations() {
   # trusts, that a line needs no coverage — so the gap reads as a decision rather than an omission.
   mutate 'symcheck/file-sections-strip-fences' 'scripts/multi-review-symcheck.sh' replace \
     'promoted an Interfaces-only section to a Files section' 'multi-review-symcheck.test.sh' \
-    "       && strip_fences \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then" \
-    "       && cat \"\${TMPD}/sec.\$\$\" | grep -qE '^\*\*Files:\*\*'; then"
+    "       && grep -qE '^\*\*Files:\*\*' <<<\"\$(strip_fences \"\${TMPD}/sec.\$\$\")\"; then" \
+    "       && grep -qE '^\*\*Files:\*\*' <<<\"\$(cat \"\${TMPD}/sec.\$\$\")\"; then"
 
   # Block line ranges are ABSOLUTE document lines. Without the base offset a reviewer is pointed at
   # section-relative numbers — the wrong lines, silently.
@@ -2348,7 +2358,7 @@ mutations() {
   # line they already fixed — and after a refresh that anchor may point at unrelated code.
   mutate 'star/compose-inline-skip-resolved' 'scripts/multi-review-star.sh' delete \
     'compose-inline posted an inline comment on a resolved finding' 'multi-review-star.test.sh' \
-    "    printf '%s\n' \"\$rsv_ids\" | grep -qxF \"\$id\" && continue"
+    "    grep -qxF \"\$id\" <<<\"\$rsv_ids\" && continue"
 
   # The same status check on the inline path, which pr.sh calls independently of compose-review
   # (see cmd_post_review): a malformed doc must fail the post, never degrade to a full inline set.
