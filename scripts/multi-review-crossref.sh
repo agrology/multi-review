@@ -241,7 +241,11 @@ cmd_check() { # <doc> <copy> [--rows <file>]
   local rows rc=0
   if [[ -n "$rowsfile" ]]; then
     [[ -f "$rowsfile" ]] || die "rows file not found: $rowsfile" 2
-    awk -F'\t' 'NF { print $1 }' "$rowsfile" | LC_ALL=C sort -u > "${TMPD}/want"
+    # TRIM before deciding a line yields a row. `NF` alone is not that test: under -F'\t' a line
+    # of spaces still has NF==1, so it minted a phantom row id, passed the count guard below, and
+    # then failed downstream as "verdict names row(s) that were never emitted" — loud, but the
+    # wrong diagnosis, and looser than "derived row count" reads (fable-rd2-r2 + codex-rd2-r1).
+    awk -F'\t' '{ id=$1; gsub(/^[ \t]+|[ \t]+$/,"",id); if (id!="") print id }' "$rowsfile" | LC_ALL=C sort -u > "${TMPD}/want"
     [[ -s "${TMPD}/want" ]] || die "rows file yields no rows (truncated?): $rowsfile" 2
   else
     rows="$(cmd_rows "$doc")" || {

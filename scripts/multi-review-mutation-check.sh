@@ -2370,6 +2370,25 @@ mutations() {
     "check --rows '': fell back to re-derivation" 'multi-review-crossref.test.sh' \
     '              [[ -n "$2" ]] || die "--rows requires a non-empty value" 2'
 
+  # The fourth gate-summary arm (fable-rd2-r1). Within gate-summary the doc's existence is already
+  # validated, so `rows` returning anything but 0 or 3 means the crossref script itself could not
+  # run — a broken or partial install. Falling silent there is indistinguishable from a doc with no
+  # sections, which is the whole failure #96 closes. It shipped with no test and no entry, in a PR
+  # whose own body called an unreached branch "the classic unfalsifiable guard".
+  mutate 'star/gate-crossref-probe-unrunnable' 'scripts/multi-review-star.sh' replace \
+    'an unrunnable crossref probe is silent' 'multi-review-star.test.sh' \
+    "      *) echo \"Cross-reference pass: applicability could not be determined — treat as unrecorded\"; echo ;;" \
+    "      *) : ;;"
+
+  # The want-set builder must TRIM before deciding a line yields a row. `NF` alone is not that
+  # test: a line of spaces has NF==1 under a TAB separator, so it minted a phantom row id, passed
+  # the count guard, and then failed downstream with the wrong diagnosis (fable-rd2-r2 and
+  # codex-rd2-r1, both vendors).
+  mutate 'crossref/check-rows-trimmed' 'scripts/multi-review-crossref.sh' replace \
+    'a blank-ish rows file minted a row' 'multi-review-crossref.test.sh' \
+    "    awk -F'\\t' '{ id=\$1; gsub(/^[ \\t]+|[ \\t]+\$/,\"\",id); if (id!=\"\") print id }' \"\$rowsfile\" | LC_ALL=C sort -u > \"\${TMPD}/want\"" \
+    "    awk -F'\\t' 'NF { print \$1 }' \"\$rowsfile\" | LC_ALL=C sort -u > \"\${TMPD}/want\""
+
   # #96: the NO RECORD arm. The issue calls this out specifically — a branch that is never reached
   # is the classic unfalsifiable guard, so it must be demonstrated failing rather than assumed.
   # Without it, a review that skipped the crossref wiring renders byte-identically to one from

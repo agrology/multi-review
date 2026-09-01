@@ -367,6 +367,16 @@ err="$(bash "$SUT" check "$TD" "$TC" --rows "${WORK}/does-not-exist.rows" 2>&1 >
   && ok "check --rows: a missing rows file is a usage error, not a silent re-derivation" \
   || bad "check --rows: a missing rows file did not fail as not-found (rc=$rc err='$err')"
 
+# A WHITESPACE-ONLY LINE still has NF>=1 under -F'\t', so it mints a phantom row id and the
+# derived-count guard passes (fable-rd2-r2 + codex-rd2-r1, both vendors). The turn then fails
+# downstream as "no verdict for row(s):  " instead of as truncation — loud, but the wrong
+# diagnosis, and the guard's "derived row count" claim is looser than it reads.
+printf '   \n\t\n' > "${WORK}/blankish.rows"
+err="$(bash "$SUT" check "$TD" "$TC" --rows "${WORK}/blankish.rows" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && grep -qF 'yields no rows' <<<"$err" \
+  && ok "check --rows: a whitespace-only line does not mint a phantom row" \
+  || bad "check --rows: a blank-ish rows file minted a row and failed as incomplete, not truncated (rc=$rc err='$err')"
+
 # Three holes in the rows-file guards, all one root cause: they tested PROXIES for "this file
 # yields at least one row" rather than the property itself (PR #105 review, fable-rd1-r1/r2 and
 # codex-rd1-r1 — the last two found independently by both vendors).
