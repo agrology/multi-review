@@ -205,7 +205,7 @@ out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$PM2" --curr "$CM2" 2>/d
 P="$(mkbase prevN.md '## Alpha' '' 'a one' '' '## Beta' '' 'b one')"
 C="$(mkbase currN.md '## Alpha' '' 'a TWO' '' '## Beta' '' 'b one')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-awk '/^````diff$/,/^````$/' <<<"$out" | grep -q '## Beta' \
+grep -q '## Beta' <<<"$(awk '/^````diff$/,/^````$/' <<<"$out")" \
   && bad "diff leaks an untouched region heading (fable-rd2-r3)" || ok "diff: no untouched-region context"
 
 # --- removed regions are listed in document order (gemini-rd2-r2, fable-rd2-r9) ---

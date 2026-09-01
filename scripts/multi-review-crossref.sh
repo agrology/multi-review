@@ -259,7 +259,7 @@ cmd_check() { # <doc> <copy> [--rows <file>]
 
   local rv; rv="$(_review_verdicts "$copy")"
 
-  printf '%s\n' "$rv" | grep -qE '^>[[:space:]]*\[crossref\][[:space:]]*—[[:space:]]*via[[:space:]]+[^[:space:]]' \
+  grep -qE '^>[[:space:]]*\[crossref\][[:space:]]*—[[:space:]]*via[[:space:]]+[^[:space:]]' <<<"$rv" \
     || die "crossref table carries no '> [crossref] — via <model>' disclosure" 1
 
   printf '%s\n' "$rv" \

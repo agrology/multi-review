@@ -51,11 +51,11 @@ out="$(bash "$SUT" rows "$D" 2>/dev/null)"; rc=$?
 n="$(printf '%s\n' "$out" | grep -c . || true)"
 [[ "$n" == 3 ]] && ok "rows: one row per fenced block (got $n)" \
   || bad "rows: expected 3 rows, got $n"
-awk -F'\t' '$1=="B1" && $2=="Task 1"' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$1=="B1" && $2=="Task 1"' <<<"$out")" \
   && ok "rows: a row names its section" || bad "rows: B1 does not name Task 1"
-awk -F'\t' '$3 ~ /^python:/' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$3 ~ /^python:/' <<<"$out")" \
   && ok "rows: a row carries its language tag" || bad "rows: no row carries a python tag"
-awk -F'\t' '$3 ~ /^sql:/' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$3 ~ /^sql:/' <<<"$out")" \
   && ok "rows: the sql block is not dropped" || bad "rows: the sql block is missing"
 # Line ranges must be absolute document lines, not offsets within the section.
 awk -F'\t' '$1=="B3"{split($3,a,":"); split(a[2],b,"-"); exit !(b[1] > 18)}' <<<"$out" \
@@ -70,7 +70,7 @@ D="$(mkdoc untagged.md \
   '### Task 1: ships' '' '**Files:**' '- Modify: `src/a.py`' '' \
   '```' 'some output' '```' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$3 ~ /^-:/' <<<"$out" | grep -q . \
+grep -q . <<<"$(awk -F'\t' '$3 ~ /^-:/' <<<"$out")" \
   && ok "rows: an untagged block still gets a row" \
   || bad "rows: the untagged block was filtered out — rows is a worklist, not a filter"
 # --- rows carry what the DOCUMENT ITSELF introduces ---
@@ -86,17 +86,17 @@ D="$(mkdoc introduces.md \
   '### Task 2: consumes' '' '**Files:**' '- Modify: `src/b.py`' '' \
   '```python' 'alpha(2)' '```' '')"
 out="$(bash "$SUT" rows "$D" 2>/dev/null)"
-awk -F'\t' '$1=="B1"' <<<"$out" | grep -qF 'src/new_mod.py' \
+grep -qF 'src/new_mod.py' <<<"$(awk -F'\t' '$1=="B1"' <<<"$out")" \
   && ok "rows: a created file appears in the introduces set" \
   || bad "rows: src/new_mod.py is not in B1's introduces set — every not-yet-written symbol would read as missing"
-awk -F'\t' '$1=="B1"' <<<"$out" | grep -qF 'alpha --flag' \
+grep -qF 'alpha --flag' <<<"$(awk -F'\t' '$1=="B1"' <<<"$out")" \
   && ok "rows: a Produces entry appears in the introduces set" \
   || bad "rows: the Produces entry is not in the introduces set"
-awk -F'\t' '$1=="B1"' <<<"$out" | grep -qF 'src/a.py' \
+grep -qF 'src/a.py' <<<"$(awk -F'\t' '$1=="B1"' <<<"$out")" \
   && bad "rows: a MODIFIED file leaked into the introduces set — it already exists, so its symbols are exactly what must be checked" \
   || ok "rows: a modified file is not treated as introduced"
 # The set is document-wide, not section-local: Task 2's block calls something Task 1 creates.
-awk -F'\t' '$1=="B2"' <<<"$out" | grep -qF 'alpha --flag' \
+grep -qF 'alpha --flag' <<<"$(awk -F'\t' '$1=="B2"' <<<"$out")" \
   && ok "rows: the introduces set is document-wide" \
   || bad "rows: B2 does not carry Task 1's Produces — a later section's use of an earlier creation would read as a defect"
 # --- the introduces set spans EVERY section, not just **Files:** ones (round 1's high) ---

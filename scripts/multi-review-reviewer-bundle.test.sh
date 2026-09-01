@@ -45,8 +45,8 @@ else
   bad "SKILL.md missing bundled .agents/skills/multi-review/{protocol,scripts} refs (unresolvable)"
 fi
 # old repo-root refs (bare scripts/… or docs/multi-review.md NOT under .agents/) must be gone
-if grep -nE '(^|[^./\w])(scripts/multi-review-[a-z-]+\.sh|docs/multi-review\.md)' "${SKILL}/SKILL.md" \
-     | grep -vq '\.agents/skills/multi-review/'; then
+oldrefs="$(grep -nE '(^|[^./\w])(scripts/multi-review-[a-z-]+\.sh|docs/multi-review\.md)' "${SKILL}/SKILL.md")"
+if [[ -n "$oldrefs" ]] && grep -vq '\.agents/skills/multi-review/' <<<"$oldrefs"; then
   bad "SKILL.md still has old repo-root-relative refs"
 else
   ok "no old repo-root refs remain in SKILL.md"

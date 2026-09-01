@@ -69,7 +69,7 @@ _file_sections() { # <doc> -> the core rows whose span contains a **Files:** lin
   while IFS=$'\t' read -r idx start end sid title; do
     [[ -n "$sid" ]] || continue
     if sed -n "${start},${end}p" "$doc" > "${TMPD}/sec.$$" \
-       && strip_fences "${TMPD}/sec.$$" | grep -qE '^\*\*Files:\*\*'; then
+       && grep -qE '^\*\*Files:\*\*' <<<"$(strip_fences "${TMPD}/sec.$$")"; then
       printf '%s\t%s\t%s\t%s\t%s\n' "$idx" "$start" "$end" "$sid" "$title"
     fi
   done < "${TMPD}/secs"
@@ -210,7 +210,7 @@ cmd_check() { # <doc> <copy>
 
   local rv; rv="$(_review_verdicts "$copy")"
 
-  printf '%s\n' "$rv" | grep -qE '^>[[:space:]]*\[symcheck\][[:space:]]*—[[:space:]]*via[[:space:]]+[^[:space:]]' \
+  grep -qE '^>[[:space:]]*\[symcheck\][[:space:]]*—[[:space:]]*via[[:space:]]+[^[:space:]]' <<<"$rv" \
     || die "symcheck table carries no '> [symcheck] — via <model>' disclosure" 1
 
   printf '%s\n' "$rv" \
@@ -262,7 +262,7 @@ cmd_check() { # <doc> <copy>
   # being bitten by exactly that.
   # An EMPTY id (`defect:]`) must FAIL rather than be skipped: skipping it lets a defect verdict
   # satisfy coverage while anchoring to nothing, the bypass this clause exists to prevent.
-  printf '%s\n' "$rv" | grep -qE '^>[[:space:]]*\[symcheck:[^|]*\|defect:\]' \
+  grep -qE '^>[[:space:]]*\[symcheck:[^|]*\|defect:\]' <<<"$rv" \
     && die "defect verdict names an empty finding id" 1
 
   local fid

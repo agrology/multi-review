@@ -329,7 +329,7 @@ _locate_diff() { # <scratch> -> "<body-start> <body-end>"; exit 3 if not EXACTLY
   # the position, decides which candidate is the window, which is why fence-awareness is moot here.
   while read -r s e; do
     d="$(awk -v s="$s" -v e="$e" 'NR >= s && NR <= e' "$scratch" | _diff_digest)"
-    if printf '%s\n' "$recs" | grep -qxF "$d"; then n=$((n + 1)); got="$s $e"; fi
+    if grep -qxF "$d" <<<"$recs"; then n=$((n + 1)); got="$s $e"; fi
   done < <(awk '
     /^## / {
       if (h) { print (h + 1) " " (NR - 1); h = 0 }
@@ -735,7 +735,11 @@ cmd_remap_anchor() { # <scratch> <path> <line> -> the line's CURRENT number, or 
             done)"
   local count; count="$(printf '%s\n' "$hits" | grep -c '[0-9]' || true)"
   (( count == 1 )) || return 1     # gone, or ambiguous -> caller degrades to the summary
-  printf '%s\n' "$hits" | grep '[0-9]' | head -1
+  # NOT `printf … | grep '[0-9]' | head -1`. `head -1` exits at the first line, grep dies of SIGPIPE,
+  # and pipefail makes that 141 — which HERE is the function's contract (0 = remapped, non-zero =
+  # "gone or ambiguous"), so a correctly remapped anchor would silently degrade to the summary. Same
+  # class as #110; the herestring leaves no producer to signal. See also `argv_has` (#52).
+  grep -m 1 '[0-9]' <<<"$hits"
 }
 
 main() {
