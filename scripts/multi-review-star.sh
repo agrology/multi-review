@@ -1284,6 +1284,16 @@ cmd_check_primary_id() { # <doc> <primary-model-id>
   return 0
 }
 
+# Staging cleanup for cmd_merge (#107). A GLOBAL, not a local: the EXIT trap runs while the
+# function frame is unwinding, where a local is no longer reliably readable — and `rm -f ""` with an
+# unset value would resolve ".manifest" against the CWD, so the emptiness check is load-bearing.
+_STAR_MERGE_STAGE=""
+_star_merge_stage_clean() {
+  if [[ -n "${_STAR_MERGE_STAGE:-}" ]]; then
+    rm -f "$_STAR_MERGE_STAGE" "${_STAR_MERGE_STAGE}.manifest"
+  fi
+}
+
 cmd_merge() {
   local round="" doc="" copies=() quarantined=() passes=()
   while [[ $# -gt 0 ]]; do
@@ -1337,8 +1347,9 @@ cmd_merge() {
     # No manifest is normal for round 1 — and was a corrupting trap for any later round (#57).
     # The terminal gate used to delete <doc>.manifest, so resuming a converged review to re-review
     # a follow-up push skipped this pre-check entirely: merge appended the round, rebuilt the
-    # manifest from THAT ROUND ALONE, and only then failed the post-merge self-check — leaving the
-    # doc mutated and disagreeing with its manifest, the exact state that check exists to prevent.
+    # manifest from THAT ROUND ALONE, and only then failed the self-check — which back then ran
+    # after the write, leaving the doc mutated and disagreeing with its manifest (#107 moved that
+    # check ahead of the commit; this guard still earns its place by naming the real cause).
     # The doc's own footers say whether a round was ever merged here, so decide BEFORE the first
     # write (the same rule the --quarantined validation above follows).
     #
@@ -1390,12 +1401,25 @@ cmd_merge() {
     block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'\n'
   done
 
-  # append the namespaced blocks after the LAST "## Review" heading. Pass $block via the
-  # ENVIRONMENT (ENVIRON[]) — NOT `awk -v add=...`, which escape-processes C sequences and would
-  # turn a literal "\n"/"\t"/"\\" in a finding's text into a real newline/tab, corrupting the
-  # byte-verbatim guarantee (and then hashing the corrupted form). ENVIRON values are not
-  # escape-processed. (r11)
-  local tmp; tmp="$(mktemp "${doc}.tmp.XXXXXX")" || die "cannot create temp for: $doc" 1
+  # Stage the ENTIRE merge, self-check the staged pair, and commit only on success (#107).
+  # The self-check used to run after the write, so a turn that failed it had already been committed
+  # to both <doc> and <doc>.manifest. That is expensive to undo: the manifest hashes each finding
+  # block, so repairing the doc alone still fails verify — the round has to be rolled out of BOTH
+  # files by hand. Staging costs one copy of the doc and turns that into "fix the turn and re-run".
+  #
+  # Staged BESIDE the doc rather than in $TMPDIR: same directory means same filesystem, so each
+  # commit below is a rename, not a copy that can tear halfway.
+  #
+  # Pass $block via the ENVIRONMENT (ENVIRON[]) — NOT `awk -v add=...`, which escape-processes C
+  # sequences and would turn a literal "\n"/"\t"/"\\" in a finding's text into a real newline/tab,
+  # corrupting the byte-verbatim guarantee (and then hashing the corrupted form). ENVIRON values
+  # are not escape-processed. (r11)
+  local stage; stage="$(mktemp "${doc}.merge.XXXXXX")" || die "cannot create staging file for: $doc" 1
+  # Global, not the local above: the trap fires while the function frame is unwinding, where a
+  # local is no longer reliably readable. Left armed after the commit on purpose — by then the
+  # staged paths no longer exist, so the cleanup is a no-op, and any later exit stays covered.
+  _STAR_MERGE_STAGE="$stage"
+  trap _star_merge_stage_clean EXIT
   ADD_BLOCK="$block" awk '
     { lines[NR]=$0; if ($0 ~ /^## Review[[:space:]]*$/) last=NR }
     END {
@@ -1404,7 +1428,7 @@ cmd_merge() {
         if (i==last) { print ""; printf "%s", ENVIRON["ADD_BLOCK"] }
       }
     }
-  ' "$doc" > "$tmp" && mv "$tmp" "$doc" || { rm -f "$tmp"; die "merge: failed to write $doc" 1; }
+  ' "$doc" > "$stage" || die "merge: failed to stage $doc" 1
 
   # collect the ns-ids just merged THIS round — read them from $block (the content appended
   # this round), NOT by grepping the whole doc for a "-rd${round}-" substring. A substring grep
@@ -1414,12 +1438,15 @@ cmd_merge() {
   local nsids id line mirror="" qline
   nsids="$(printf '%s' "$block" \
     | grep -oE '^> \[finding:[^]|]+' | sed -E 's/^> \[finding://' || true)"
-  : > "${doc}.manifest.tmp" || true
-  # cumulative: preserve prior manifest lines
-  [[ -f "${doc}.manifest" ]] && cat "${doc}.manifest" >> "${doc}.manifest.tmp"
+  : > "${stage}.manifest" || true
+  # cumulative: preserve prior manifest lines. Read from the LIVE manifest — it is the state this
+  # round builds on and is not written again until the commit below.
+  [[ -f "${doc}.manifest" ]] && cat "${doc}.manifest" >> "${stage}.manifest"
   for id in $nsids; do
-    line="${id}=$(finding_block_hash "$doc" "$id")"
-    echo "finding ${line}" >> "${doc}.manifest.tmp"
+    # hashed against the STAGED doc: that is the content being adjudicated, and the live doc does
+    # not yet contain this round's blocks.
+    line="${id}=$(finding_block_hash "$stage" "$id")"
+    echo "finding ${line}" >> "${stage}.manifest"
     mirror="${mirror}${line} "
   done
 
@@ -1436,22 +1463,31 @@ cmd_merge() {
     # round <N>". <provider> is a registry key ([a-z0-9]+); <reason> may contain spaces ([^·]+);
     # <N> is [0-9]+. Every reader keys off this exact shape — keep them in step if it changes.
     qline="<!-- star-quarantined: ${qprovider} · ${qreason} · round ${round} -->"
-    printf '%s\n' "$qline" >> "$doc"           # durable record
-    echo "quarantine ${qprovider}-rd${round}=$(printf '%s' "$qline" | sha)" >> "${doc}.manifest.tmp"
+    printf '%s\n' "$qline" >> "$stage"         # durable record
+    echo "quarantine ${qprovider}-rd${round}=$(printf '%s' "$qline" | sha)" >> "${stage}.manifest"
     qmirror="${qmirror}${qprovider}=$(printf '%s' "$qline" | sha) "
   done
-  mv "${doc}.manifest.tmp" "${doc}.manifest"
 
   # in-doc human-readable mirror (NOT trusted for integrity — see check-converged)
-  printf '<!-- star-findings: %s; quarantined: %s -->\n' "${mirror% }" "${qmirror% }" >> "$doc"
+  printf '<!-- star-findings: %s; quarantined: %s -->\n' "${mirror% }" "${qmirror% }" >> "$stage"
 
-  # Post-merge self-check: the doc + manifest we just wrote must be mutually consistent (issue #16).
-  # This can only fail on a genuine merge bug (a correct merge writes a consistent doc), so — like
-  # the terminal gate's own guardrail — we FAIL LOUD and leave the doc as-is for diagnosis rather
-  # than rolling back (an earlier rollback attempt was itself a data-loss hazard; #17). The pre-check
-  # already prevents building on pre-existing corruption.
-  _structural_consistency "$doc" \
-    || die "merge: post-merge self-check failed for '$doc' — the merge produced an inconsistent state; left in place for diagnosis" 1
+  # Pre-commit self-check: the staged doc + manifest must be mutually consistent (issue #16).
+  # Nothing has been written to the review yet, so a failure here costs the operator a re-run and
+  # not a two-file rollback. The message says so: "left in place for diagnosis" was the honest
+  # description when the write had already happened, and would be a lie now.
+  #
+  # Do NOT answer a failure here by rolling the doc back instead: an earlier attempt at that was
+  # itself a data-loss hazard (#17), which is why the write used to be left in place. Staging
+  # sidesteps the choice — there is nothing written to undo.
+  _structural_consistency "$stage" \
+    || die "merge: refusing to write — the merge would leave '$doc' inconsistent with its manifest; BOTH are unchanged. Fix the turn (see the diagnosis above) and re-run the same round" 1
+
+  # Commit. Two renames cannot be made atomic together, but either half landing alone is a
+  # doc/manifest mismatch that verify reports loudly — the same failure mode as before, and now
+  # only reachable through a rename failure rather than through any malformed turn.
+  mv "$stage" "$doc" || die "merge: failed to commit the staged doc for '$doc'" 1
+  mv "${stage}.manifest" "${doc}.manifest" \
+    || die "merge: staged doc committed but its manifest did not — run: $(basename "$0") verify '$doc'" 1
 }
 
 cmd_check_converged() {

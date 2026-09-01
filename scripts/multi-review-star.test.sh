@@ -1084,9 +1084,10 @@ bash "$SUT" merge --round 1 --quarantined "gemini:   " "$MB" "${MB}.codex" >/dev
 # a record every _quarantines reader silently drops — re-opening #26's invisibility through the
 # unvalidated field.
 # A NEWLINE in the reason (PR#27, found independently by codex, gemini AND fable) passed all four
-# checks and wrote a two-line record no reader can parse — caught only by the POST-merge
-# self-check, which reports "missing or tampered" and leaves the corrupted doc in place. That is
-# the same shape as the hole this validation closed, so it must die before anything is written.
+# checks and wrote a two-line record no reader can parse — caught only by the merge self-check,
+# reported as "missing or tampered". Since #107 that check refuses the write rather than leaving a
+# corrupted doc behind, so the cost is now a re-run — but it is still a late, opaque diagnosis for
+# a bad argument, the same shape as the hole this validation closed. It must die at the source.
 for badq in "Gemini:timeout" "gem ini:timeout" "noColonAtAll" ":timeout" "$(printf 'gemini:timed\nout')" "$(printf 'gemini:timed\tout')"; do
   MP="${WORK}/mp$RANDOM.md"
   { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: codex gemini -->'; echo; echo "## Review"; echo; } > "$MP"
@@ -1412,6 +1413,44 @@ before="$(shasum "$MB" | cut -d' ' -f1)"
 bash "$SUT" merge --round 2 "$MB" "${MB}.codex" >/dev/null 2>&1; rc=$?
 after="$(shasum "$MB" | cut -d' ' -f1)"
 [[ $rc -ne 0 && "$before" == "$after" ]] && ok "merge: refuses to build on an inconsistent doc (start self-check)" || bad "merge built on a corrupted doc (rc=$rc)"
+
+# (#107) A turn that fails the POST-merge self-check must not have been written at all. The check
+# runs against a STAGED copy, so a refused merge leaves BOTH doc and manifest byte-identical: the
+# operator fixes the turn and re-runs, instead of rolling the round out of two files by hand (the
+# manifest hashes each finding block, so repairing the doc alone still fails verify).
+SB="${WORK}/stage.md"; mkbase "$SB"
+mkcopy "${SB}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
+bash "$SUT" merge --round 1 "$SB" "${SB}.codex" >/dev/null 2>&1
+# Round 2 disclosed with ASCII hyphens instead of the em dash — vendor and content both correct,
+# only punctuation wrong. That is the shape that prompted #107, and no pre-merge check catches it:
+# verify-vendor, channel-check and blind-check are separate commands merge does not call.
+mkcopy "${SB}.codex" '> [finding:r2|high] beta' '-- via gpt-5' '> -- risk: rb'
+dbefore="$(shasum "$SB" | cut -d' ' -f1)"; mbefore="$(shasum "${SB}.manifest" | cut -d' ' -f1)"
+bash "$SUT" merge --round 2 "$SB" "${SB}.codex" >/dev/null 2>&1; rc=$?
+dafter="$(shasum "$SB" | cut -d' ' -f1)"; mafter="$(shasum "${SB}.manifest" | cut -d' ' -f1)"
+[[ $rc -ne 0 ]] || bad "merge accepted a turn that fails its own self-check (#107)"
+[[ "$dbefore" == "$dafter" ]] \
+  && ok "merge: a refused merge leaves the DOC untouched (#107)" \
+  || bad "a refused merge wrote the round into the doc anyway (#107)"
+[[ "$mbefore" == "$mafter" ]] \
+  && ok "merge: a refused merge leaves the MANIFEST untouched (#107)" \
+  || bad "a refused merge rewrote the manifest anyway — doc and manifest now disagree (#107)"
+# the review must still be usable afterwards, not merely unchanged
+bash "$SUT" verify "$SB" >/dev/null 2>&1 \
+  && ok "merge: the doc still verifies after a refused merge (#107)" \
+  || bad "a refused merge left the doc unverifiable (#107)"
+# ...and the SAME round re-merges once the turn is fixed, with no rollback step in between
+mkcopy "${SB}.codex" '> [finding:r2|high] beta' '> — via gpt-5.5' '> — risk: rb'
+bash "$SUT" merge --round 2 "$SB" "${SB}.codex" >/dev/null 2>&1 \
+  && bash "$SUT" verify "$SB" >/dev/null 2>&1 \
+  && ok "merge: re-running the fixed turn merges cleanly, no manual repair (#107)" \
+  || bad "could not re-merge the fixed turn after a refusal (#107)"
+# staging must not survive as a sibling of the doc: nothing else globs <doc>.* today, but a
+# leftover would read as a reviewer copy the moment something does.
+leftovers="$(ls "${SB}".merge* 2>/dev/null || true)"
+[[ -z "$leftovers" ]] \
+  && ok "merge: leaves no staging file beside the doc (#107)" \
+  || bad "merge left staging files beside the doc: ${leftovers} (#107)"
 
 # a clean multi-round merge still succeeds end-to-end (self-checks don't break the happy path)
 CB="${WORK}/mok.md"; mkbase "$CB"

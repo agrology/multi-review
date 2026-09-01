@@ -1078,15 +1078,17 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
 - If the marker is missing/corrupt, or a working copy changed while it said `awaiting-reviewer`
   in a way the wait/verify flow can't reconcile, pause and surface — do not race-edit.
 - **Doc↔manifest consistency is self-checked.** `merge` verifies the doc against its `.manifest`
-  both before merging (it refuses to build on an already-inconsistent doc) and after writing —
-  so a dropped/duplicated round, a finding split from its `> —` lines, or a mangled footer fails
-  loud at the handoff instead of accumulating silently to the gate. A **missing** manifest is
-  checked too: if the doc carries `<!-- star-findings: -->` footers from an earlier round but the
-  manifest is gone, `merge` refuses before touching the doc rather than rebuilding a manifest that
-  covers only the current round (issue #57). If a `merge` aborts with a
-  consistency error, **stop and diagnose** with `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh
-  verify "<doc>"` — do not re-merge until it passes. After appending your primary
-  `[agree]`/`[dispute]` responses each round, you may run `verify` yourself to catch an
-  append that split a finding block before the next fan-out.
+  both before merging (it refuses to build on an already-inconsistent doc) and before committing
+  the round it has staged — so a dropped/duplicated round, a finding split from its `> —` lines,
+  or a mangled footer fails loud at the handoff instead of accumulating silently to the gate. A
+  **missing** manifest is checked too: if the doc carries `<!-- star-findings: -->` footers from an
+  earlier round but the manifest is gone, `merge` refuses before touching the doc rather than
+  rebuilding a manifest that covers only the current round (issue #57).
+  **A `merge` that aborts with a consistency error has written nothing** — the second check runs
+  against a staged copy, so the doc and its manifest are byte-unchanged (issue #107). Read the
+  diagnosis, fix the turn it names, and re-run the SAME round: there is no rollback step, and
+  nothing to repair by hand. After appending your primary `[agree]`/`[dispute]` responses each
+  round, you may run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh verify "<doc>"` yourself
+  to catch an append that split a finding block before the next fan-out.
 - Disclosure warnings on stderr are non-blocking; surface them at the gate but keep going.
 - The human gate is inviolable and terminal for this command.

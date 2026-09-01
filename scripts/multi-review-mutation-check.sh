@@ -2380,6 +2380,18 @@ mutations() {
     'compose-inline posted an inline comment on a resolved finding' 'multi-review-star.test.sh' \
     "    grep -qxF \"\$id\" <<<\"\$rsv_ids\" && continue"
 
+  # #107. The merge self-check gates the COMMIT: it runs against the staged pair, and only a pass
+  # renames it into place. Neuter the refusal and a turn that fails the check is written to both
+  # <doc> and <doc>.manifest anyway — the old behaviour, whose cost was a two-file manual rollback
+  # (the manifest hashes each finding block, so repairing the doc alone still fails verify).
+  # Named at the doc-untouched assertion rather than the rc one: rc going 1→0 only says the refusal
+  # stopped refusing, while the doc changing is the damage #107 is actually about. This is also the
+  # first mutation entry the merge self-check has ever had, at either end.
+  mutate 'star/merge-selfcheck-gates-commit' 'scripts/multi-review-star.sh' replace \
+    'a refused merge wrote the round into the doc anyway' 'multi-review-star.test.sh' \
+    "    || die \"merge: refusing to write — the merge would leave '\$doc' inconsistent with its manifest; BOTH are unchanged. Fix the turn (see the diagnosis above) and re-run the same round\" 1" \
+    '    || true'
+
   # The same status check on the inline path, which pr.sh calls independently of compose-review
   # (see cmd_post_review): a malformed doc must fail the post, never degrade to a full inline set.
   mutate 'star/compose-inline-resolved-status' 'scripts/multi-review-star.sh' replace \
