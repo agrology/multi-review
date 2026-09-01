@@ -530,10 +530,13 @@ and optionally, after those, \`> — at <path>:<line>\` (or \`<path>:<start>-<en
 RIGHT-side new-file line numbers). The severity tag and risk line are required on every
 finding — local doc or PR diff scratch, there is no mode to detect.
 
-Severity is a claim about consequence: \`high\`/\`med\` assert a defect exists, so say how you
-know — "empty batch → index 0 raises IndexError", or "ran X, got rc=1". A concern you cannot
-ground that way is still worth raising; raise it as \`low\`. Padding a round with speculative
-\`med\`s costs the author real edits and the review real rounds.
+Severity is CONSEQUENCE IF TRUE, never confidence that it is true. \`high\`/\`med\` assert a
+defect exists, so say how you know — "empty batch → index 0 raises IndexError", or "ran X, got
+rc=1". Uncertainty goes in the \`evidence\` line, not the severity tag: a defect that would hand a
+user a confidently wrong answer is \`high\` whether or not you could reproduce it, so raise it
+there and say plainly what you could not establish. A concern you cannot ground AT ALL is still
+worth raising as \`low\`. Padding a round with speculative \`med\`s costs the author real edits
+and the review real rounds.
 
 If you read the document in full and have NOTHING to raise, say so explicitly under the same
 \`## Review\` heading — do not simply flip the marker:

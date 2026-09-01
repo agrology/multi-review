@@ -2162,6 +2162,44 @@ mutations() {
     '  if [[ -z "$cur_round" ]] && grep -q '"'"'^<!-- multi-review:'"'"' "$doc"; then' \
     '  if false; then'
 
+  # --- issue #47 §1/§3/§4 ------------------------------------------------------------------------
+  # All three are prose, so packaging is the only thing that can see them go — which is exactly why
+  # each needs its own entry rather than one covering the group.
+
+  # §1. A check that cannot fail is indistinguishable from a passing one BY INSPECTION, so nothing
+  # a reader does catches it. Measured: one property test written wrong three times, failing by
+  # passing every time (#47); and on PR #105 two of this repo's own assertions stayed green with
+  # the guard removed, plus a third fully covered while checking the wrong property.
+  mutate 'command/fix-must-demonstrate-failure' 'commands/multi-review.md' replace \
+    'nothing requires a check-related fix to be demonstrated' 'multi-review-packaging.test.sh' \
+    '   **A fix about whether a CHECK CAN FAIL must demonstrate the failure, not assert it**' \
+    '   A fix about whether a check can fail should ideally be demonstrated.'
+
+  # §4. The never-drop rule protects a reviewer that REVIEWED and found nothing. Without this
+  # carve-out it also protects one that cannot run: gemini was re-dispatched in all four rounds
+  # across PRs #102 and #105 on an identical `dispatch exited 41`, each round buying a guaranteed
+  # no-op at the price of a wait bound.
+  mutate 'command/broken-provider-not-dry' 'commands/multi-review.md' replace \
+    'no bound on re-dispatching a deterministically broken provider' 'multi-review-packaging.test.sh' \
+    '   **A BROKEN provider is not a dry one** (issue #47 §4). That rule protects a reviewer that' \
+    '   A broken provider is much like a dry one. That rule protects a reviewer that'
+
+  # ...and the roster clause is a separate rule: stopping the dispatch must not stop the DISCLOSURE.
+  # gate-summary computes admitted = raisers union (roster minus quarantined), so a provider removed
+  # from the roster is silently absent rather than visibly quarantined — issue #59's undercount.
+  mutate 'command/stopped-provider-stays-in-roster' 'commands/multi-review.md' replace \
+    'a stopped provider is dropped from the roster' 'multi-review-packaging.test.sh' \
+    '   dispatching it for the rest of the review.** Keep it in the roster and keep recording its' \
+    '   dispatching it for the rest of the review.** Drop it from the roster and stop recording its'
+
+  # §3. Severity conflated with confidence buried the most consequential finding of the #47 session
+  # at `low` — a split that would have published a "writer-disjoint" number that was nothing of the
+  # kind, with every test passing. Targets the PROMPT, which is what a secondary actually reads.
+  mutate 'reviewer/severity-is-consequence' 'scripts/multi-review-reviewer.sh' replace \
+    'severity still reads as confidence' 'multi-review-packaging.test.sh' \
+    'Severity is CONSEQUENCE IF TRUE, never confidence that it is true. \`high\`/\`med\` assert a' \
+    'Severity is a claim about how sure you are. \`high\`/\`med\` assert a'
+
   # --- re-fan bounds (issue #106) ---------------------------------------------------------------
   # Measured on agrology/MCP-enterprise#285: nine rounds, 32 findings, ZERO `high`, new-finding
   # rate 6,5,2,2,6,5,3,3 that never decayed. Prose rules, so packaging is the only thing that can

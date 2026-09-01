@@ -1238,4 +1238,30 @@ grep -q 'high. trigger is deliberately NOT bounded' "$RFB" \
   && ok "command: the high-severity re-fan trigger is explicitly left unbounded" \
   || bad "command: the high trigger's exemption is not stated — a later edit will bound it along with the others (#106)"
 
+# --- issue #47 §1/§3/§4: three prose rules, so packaging is the only thing that can see them go ---
+
+# §1 — a fix about whether a CHECK CAN FAIL must demonstrate the failure. A check that cannot fail
+# is indistinguishable from a passing one by inspection, which is why re-reading keeps missing it.
+D47="${ROOT}/commands/multi-review.md"
+grep -q 'must demonstrate the failure, not assert it' "$D47" \
+  && ok "command: a fix about a check must demonstrate the failure, not assert it" \
+  || bad "command: nothing requires a check-related fix to be demonstrated — 'I added a test' passes inspection whether or not the test can fail (#47 §1)"
+
+# §4 — a broken provider is not a dry one. The never-drop rule protects a reviewer that REVIEWED
+# and found nothing; it was never meant to keep paying a wait bound for one that cannot run.
+grep -q 'BROKEN provider is not a dry one' "$D47" \
+  && ok "command: a provider failing identically twice stops being dispatched" \
+  || bad "command: no bound on re-dispatching a deterministically broken provider — every round buys a guaranteed no-op (#47 §4)"
+# ...and it must stay in the roster, or the gate stops showing it was asked for at all
+grep -q 'Keep it in the roster and keep recording its' "$D47" \
+  && ok "command: a stopped provider stays in the roster and keeps being recorded" \
+  || bad "command: a stopped provider is dropped from the roster — gate-summary then hides it instead of showing it quarantined (#47 §4)"
+
+# §3 — severity is consequence, not confidence. Checked in the REVIEWER PROMPT, which is what a
+# secondary actually reads; the protocol doc restating it is not what reaches the turn.
+P47="${ROOT}/scripts/multi-review-reviewer.sh"
+grep -q 'Severity is CONSEQUENCE IF TRUE' "$P47" \
+  && ok "prompt: severity is defined as consequence, not confidence" \
+  || bad "prompt: severity still reads as confidence — an ungroundable but catastrophic finding gets filed low, where the primary may defer it (#47 §3)"
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
