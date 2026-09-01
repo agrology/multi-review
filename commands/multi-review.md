@@ -840,6 +840,25 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      body (or, for a PR, note it — the diff is read-only), or
    - `> [dispute:<ns-id>] <one-line reason>` + `> — via <primary-model-id>` — reject it, tersely.
 
+   **A fix about whether a CHECK CAN FAIL must demonstrate the failure, not assert it**
+   (issue #47 §1). When the finding concerns a test, a guard, an assertion or a coverage claim,
+   "I added a test" is not a fix — "I broke it on purpose and watched that test go red" is. Say
+   which, in the response or the doc body.
+
+   A check that cannot fail is *indistinguishable from a passing check by inspection*, which is
+   precisely why re-reading keeps missing it. In the session that filed #47 one property test was
+   written wrong three times and failed by passing every time; re-reading never caught any of
+   them, and a two-minute deliberate break would have caught all three. It is not hypothetical
+   here either: reviewing PR #105 the mutation sweep found two of this repo's own assertions
+   staying green with the guard removed, and a third that was fully covered while checking the
+   wrong property — none of which reading the diff had surfaced.
+
+   The demonstration is cheap and mechanical, and it converts the most expensive recurring failure
+   class in a review into a step you either did or did not perform. **Coverage is not the claim
+   being made; falsifiability is.** A guard can be provably load-bearing for the cases someone
+   wrote and still be checking the wrong thing — so when the finding is about a check, name the
+   break you performed and what went red.
+
    **Adjudicate, do not rubber-stamp.** Every `agree` obliges an edit, every edit is fresh
    unreviewed text, and that is the engine that drives extra rounds — so a lenient primary is
    expensive as well as uncritical. **Dispute** a finding when any of these holds:
@@ -967,6 +986,29 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    A `dry-streak:` line is **advisory only**. Never drop a secondary from the set on your own:
    a saturated reviewer can still catch something in newly written text. Surface the streak at
    the gate and let the engineer decide.
+
+   **A BROKEN provider is not a dry one** (issue #47 §4). That rule protects a reviewer that
+   *reviewed and found nothing* — silence is a real result and may not repeat next round. It was
+   never meant to cover a provider that cannot run at all: a dispatch failure is a different
+   signal from silence, and re-dispatching it buys a guaranteed no-op at the price of a wait bound.
+
+   So: **after a provider is quarantined in TWO consecutive rounds for the same reason, stop
+   dispatching it for the rest of the review.** Keep it in the roster and keep recording its
+   quarantine every round, so `gate-summary` still subtracts it and the gate still shows it was
+   asked for and could not answer — the point is to stop paying for it, not to hide it. Say at the
+   gate that you stopped, and why.
+
+   Judge "the same reason" by the failure, not the wording: an auth refusal that recurs verbatim
+   is the same reason; a timeout followed by a malformed turn is not.
+
+   Measured live: `gemini` quarantined with an identical `dispatch exited 41` — an unreadable
+   auth configuration — in **all four rounds across PRs #102 and #105**, and its preflight `check`
+   hint had predicted exactly that before the first dispatch. Each round re-dispatched a provider
+   already watched failing deterministically, because this instruction only had a rule for dry
+   reviewers. The deterministic-failure rule the Agent-tool branch already states — "it is
+   deterministic, so re-dispatching next round fails identically, and quarantining it spends a
+   round to discover something already known" — is the same reasoning; it simply never covered the
+   shell path.
 
    **Run `verify` BEFORE you touch the marker** — not optional on the re-fan branch:
 

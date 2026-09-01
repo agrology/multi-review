@@ -54,11 +54,25 @@ Under the copy's `## Review` heading, a secondary raises each concern as:
 - `> — via <model>` — required disclosure line, immediately after. Must be your real model id.
 - `> — risk: <short risk>` — required, immediately after that. One clause, no paragraphs.
 - `> — evidence: <how you know>` — **required on `high` and `med`**: the mechanism that produces
-  the failure, or the reproduction that was run. `low` does not need one. Severity is a claim
-  about consequence, and `high`/`med` assert a defect exists — a concern that cannot be grounded
-  that way is still worth raising, as a `low`. Measured across four reviews (issue #29), a stated
-  mechanism was what separated findings worth acting on from speculative ones; it predicted value
-  better than either the vendor or the severity tag.
+  the failure, or the reproduction that was run. `low` does not need one. Measured across four
+  reviews (issue #29), a stated mechanism was what separated findings worth acting on from
+  speculative ones; it predicted value better than either the vendor or the severity tag.
+
+**Severity is CONSEQUENCE IF TRUE, not confidence that it is true** (issue #47 §3). How sure you
+are belongs in the `evidence` line — "traced the call path but could not reach it", "the premise
+that upstream can omit this is unverified" — and never in the severity tag. A defect that would
+publish a wrong answer to a user is `high` whether or not you could reproduce it; say what you
+could not establish and let the primary weigh it.
+
+The two are easy to conflate because the evidence requirement pulls the other way, and the
+conflation is expensive: in the session that filed #47 the single most consequential finding — a
+split that would have reported a "writer-disjoint" number that was nothing of the kind, with every
+test passing — was filed `low` purely because the reviewer could not ground the mechanism, which
+put it at the bottom of a list the primary is explicitly permitted to defer.
+
+If you cannot ground it at all, `low` is still the right tag — that rule stands. What changes is
+that an ungroundable concern with a *severe* consequence is not automatically `low`: raise it at
+the severity its consequence warrants and say plainly, in `evidence`, what you could not show.
 
   A missing evidence line is **never** a parse error. Rejecting the finding would fail the whole
   reviewer turn and discard its good findings along with the weak one. Instead
@@ -155,6 +169,12 @@ on `> — via <model>`. The primary's disclosed id must differ from every second
 self-response guard fails a response whose model equals the finding's raiser model, so a
 Claude-family secondary (e.g. `fable`) colliding with a Claude primary id would make
 convergence impossible.
+
+A provider quarantined in **two consecutive rounds for the same reason** is not dispatched again
+for the rest of the review (issue #47 §4). It stays in the roster and its quarantine is still
+recorded each round, so the gate still shows a reviewer that was asked for and could not answer —
+the bound stops the cost, not the disclosure. The never-drop rule continues to protect a reviewer
+that ran and found nothing; a dispatch failure is a different signal from silence.
 
 ## Fable floor & independence
 
