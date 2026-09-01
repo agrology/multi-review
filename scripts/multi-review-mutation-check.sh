@@ -2231,9 +2231,10 @@ mutations() {
     'Severity is a claim about how sure you are. \`high\`/\`med\` assert a'
 
   # --- re-fan bounds (issue #106) ---------------------------------------------------------------
-  # Measured on agrology/MCP-enterprise#285: nine rounds, 32 findings, ZERO `high`, new-finding
-  # rate 6,5,2,2,6,5,3,3 that never decayed. Prose rules, so packaging is the only thing that can
-  # see them go — which is exactly why each needs its own entry rather than one for the section.
+  # Measured on a nine-round review of a downstream PR: 32 findings, ZERO `high`, per-round
+  # new-finding rate 6,5,2,2,3,3,5,3,3 — it fell to 2 by round 4 then climbed back to 5, so it
+  # never settled. Prose rules, so packaging is the only thing that can see them go — which is
+  # exactly why each needs its own entry rather than one for the section.
 
   mutate 'command/refan-new-logic-bounded' 'commands/multi-review.md' replace \
     'the new-logic re-fan trigger is unbounded' 'multi-review-packaging.test.sh' \

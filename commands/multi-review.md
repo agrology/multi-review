@@ -956,7 +956,7 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    The bound is *once* rather than *never* because the first round of fixes genuinely is the
    least-reviewed code in the change — that is issue #29's original observation and it still
    holds. The fifth round of fixes to the same predicate is not: by then the review is reviewing
-   itself. Measured on `agrology/MCP-enterprise#285` — nine rounds, 32 findings, **zero `high`**,
+   itself. Measured on a nine-round review of a downstream PR — 32 findings, **zero `high`**,
    and a per-round new-finding rate of 6, 5, 2, 2, 3, 3, 5, 3, 3 — it fell to 2 by round 4 and
    then climbed back to 5, so it never settled and no `verdict:` line ever stopped it. Its own
    round-8 turn records the mechanism: the round-8 delta fixed `fable-rd7-r2` and created
@@ -964,11 +964,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    **From round 3, re-fan only for a `med` or higher.** A round that agreed to nothing above `low`
    has not found the kind of defect that justifies another fan-out, and `low`-severity churn is
-   what a self-reviewing loop produces once it runs out of real material. Replayed against #285,
-   this floor first fires at **round 4** — which agreed to nothing at all, both its findings
-   refuted — so rounds 5-9 never run: **17 of the 32 findings, and not one `high` lost, because
-   there were none.** Five rounds saved, not days: rounds 4 and 9 landed four hours apart. What
-   this bound buys back is rounds, not calendar time.
+   what a self-reviewing loop produces once it runs out of real material. Replayed against that
+   review, this floor first fires at **round 4** — which agreed to nothing at all, both its
+   findings refuted — so rounds 5-9 never run: **17 of the 32 findings, and not one `high` lost,
+   because there were none.** Five rounds saved, not days: rounds 4 and 9 landed four hours apart.
+   What this bound buys back is rounds, not calendar time.
 
    The `high` trigger is deliberately NOT bounded. A non-trivial fix to a `high` is the one case
    where re-review reliably earns its cost, and a review that keeps surfacing `high`s is not the
