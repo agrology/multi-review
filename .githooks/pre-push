@@ -2,9 +2,16 @@
 # pre-push — refuse to push a branch that has not raised the plugin version.
 #
 # The documented gate (§11) already includes multi-review-version-check.sh, but a documented step
-# is only as binding as the person remembering it. This repo has no CI, so a local hook is the one
-# place the rule can actually bite: a merge performed on GitHub runs nothing of ours, which makes
-# the feature-branch push the last moment a missing bump is still cheap to fix.
+# is only as binding as the person remembering it. CI runs that check too now
+# (.github/workflows/gate.yml), so this hook is no longer the only thing behind the rule — it is the
+# EARLY one, and on one path still the ONLY one:
+#
+#   * It fails BEFORE the push. A missing bump costs an amended commit, not a red PR and a
+#     round-trip through review.
+#   * version-check no-ops on `main` (there is no base to compare against), which makes CI's copy
+#     effectively a pull_request check. So a DIRECT push to `main` is checked by this hook and by
+#     nothing else — and direct pushes to `main` do happen, deliberately for a docs/chore change
+#     (§11) and by accident otherwise.
 #
 # Deliberately narrow: it runs the VERSION check only, not the whole suite. The suite is a
 # pre-review gate that takes over a minute; a push happens many times a branch. Guarding the one
