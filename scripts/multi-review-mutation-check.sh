@@ -1044,7 +1044,7 @@ mutations() {
   # coming back, so reverting any rewritten site to the pipe form must trip it. The plant is in a
   # production script deliberately: it proves the lint sees past the suites it was written for.
   mutate 'packaging/no-pipe-into-grep-q' 'scripts/multi-review-pr.sh' replace \
-    'feed grep -q under pipefail' 'multi-review-packaging.test.sh' \
+    'feed an early-exiting grep under pipefail' 'multi-review-packaging.test.sh' \
     '    if grep -qxF "$d" <<<"$recs"; then n=$((n + 1)); got="$s $e"; fi' \
     '    if printf '"'"'%s\n'"'"' "$recs" | grep -qxF "$d"; then n=$((n + 1)); got="$s $e"; fi'
 
