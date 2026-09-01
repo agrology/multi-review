@@ -1274,17 +1274,30 @@ grep -q 'Severity is CONSEQUENCE IF TRUE' "$P47" \
 # signal, and the producer always runs to completion. `||` is not a pipe, so it is not matched;
 # quoted lines are excluded because the mutation table holds source excerpts as DATA, not as
 # pipelines this shell ever runs.
+#
+# `grep -m` is matched for the same reason as `-q`: it stops at its Nth match. `| head -N` is NOT,
+# and that is a deliberate hole — it is early-exiting too, but it is overwhelmingly used inside a
+# `$(…)` whose status nobody reads, where it cannot lie. Whether a status is consumed is not
+# decidable from the line, so a gate on it would be noise. `cmd_remap_anchor` in pr.sh was the one
+# place it WAS the contract; that is fixed by hand and commented there, not caught by this lint.
+#
+# `.githooks/pre-push` is scanned although it sits outside the documented `scripts/*.sh` gate: it
+# runs on every push and nothing else here reads it — the same argument shellcheck's CI job makes.
+# The bundled copy under .agents/ is deliberately NOT scanned: reviewer-bundle asserts it `cmp -s`
+# byte-identical to scripts/multi-review-core.sh, which IS scanned, so a second pass over it is a
+# check that cannot fail.
 sigpipe_sq="'"; sigpipe_hits=""; sigpipe_n=0
-for f in "${ROOT}"/scripts/*.sh; do
+for f in "${ROOT}"/scripts/*.sh "${ROOT}"/.githooks/pre-push; do
+  [[ -f "$f" ]] || continue
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
     sigpipe_n=$((sigpipe_n + 1))
-    [[ $sigpipe_n -le 3 ]] && sigpipe_hits="${sigpipe_hits} $(basename "$f"):${hit%%:*}"
-  done < <(grep -nE '(^|[^|&>])\|[[:space:]]*grep +-[a-zA-Z]*q' "$f" \
+    [[ $sigpipe_n -le 3 ]] && sigpipe_hits="${sigpipe_hits} ${f#"${ROOT}"/}:${hit%%:*}"
+  done < <(grep -nE '(^|[^|&>])\|[[:space:]]*grep +-[a-zA-Z]*[qm]' "$f" \
              | grep -vE "^[0-9]+:[[:space:]]*(#|${sigpipe_sq}|\")")
 done
 [[ $sigpipe_n -eq 0 ]] \
-  && ok "no pipeline feeds grep -q under pipefail (SIGPIPE cannot fake a failed check)" \
-  || bad "${sigpipe_n} pipeline(s) feed grep -q under pipefail — SIGPIPE (141) reads as a failed check (#110), e.g.${sigpipe_hits}"
+  && ok "no pipeline feeds an early-exiting grep under pipefail (SIGPIPE cannot fake a failed check)" \
+  || bad "${sigpipe_n} pipeline(s) feed an early-exiting grep under pipefail — SIGPIPE (141) reads as a failed check (#110), e.g.${sigpipe_hits}"
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

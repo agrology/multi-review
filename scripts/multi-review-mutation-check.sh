@@ -1048,6 +1048,26 @@ mutations() {
     '    if grep -qxF "$d" <<<"$recs"; then n=$((n + 1)); got="$s $e"; fi' \
     '    if printf '"'"'%s\n'"'"' "$recs" | grep -qxF "$d"; then n=$((n + 1)); got="$s $e"; fi'
 
+  # The `-m` arm of that lint. `grep -m N` stops at the Nth match exactly as `-q` stops at the first,
+  # so it kills its producer the same way — and this is the one place in the tree where the status of
+  # such a pipeline was the CONTRACT: cmd_remap_anchor returns 0 for "remapped" and non-zero for
+  # "gone or ambiguous", so a false 141 degraded a correctly remapped inline comment to the summary.
+  # Reverting it to the pipe form must trip the lint, or widening the pattern from `q` to `[qm]` was
+  # a gate arm nothing exercises.
+  mutate 'packaging/no-pipe-into-grep-m' 'scripts/multi-review-pr.sh' replace \
+    'feed an early-exiting grep under pipefail' 'multi-review-packaging.test.sh' \
+    "  grep -m 1 '[0-9]' <<<\"\$hits\"" \
+    "  printf '%s\n' \"\$hits\" | grep -m 1 '[0-9]'"
+
+  # The path arm. `.githooks/pre-push` is outside the documented scripts/*.sh gate but runs on every
+  # push, so the lint reaches for it explicitly; without this entry that reach is untested and a
+  # later edit narrowing the glob back would go unnoticed. The mutation is behaviour-preserving on
+  # purpose — only the lint may notice it, which is what makes it a test OF the lint.
+  mutate 'packaging/lint-covers-githooks' '.githooks/pre-push' replace \
+    'feed an early-exiting grep under pipefail' 'multi-review-packaging.test.sh' \
+    '  case "${lref:-}" in refs/tags/*) continue ;; esac' \
+    '  printf '"'"'%s\n'"'"' "${lref:-}" | grep -q '"'"'^refs/tags/'"'"' && continue'
+
   # fable-rd1-r3. Accepting an EMPTY --session-root sends the basis silently back to the companion
   # — the behaviour the flag replaces — and "" is exactly what a failed capture yields, since
   # `git rev-parse --show-toplevel` prints nothing outside a repo. The missing-value guard (S5) does
