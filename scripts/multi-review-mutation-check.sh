@@ -2564,6 +2564,294 @@ mutations() {
     'never states the `|<sev>` finding grammar' 'multi-review-reviewer.test.sh' \
     '  \`> [finding:<id>|<sev>] <concern>\` (\`<sev>\` is \`high\`, \`med\`, or \`low\` — required on' \
     '  <concern>'
+
+  # ---- fix witness + plan lint (spec 2026-09-01) -----------------------------------------------
+  # core.sh blocks: a fence closes only with the SAME character. Moved from symcheck's private
+  # _blocks_in, which carried NO entry — the move is where the line gained one.
+  mutate 'core/blocks-fence-char-matched' 'scripts/multi-review-core.sh' replace \
+    'closed the ~~~ block' 'multi-review-core.test.sh' \
+    '        if (fc == fchar && ticks >= flen) {' \
+    '        if (ticks >= flen) {'
+  mutate 'core/blocks-unterminated-emitted' 'scripts/multi-review-core.sh' replace \
+    'unterminated row' 'multi-review-core.test.sh' \
+    '    END { if (infence) print bstart "\t" (base + NR - 1) "\t" btag }' \
+    '    END { }'
+  # Redundant behind the numeric-span check for the EXIT CODE alone; the assertion pins the
+  # message, which is what makes this line load-bearing rather than SURVIVES-BY-DESIGN.
+  mutate 'core/blocks-missing-doc' 'scripts/multi-review-core.sh' delete \
+    'missing doc rc=' 'multi-review-core.test.sh' \
+    '  [[ -f "$1" ]] || die "blocks: doc not found: $1" 2'
+  mutate 'symcheck/blocks-failure-is-loud' 'scripts/multi-review-symcheck.sh' replace \
+    'blocks failure was swallowed' 'multi-review-symcheck.test.sh' \
+    '    || die "core.sh blocks failed for ${1}: $(head -1 "${TMPD}/blocks.err")" 1' \
+    '    || true'
+
+  # planlint — the tokenizer refuses a live substitution (spec B3); the union halves; the corpus
+  # exclusion; the pre-review scope; the exit code.
+  mutate 'planlint/no-eval-dollar' 'scripts/multi-review-planlint.sh' replace \
+    'subst verdict' 'multi-review-planlint.test.sh' \
+    '            if (c == "$" || c == "`") return -1              # a live substitution: refuse' \
+    '            if (c == "`") return -1'
+  mutate 'planlint/not-applicable-announced' 'scripts/multi-review-planlint.sh' delete \
+    'plain doc rc=' 'multi-review-planlint.test.sh' \
+    "  grep -q . \"\${TMPD}/stmts\" || die \"not applicable: no mutate invocation in the document's fenced code\" 3"
+  mutate 'planlint/label-skips-survives-by-design' 'scripts/multi-review-planlint.sh' replace \
+    'SBD verdict' 'multi-review-planlint.test.sh' \
+    '    elif [[ "$expect" != "SURVIVES-BY-DESIGN" ]] \' \
+    '    elif true \'
+  mutate 'planlint/duplicate-id' 'scripts/multi-review-planlint.sh' replace \
+    'duplicate rows' 'multi-review-planlint.test.sh' \
+    '    elif grep -qFx -- "$id" "${TMPD}/dups"; then' \
+    '    elif false; then'
+  # The corpus must EXCLUDE the entries: an entry's own expect text sits in the fenced table
+  # block, so a corpus that keeps it can never report a missing label (the prototype of this
+  # change failed exactly this way).
+  mutate 'planlint/corpus-excludes-entries' 'scripts/multi-review-planlint.sh' replace \
+    'label verdict' 'multi-review-planlint.test.sh' \
+    "  awk -F'\\t' 'NR == FNR { for (i = \$1; i <= \$2; i++) drop[i] = 1; next } !(FNR in drop)' \\" \
+    "  awk -F'\\t' 'NR == FNR { next } 1' \\"
+  mutate 'planlint/pre-review-only' 'scripts/multi-review-planlint.sh' replace \
+    'review-section code counted' 'multi-review-planlint.test.sh' \
+    '  _pre_review "$doc" > "${TMPD}/pre"' \
+    '  cat "$doc" > "${TMPD}/pre"'
+  mutate 'planlint/target-union-doc' 'scripts/multi-review-planlint.sh' replace \
+    'doc-only target' 'multi-review-planlint.test.sh' \
+    '    elif ! _line_present "$old" "${TMPD}/corpus" \' \
+    '    elif true \'
+  mutate 'planlint/target-union-repo' 'scripts/multi-review-planlint.sh' replace \
+    'repo-only target' 'multi-review-planlint.test.sh' \
+    '         && ! { [[ -f "${repo}/${rel}" ]] && _line_present "$old" "${repo}/${rel}"; }; then' \
+    '         ; then'
+  mutate 'planlint/defect-exits-1' 'scripts/multi-review-planlint.sh' replace \
+    'with a label-missing row' 'multi-review-planlint.test.sh' \
+    '  (( bad == 0 ))' \
+    '  true'
+
+  # star — attribution, classification, resolution, refusal, gate.
+  mutate 'star/witness-attributed-to-response' 'scripts/multi-review-star.sh' delete \
+    'witness crossed a [resolved:] boundary' 'multi-review-star.test.sh' \
+    '      if (line ~ /^> \[/) cur_response = ""'
+  mutate 'star/resolved-witness-cleared' 'scripts/multi-review-star.sh' delete \
+    'crossed an [observation] boundary' 'multi-review-star.test.sh' \
+    '      if (line ~ /^> \[/) wfor = 0'
+  mutate 'star/witness-on-dispute' 'scripts/multi-review-star.sh' delete \
+    'on-dispute not reported' 'multi-review-star.test.sh' \
+    '  [[ "$kind" != dispute ]] || { echo on-dispute; return 0; }     # a dispute changes nothing'
+  mutate 'star/witness-none' 'scripts/multi-review-star.sh' delete \
+    'none reported as a gap' 'multi-review-star.test.sh' \
+    '  case "$w" in none|none\ *) echo none; return 0 ;; esac         # a recorded decision, like SURVIVES-BY-DESIGN'
+  mutate 'star/witness-unresolved' 'scripts/multi-review-star.sh' replace \
+    'unresolved not reported' 'multi-review-star.test.sh' \
+    '    grep -qF -- "$tok" "$corpus" || { echo "unresolved:${tok}"; return 0; }' \
+    '    :'
+  mutate 'star/witness-tokenless' 'scripts/multi-review-star.sh' replace \
+    'token-less witness accepted' 'multi-review-star.test.sh' \
+    '  if (( found )); then echo ok; else echo "unresolved:(no-backticked-token)"; fi' \
+    '  echo ok'
+  mutate 'star/witness-flavor-detected' 'scripts/multi-review-star.sh' replace \
+    'ctx-token' 'multi-review-star.test.sh' \
+    '  if grep -qE '"'"'^- \*\*PR:\*\* '"'"' <<<"$(header_region "$1")"; then echo pr; else echo local; fi' \
+    '  echo local'
+  mutate 'star/witness-pr-added-only' 'scripts/multi-review-star.sh' replace \
+    'ctx-token' 'multi-review-star.test.sh' \
+    "    awk '/^## Diff[[:space:]]*\$/ { d = 1; next } d && /^## / { d = 0 } d && /^\\+/ && !/^\\+\\+\\+ / { print substr(\$0, 2) }' \"\$1\" > \"\$2\"" \
+    "    awk '/^## Diff[[:space:]]*\$/ { d = 1; next } d && /^## / { d = 0 } d { print substr(\$0, 2) }' \"\$1\" > \"\$2\""
+  mutate 'star/refan-check-resolved-always' 'scripts/multi-review-star.sh' replace \
+    'witness-less resolved record passed' 'multi-review-star.test.sh' \
+    "    if (\$2 == \"resolved\" || rd == cur + 0) print \$1 \" \" \$2 \" \" \$3 }')\"" \
+    "    if (rd == cur + 0) print \$1 \" \" \$2 \" \" \$3 }')\""
+  mutate 'star/refan-check-needs-marker' 'scripts/multi-review-star.sh' delete \
+    'refan-check without a marker' 'multi-review-star.test.sh' \
+    '  [[ -n "$cur" ]] || die "refan-check: ${doc} carries no readable state marker — the current round cannot be determined" 2'
+  mutate 'star/gate-witness-none-count' 'scripts/multi-review-star.sh' delete \
+    'none count' 'multi-review-star.test.sh' \
+    '    echo "Fix witnesses recorded as none: ${wt_none}"'
+  mutate 'star/gate-witness-gap-list' 'scripts/multi-review-star.sh' replace \
+    'gap list' 'multi-review-star.test.sh' \
+    "    [[ -z \"\$wt_gaps\" ]] || printf '%s\\n' \"\$wt_gaps\" | awk -F'\\t' 'NF{ printf \"  - %s (round %s: %s)\\n\", \$1, \$2, \$3 }'" \
+    '    :'
+  mutate 'star/gate-planlint-no-record' 'scripts/multi-review-star.sh' replace \
+    'NO RECORD missing' 'multi-review-star.test.sh' \
+    '      0|1) echo "Plan lint: NO RECORD — the lint was applicable and nothing was recorded"; echo ;;' \
+    '      0|1) : ;;'
+  mutate 'star/gate-planlint-rendered' 'scripts/multi-review-star.sh' replace \
+    'plan lint line' 'multi-review-star.test.sh' \
+    '      echo "Plan lint: ${pl}"' \
+    '      :'
+
+  # command — one entry per guard sentence, each in its own heading-bounded window.
+  mutate 'command/planlint-before-seed' 'commands/multi-review.md' replace \
+    'nothing runs multi-review-planlint.sh check in fan-out step 1' 'multi-review-packaging.test.sh' \
+    '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-planlint.sh check "<doc>" --repo "<session-root>"' \
+    '       (run the lint here)'
+  mutate 'command/planlint-every-round' 'commands/multi-review.md' replace \
+    'does not say the lint runs every round' 'multi-review-packaging.test.sh' \
+    '   **Lint the document'"'"'s mutation entries — every round, before seeding any copy** (spec' \
+    '   **Lint the document'"'"'s mutation entries — in round 1, before seeding any copy** (spec'
+  mutate 'command/planlint-blocks-seeding' 'commands/multi-review.md' replace \
+    'does not make exit 1 block seeding' 'multi-review-packaging.test.sh' \
+    '     **do NOT seed or dispatch anyone until it exits 0 or 3.** This is the one blocking step in' \
+    '     Fix them when convenient. This is a step in'
+  mutate 'command/planlint-coverage-recorded' 'commands/multi-review.md' replace \
+    'step 8 never records plan-lint coverage' 'multi-review-packaging.test.sh' \
+    '   **Plan-lint coverage, in this same step — EVERY round, not round 1 only.** Step 1'"'"'s lint ran' \
+    '   Step 1'"'"'s lint ran'
+  mutate 'command/planlint-coverage-counted' 'commands/multi-review.md' replace \
+    'missing the <M> entries checked plan-lint coverage line' 'multi-review-packaging.test.sh' \
+    '   otherwise append `> [planlint-coverage: <M> entries checked]`, with `<M>` the number of rows it' \
+    '   otherwise append a coverage line with `<M>` the number of rows it'
+  mutate 'command/witness-grammar-stated' 'commands/multi-review.md' replace \
+    'never states the > — witness: grammar' 'multi-review-packaging.test.sh' \
+    '       > — witness: <what goes red if this fix is wrong — name it in backticks>' \
+    '       (a witness line)'
+  mutate 'command/witness-none-form' 'commands/multi-review.md' replace \
+    'does not state the none form' 'multi-review-packaging.test.sh' \
+    '   `> — witness: none — <why>` — a recorded decision, like `SURVIVES-BY-DESIGN`, counted' \
+    '   a note to that effect — a recorded decision, like `SURVIVES-BY-DESIGN`, counted'
+  mutate 'command/resolved-witness' 'commands/multi-review.md' replace \
+    'never asks for a witness on a resolved record' 'multi-review-packaging.test.sh' \
+    '   **A resolved record carries a witness too**, on the same `> — witness:` line and terms as an' \
+    '   A resolved record is recorded on the same terms as an'
+  mutate 'command/refan-check-before-bump' 'commands/multi-review.md' replace \
+    'nothing schedules refan-check before the re-fan bump' 'multi-review-packaging.test.sh' \
+    '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh refan-check "<doc>"' \
+    '       (check the witnesses here)'
+  mutate 'command/refan-check-blocks-bump' 'commands/multi-review.md' replace \
+    'refan-check exit 1 does not block the bump' 'multi-review-packaging.test.sh' \
+    '   **do NOT bump the marker until it exits 0.** It reads the round from the marker at call time' \
+    '   Then continue. It reads the round from the marker at call time'
+
+  # Fence-awareness of the body scans (found by running the lint over its own plan: the fixture
+  # it quotes carries a fenced "## Review", and a raw scan truncated the body there). Each mutation
+  # turns the else-chained heading test into a standalone one, so a fenced heading counts again;
+  # the star corpus reuses review_section_start instead and needs no entry of its own.
+  mutate 'planlint/pre-review-fence-aware' 'scripts/multi-review-planlint.sh' replace \
+    'a fenced ## Review truncated the body' 'multi-review-planlint.test.sh' \
+    '       { a[FNR] = $0; if (!(FNR in fenced) && $0 ~ /^## Review[[:space:]]*$/) last = FNR }' \
+    '       { a[FNR] = $0; if ($0 ~ /^## Review[[:space:]]*$/) last = FNR }'
+
+
+  # Round-1 review of the plan (codex-rd1-r1, fable-rd1-r1, fable-rd1-r2, fable-rd1-r5).
+  mutate 'planlint/pr-scratch-not-applicable' 'scripts/multi-review-planlint.sh' delete \
+    'a PR scratch was linted' 'multi-review-planlint.test.sh' \
+    '    && die "not applicable: a PR scratch ships no code of its own; the real table is checked by --verify-table in CI" 3'
+  mutate 'planlint/fixture-blocks-skipped' 'scripts/multi-review-planlint.sh' delete \
+    'the fixture block was linted' 'multi-review-planlint.test.sh' \
+    '    [[ "$lang" == *fixture* ]] && continue'
+  mutate 'star/witness-empty-token' 'scripts/multi-review-star.sh' delete \
+    'empty token resolved' 'multi-review-star.test.sh' \
+    '    [[ -n "$tok" ]] || { echo "unresolved:(empty-token)"; return 0; }'
+  mutate 'star/witness-pr-agree-exempt' 'scripts/multi-review-star.sh' replace \
+    'PR-flavor agree flagged' 'multi-review-star.test.sh' \
+    "  { printf '%s\\n' \"\$t\"   | awk -F'\\t' -v pr=\"\$pr\" 'NF && \$3 == \"agreed\" && (pr == 0 || \$10 != \"\") { print \$1 \"\\tagree\\t\" \$10 }" \
+    "  { printf '%s\\n' \"\$t\"   | awk -F'\\t' -v pr=\"\$pr\" 'NF && \$3 == \"agreed\" { print \$1 \"\\tagree\\t\" \$10 }"
+
+  # Round-2 review of the plan (codex-rd2-r1, fable-rd2-r2, fable-rd2-r3): the capture lines
+  # themselves, the verdict and round filters, the gate's counts and dormancy, and every usage
+  # guard — "every new guard gets an entry" read literally.
+  mutate 'star/witness-captured-on-agree' 'scripts/multi-review-star.sh' delete \
+    'witness column:' 'multi-review-star.test.sh' \
+    '          if (w != "") rwit[cur_response] = w'
+  mutate 'star/resolved-witness-captured' 'scripts/multi-review-star.sh' replace \
+    'resolved witness column:' 'multi-review-star.test.sh' \
+    '        if (wfor) { w = line; sub(/^> — witness:[ ]*/, "", w); gsub(/[ \t]+$/, "", w); if (w != "") wit[wfor] = w }' \
+    '        if (wfor) { }'
+  mutate 'star/witness-missing' 'scripts/multi-review-star.sh' delete \
+    'missing not reported' 'multi-review-star.test.sh' \
+    '  [[ -n "$w" ]] || { echo missing; return 0; }'
+  mutate 'star/witness-gaps-filter' 'scripts/multi-review-star.sh' replace \
+    'resolving witness reported' 'multi-review-star.test.sh' \
+    "  printf '%s\\n' \"\$wt\" | awk -F'\\t' 'NF && \$3 != \"ok\" && \$3 != \"none\" {" \
+    "  printf '%s\\n' \"\$wt\" | awk -F'\\t' 'NF {"
+  mutate 'star/refan-check-dispute-exempt' 'scripts/multi-review-star.sh' replace \
+    'refan-check refused on a disputed finding' 'multi-review-star.test.sh' \
+    "  gaps=\"\$(printf '%s\\n' \"\$wt\" | awk -F'\\t' -v cur=\"\$cur\" 'NF && \$3 != \"ok\" && \$3 != \"none\" && \$2 != \"dispute\" {" \
+    "  gaps=\"\$(printf '%s\\n' \"\$wt\" | awk -F'\\t' -v cur=\"\$cur\" 'NF && \$3 != \"ok\" && \$3 != \"none\" {"
+  mutate 'star/refan-check-current-round-only' 'scripts/multi-review-star.sh' replace \
+    'refan-check named the round-1 gap' 'multi-review-star.test.sh' \
+    "    if (\$2 == \"resolved\" || rd == cur + 0) print \$1 \" \" \$2 \" \" \$3 }')\"" \
+    "    if (\$2 == \"resolved\" || 1) print \$1 \" \" \$2 \" \" \$3 }')\""
+  mutate 'star/gate-witness-ratio' 'scripts/multi-review-star.sh' delete \
+    'gate-summary witness line' 'multi-review-star.test.sh' \
+    '    echo "Fix witnesses: ${wt_ok}/${wt_total} agreed findings and resolved records carry a resolving witness — ${wt_ngaps} gaps"'
+  mutate 'star/gate-planlint-not-applicable' 'scripts/multi-review-star.sh' replace \
+    'plan lint n/a' 'multi-review-star.test.sh' \
+    '      echo "Plan lint: not applicable (no mutation entries in fenced code)"' \
+    '      :'
+  mutate 'star/gate-witness-dormant' 'scripts/multi-review-star.sh' replace \
+    'printed witness lines for a response-less doc' 'multi-review-star.test.sh' \
+    '  if [[ -n "$wt" ]]; then' \
+    '  if true; then'
+  mutate 'star/gate-planlint-dormant' 'scripts/multi-review-star.sh' replace \
+    'plan lint not dormant' 'multi-review-star.test.sh' \
+    '      3) : ;;   # no entries: nothing was ever expected, stay dormant' \
+    '      3) echo "Plan lint: NO RECORD — the lint was applicable and nothing was recorded"; echo ;;'
+  mutate 'planlint/arity-replace' 'scripts/multi-review-planlint.sh' replace \
+    'arity verdict' 'multi-review-planlint.test.sh' \
+    '      if (mode == "replace" && n == 8) { print k "\037" toks[2] "\037" toks[3] "\037" mode "\037" toks[5] "\037" toks[6] "\037" toks[7] "\037" toks[8]; next }' \
+    '      if (mode == "replace" && n >= 7) { print k "\037" toks[2] "\037" toks[3] "\037" mode "\037" toks[5] "\037" toks[6] "\037" toks[7] "\037" toks[8]; next }'
+  mutate 'planlint/unknown-mode' 'scripts/multi-review-planlint.sh' replace \
+    'mode verdict' 'multi-review-planlint.test.sh' \
+    '      if (mode == "replace" && n == 8) { print k "\037" toks[2] "\037" toks[3] "\037" mode "\037" toks[5] "\037" toks[6] "\037" toks[7] "\037" toks[8]; next }' \
+    '      if (n == 8) { print k "\037" toks[2] "\037" toks[3] "\037" mode "\037" toks[5] "\037" toks[6] "\037" toks[7] "\037" toks[8]; next }'
+  mutate 'planlint/unterminated-quote' 'scripts/multi-review-planlint.sh' delete \
+    'unterminated-quote verdict' 'multi-review-planlint.test.sh' \
+    '          if (i > L) return -1'
+  mutate 'planlint/repo-dir-guard' 'scripts/multi-review-planlint.sh' delete \
+    'bad repo rc=' 'multi-review-planlint.test.sh' \
+    '  [[ -d "$repo" ]] || die "repo root is not a directory: $repo" 2'
+  mutate 'planlint/continuation-join' 'scripts/multi-review-planlint.sh' replace \
+    'escaped entry verdict' 'multi-review-planlint.test.sh' \
+    '      if (buf ~ /\\$/) { sub(/\\$/, "", buf); next }' \
+    '      if (0) { next }'
+  mutate 'core/blocks-usage-argc' 'scripts/multi-review-core.sh' delete \
+    'blocks: no-doc rc=' 'multi-review-core.test.sh' \
+    '  [[ $# -ge 1 ]] || die "usage: multi-review-core.sh blocks <doc> [<start> <end>]" 2'
+  mutate 'core/blocks-span-numeric' 'scripts/multi-review-core.sh' delete \
+    'blocks: bad span rc=' 'multi-review-core.test.sh' \
+    "  [[ \"\$start\" =~ ^[0-9]+\$ && \"\$end\" =~ ^[0-9]+\$ ]] || die \"blocks: start and end must be line numbers, got '\${start}' '\${end}'\" 2"
+
+  mutate 'planlint/repo-flag-needs-value' 'scripts/multi-review-planlint.sh' replace \
+    'a bare --repo rc=' 'multi-review-planlint.test.sh' \
+    '      --repo) [[ $# -ge 2 ]] || die "usage: multi-review-planlint.sh check <doc> [--repo <root>] — --repo needs a path" 2; repo="$2"; shift 2 ;;' \
+    '      --repo) repo="${2:?--repo needs a path}"; shift 2 ;;'
+
+  # Fix rounds on this branch (the six guards the reviews made necessary). Each is a real guard the
+  # review added AFTER the plan was written, so none of them appears in the plan's own entry block.
+  mutate 'planlint/unterminated-block-kept' 'scripts/multi-review-planlint.sh' replace \
+    'unterminated final block: rc=' 'multi-review-planlint.test.sh' \
+    '    if (( e == last )) && ! grep -qE '"'"'^ {0,3}(`{3,}|~{3,})[[:space:]]*$'"'"' <<<"$closer"; then' \
+    '    if false; then'
+  # SURVIVES-BY-DESIGN: the terminated-block span is redundant behind the behaviour of `sed`. With
+  # `elif true; then` a zero-line block still yields `sed -n "N,N-1p"`, which prints nothing — the
+  # mutation is behaviour-preserving, so no assertion can fail. The guard stays because it states
+  # the intent at the line; recorded here so losing the outer `sed` semantics surfaces as a failure.
+  mutate 'planlint/terminated-block-span' 'scripts/multi-review-planlint.sh' replace \
+    'SURVIVES-BY-DESIGN' 'multi-review-planlint.test.sh' \
+    '    elif (( e > s + 1 )); then' \
+    '    elif true; then'
+  # The fixed escape branch: a backslash before anything other than " \ $ ` is a LITERAL backslash
+  # inside double quotes. Before the fix the tokenizer refused the whole statement (return -1).
+  mutate 'planlint/escape-literal-backslash' 'scripts/multi-review-planlint.sh' replace \
+    'star-nl verdict' 'multi-review-planlint.test.sh' \
+    '              cur = cur "\\" d; i += 2; continue }' \
+    '              return -1 }'
+  # Flavor is read from the HEADER region only — two independent ways to break that, so two entries:
+  # widening the region to the whole document, and swapping the identity line for a bare heading.
+  mutate 'star/witness-flavor-header-only' 'scripts/multi-review-star.sh' replace \
+    'resolving witness reported' 'multi-review-star.test.sh' \
+    '  if grep -qE '"'"'^- \*\*PR:\*\* '"'"' <<<"$(header_region "$1")"; then echo pr; else echo local; fi' \
+    '  if grep -qE '"'"'^- \*\*PR:\*\* '"'"' <<<"$(cat "$1")"; then echo pr; else echo local; fi'
+  mutate 'star/witness-flavor-identity-line' 'scripts/multi-review-star.sh' replace \
+    'flipped the flavor to PR' 'multi-review-star.test.sh' \
+    '  if grep -qE '"'"'^- \*\*PR:\*\* '"'"' <<<"$(header_region "$1")"; then echo pr; else echo local; fi' \
+    '  if grep -q '"'"'^## Diff'"'"' "$1"; then echo pr; else echo local; fi'
+  # Same awk line as star/witness-pr-added-only, different mutation: that entry drops the whole
+  # added-line filter, this one drops ONLY the `+++` file-header exclusion.
+  mutate 'star/witness-pr-excludes-file-header' 'scripts/multi-review-star.sh' replace \
+    '+++ file header resolved' 'multi-review-star.test.sh' \
+    "    awk '/^## Diff[[:space:]]*\$/ { d = 1; next } d && /^## / { d = 0 } d && /^\\+/ && !/^\\+\\+\\+ / { print substr(\$0, 2) }' \"\$1\" > \"\$2\"" \
+    "    awk '/^## Diff[[:space:]]*\$/ { d = 1; next } d && /^## / { d = 0 } d && /^\\+/ { print substr(\$0, 2) }' \"\$1\" > \"\$2\""
 }
 
 if (( list )); then mutations; exit 0; fi
