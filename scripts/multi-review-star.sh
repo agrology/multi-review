@@ -2058,6 +2058,32 @@ cmd_witness_gaps() { # <doc> -> "<ns-id>\t<round>\t<verdict>" per gap; a report,
     print $1 "\t" rd "\t" $3 }'
 }
 
+# refan-check <doc> -> 0 no current-round witness gap · 1 gaps (listed on stderr) · 2 usage
+# Runs BEFORE the marker bump, like verify: the current round is read from the marker at call time,
+# so after the bump every current-round gap reads as an earlier-round one and this passes vacuously.
+# Current-round AGREES are those on findings whose id carries the current round (a finding is
+# adjudicated in the round it merges). EVERY resolved record counts: a record names an earlier-round
+# finding by rule, so its own round cannot be read from the id — and it is a primary claim the
+# primary owns regardless of when it was written.
+cmd_refan_check() {
+  local doc="${1:?doc}" cur wt gaps
+  [[ -f "$doc" ]] || die "doc not found: $doc" 2
+  cur="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')" || cur=""
+  [[ -n "$cur" ]] || die "refan-check: ${doc} carries no readable state marker — the current round cannot be determined" 2
+  wt="$(_witnesses "$doc")" || die "refan-check: contract violation in $doc" 1
+  # Agrees and resolved records only: a witness on a DISPUTE is a grammar slip the gate reports
+  # (`on-dispute`), never a reason to hold a re-fan — a dispute changes nothing (codex-rd2-r1).
+  gaps="$(printf '%s\n' "$wt" | awk -F'\t' -v cur="$cur" 'NF && $3 != "ok" && $3 != "none" && $2 != "dispute" {
+    rd = -1; if (match($1, /-rd[0-9]+/)) rd = substr($1, RSTART + 3, RLENGTH - 3) + 0
+    if ($2 == "resolved" || rd == cur + 0) print $1 " " $2 " " $3 }')"
+  if [[ -n "$gaps" ]]; then
+    echo "multi-review-star: refan-check: round ${cur} has fix-witness gaps — add a \"> — witness:\" line (or \"> — witness: none — <why>\") to each before re-fanning:" >&2
+    printf '%s\n' "$gaps" | sed 's/^/  /' >&2
+    return 1
+  fi
+  echo "refan-check: ${doc} — no current-round witness gap (round ${cur})"
+}
+
 # remember-set --pref-file <path> (--reviewers <csv> | --clear)
 # Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
 # (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
@@ -2122,6 +2148,7 @@ main() {
     round-stats) cmd_round_stats "$@" ;;
     evidence-gaps) cmd_evidence_gaps "$@" ;;
     witness-gaps) cmd_witness_gaps "$@" ;;
+    refan-check) cmd_refan_check "$@" ;;
     channel-check) cmd_channel_check "$@" ;;
     blind-check) cmd_blind_check "$@" ;;
     compose-review) cmd_compose_review "$@" ;;

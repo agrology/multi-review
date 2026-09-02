@@ -3442,6 +3442,39 @@ out="$(bash "$SUT" witness-gaps "$WFA" 2>/dev/null)"
 [[ -z "$out" ]] && ok "witness-gaps: a local doc with a real ## Diff section stays local" \
   || bad "witness-gaps: a ## Diff heading flipped the flavor to PR: $out"
 
+# --- refan-check: current-round gaps refuse; earlier-round gaps do not; resolved records always count ---
+RC1="$(mkcc rc1.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body `tok`' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [finding:codex-rd2-a|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd2-a]' '> — via claude-opus-5')"
+bash "$SUT" refan-check "$RC1" >/dev/null 2>"${WORK}/rc1.err"; rc=$?
+[[ $rc -eq 1 ]] && ok "refan-check: a current-round agree without a witness refuses (exit 1)" || bad "refan-check rc=$rc"
+grep -q 'codex-rd2-a agree missing' "${WORK}/rc1.err" && ok "refan-check: names the gap" || bad "refan-check did not name codex-rd2-a: $(cat "${WORK}/rc1.err")"
+! grep -q 'codex-rd1-a' "${WORK}/rc1.err" && ok "refan-check: an earlier-round gap is not this round's to refuse on" || bad "refan-check named the round-1 gap"
+RC2="${WORK}/rc2.md"; sed 's/round 2\/5/round 3\/5/' "$RC1" > "$RC2"
+bash "$SUT" refan-check "$RC2" >/dev/null 2>&1; [[ $? -eq 0 ]] \
+  && ok "refan-check: after a bump the same gap passes — so it must run BEFORE the bump" || bad "refan-check still refused after the bump"
+RC3="$(mkcc rc3.md '# Doc' '<!-- multi-review: awaiting-primary · round 3/5 -->' '<!-- multi-review-mode: star -->' '' 'body' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: none — prose' \
+  '> [resolved:codex-rd1-a] fixed at abc' '> — via claude-opus-5')"
+bash "$SUT" refan-check "$RC3" >/dev/null 2>"${WORK}/rc3.err"; rc=$?
+[[ $rc -eq 1 ]] && grep -q 'codex-rd1-a resolved missing' "${WORK}/rc3.err" \
+  && ok "refan-check: a resolved record without a witness refuses in any round" \
+  || bad "refan-check: a witness-less resolved record passed (rc=$rc): $(cat "${WORK}/rc3.err")"
+RC4="$(mkcc rc4.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body `tok`' '' '## Review' \
+  '> [finding:codex-rd2-a|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd2-a]' '> — via claude-opus-5' '> — witness: `tok`')"
+bash "$SUT" refan-check "$RC4" >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "refan-check: a fully witnessed round passes" || bad "refan-check refused a witnessed round"
+RC5="$(mkstar rc5.md '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
+bash "$SUT" refan-check "$RC5" >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "refan-check: no marker is a usage error, never a pass" || bad "refan-check without a marker rc=$?"
+
+# a current-round DISPUTE carrying a witness is reported, but never holds a re-fan (codex-rd2-r1)
+RC6="$(mkcc rc6.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' 'body `tok`' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: `tok`' \
+  '> [finding:codex-rd1-b|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [dispute:codex-rd1-b] not a defect' '> — via claude-opus-5' '> — witness: `tok`')"
+bash "$SUT" refan-check "$RC6" >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "refan-check: a witness on a dispute does not hold the re-fan" \
+  || bad "refan-check refused on a disputed finding (codex-rd2-r1)"
+grep -qx $'codex-rd1-b\t1\ton-dispute' <<<"$(bash "$SUT" witness-gaps "$RC6" 2>/dev/null)" && ok "witness-gaps: the on-dispute slip is still reported at the gate" \
+  || bad "witness-gaps dropped the on-dispute row"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
