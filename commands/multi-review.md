@@ -300,16 +300,6 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
 #### Fan-out (on `awaiting-secondaries`)
 
-1. **Snapshot the baseline.** Copy `<doc>` to `<doc>.baseline`. In that COPY ONLY, truncate
-   everything after the doc's LAST `## Review` heading **that is not inside a fenced code block**
-   — keep the heading line, drop everything after it (any prior round's merged
-   findings/responses). A doc whose merged findings quote a fenced `## Review` would otherwise
-   move the truncation point and carry a previous round's findings into the baseline. `<doc>`
-   itself is untouched.
-
-   Then copy `<doc>.baseline` to `<doc>.baseline.rd<N>` for this round and **retain it** — round
-   N+1 diffs against it. `<doc>.baseline` keeps its current meaning (the snapshot `verify-vendor`
-   diffs against for the CURRENT round), so that guard is unaffected.
    **Lint the document's mutation entries — every round, before seeding any copy** (spec
    2026-09-01 Part B). Fixes add entries, so the entry set changes exactly on the re-fan path, and
    this fan-out is where a stale entry is cheapest to catch — before three reviewers spend a round
@@ -332,6 +322,17 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    identity line pr.sh writes into the header makes it exit 3 by construction, because the diff is
    the author's read-only change, not shipped code, and the real table is covered there by
    `--verify-table` in CI.
+
+1. **Snapshot the baseline.** Copy `<doc>` to `<doc>.baseline`. In that COPY ONLY, truncate
+   everything after the doc's LAST `## Review` heading **that is not inside a fenced code block**
+   — keep the heading line, drop everything after it (any prior round's merged
+   findings/responses). A doc whose merged findings quote a fenced `## Review` would otherwise
+   move the truncation point and carry a previous round's findings into the baseline. `<doc>`
+   itself is untouched.
+
+   Then copy `<doc>.baseline` to `<doc>.baseline.rd<N>` for this round and **retain it** — round
+   N+1 diffs against it. `<doc>.baseline` keeps its current meaning (the snapshot `verify-vendor`
+   diffs against for the CURRENT round), so that guard is unaffected.
 
 2. **Seed one copy per provider**, using the SAME resolved set from §2 — a later round does not
    shrink the set, even for a provider quarantined earlier; it gets a fresh independent copy

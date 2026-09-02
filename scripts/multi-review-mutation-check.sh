@@ -2822,12 +2822,13 @@ mutations() {
     'unterminated final block: rc=' 'multi-review-planlint.test.sh' \
     '    if (( e == last )) && ! grep -qE '"'"'^ {0,3}(`{3,}|~{3,})[[:space:]]*$'"'"' <<<"$closer"; then' \
     '    if false; then'
-  # SURVIVES-BY-DESIGN: the terminated-block span is redundant behind the behaviour of `sed`. With
-  # `elif true; then` a zero-line block still yields `sed -n "N,N-1p"`, which prints nothing — the
-  # mutation is behaviour-preserving, so no assertion can fail. The guard stays because it states
-  # the intent at the line; recorded here so losing the outer `sed` semantics surfaces as a failure.
+  # The span check is LOAD-BEARING, not redundant: `sed -n "N,N-1p"` PRINTS line N on BSD and GNU
+  # alike, so with `elif true; then` an EMPTY fenced block emits its own closing fence into the
+  # corpus — and an entry whose old-line is a bare fence then verifies against a line that is not
+  # code. (This shipped as a SURVIVES-BY-DESIGN entry whose stated reason, "prints nothing", was
+  # simply wrong; the fixture below is what proves the difference.)
   mutate 'planlint/terminated-block-span' 'scripts/multi-review-planlint.sh' replace \
-    'SURVIVES-BY-DESIGN' 'multi-review-planlint.test.sh' \
+    'empty-block fence verdict' 'multi-review-planlint.test.sh' \
     '    elif (( e > s + 1 )); then' \
     '    elif true; then'
   # The fixed escape branch: a backslash before anything other than " \ $ ` is a LITERAL backslash
@@ -2852,6 +2853,63 @@ mutations() {
     '+++ file header resolved' 'multi-review-star.test.sh' \
     "    awk '/^## Diff[[:space:]]*\$/ { d = 1; next } d && /^## / { d = 0 } d && /^\\+/ && !/^\\+\\+\\+ / { print substr(\$0, 2) }' \"\$1\" > \"\$2\"" \
     "    awk '/^## Diff[[:space:]]*\$/ { d = 1; next } d && /^## / { d = 0 } d && /^\\+/ { print substr(\$0, 2) }' \"\$1\" > \"\$2\""
+
+  # Final review of this branch: the guards that shipped with no entry at all, plus the ordering
+  # the fan-out depends on. Every one of these lines was reachable and uncovered.
+  #
+  # The lint must precede the SNAPSHOT, not merely appear in the fan-out: step 2 seeds every copy
+  # from that snapshot, so a defect the lint makes the primary fix afterwards never reaches this
+  # round's reviewers. The single-line mutation is shared with command/planlint-before-seed — both
+  # assertions go red together, and the ordering itself is pinned by the guard's window bounds.
+  mutate 'command/planlint-before-snapshot' 'commands/multi-review.md' replace \
+    'the plan lint does not precede the baseline snapshot' 'multi-review-packaging.test.sh' \
+    '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-planlint.sh check "<doc>" --repo "<session-root>"' \
+    '       (run the lint here)'
+  # The local witness corpus is the body BEFORE ## Review. Widen it to the whole doc and a witness
+  # that names a token occurring only inside the review channel resolves against the review itself.
+  mutate 'star/witness-resolve-local-excludes-review' 'scripts/multi-review-star.sh' replace \
+    'review-only token resolved' 'multi-review-star.test.sh' \
+    '    if (( n > 0 )); then head -n "$((n - 1))" "$1" > "$2"; else cat "$1" > "$2"; fi' \
+    '    cat "$1" > "$2"'
+  # The argument guards: without them the missing path reaches _table / the marker read and comes
+  # back as "contract violation" or "no readable state marker" — a bad path blamed on the document.
+  mutate 'star/witness-gaps-missing-doc' 'scripts/multi-review-star.sh' delete:9 \
+    'witness-gaps accepted a missing doc' 'multi-review-star.test.sh' \
+    '  [[ -f "$doc" ]] || die "doc not found: $doc" 1'
+  mutate 'star/refan-check-missing-doc' 'scripts/multi-review-star.sh' delete:2 \
+    'refan-check accepted a missing doc' 'multi-review-star.test.sh' \
+    '  [[ -f "$doc" ]] || die "doc not found: $doc" 2'
+  # The tokenizer's remaining refusals (spec B3). The bare-word branch and the double-quoted
+  # backtick are separate halves of "never evaluate the document", and the double-quote line
+  # carries TWO entries — planlint/no-eval-dollar drops the `$` half, this one drops the backtick.
+  mutate 'planlint/no-eval-bare' 'scripts/multi-review-planlint.sh' replace \
+    'bare-word substitution verdict' 'multi-review-planlint.test.sh' \
+    '        if (c == "$" || c == "`" || c == "\\" || c == "#") return -1' \
+    '        if (c == "#") return -1'
+  mutate 'planlint/no-eval-backtick' 'scripts/multi-review-planlint.sh' replace \
+    'double-quoted backtick verdict' 'multi-review-planlint.test.sh' \
+    '            if (c == "$" || c == "`") return -1              # a live substitution: refuse' \
+    '            if (c == "$") return -1'
+  mutate 'planlint/unterminated-single-quote' 'scripts/multi-review-planlint.sh' replace \
+    'unterminated single-quote verdict' 'multi-review-planlint.test.sh' \
+    '          j = index(substr(s, i + 1), "\047"); if (j == 0) return -1' \
+    '          j = index(substr(s, i + 1), "\047"); if (j == 0) j = L'
+  mutate 'planlint/arity-delete' 'scripts/multi-review-planlint.sh' replace \
+    'a delete with seven arguments' 'multi-review-planlint.test.sh' \
+    '      if (mode == "delete"  && n == 7) { print k "\037" toks[2] "\037" toks[3] "\037" mode "\037" toks[5] "\037" toks[6] "\037" toks[7] "\037"; next }' \
+    '      if (mode == "delete"  && n >= 7) { print k "\037" toks[2] "\037" toks[3] "\037" mode "\037" toks[5] "\037" toks[6] "\037" toks[7] "\037"; next }'
+  # SURVIVES-BY-DESIGN: unreachable behind _statements' `^mutate[ \t]` filter — every statement the
+  # parser is handed already starts with the word, so toks[1] is always "mutate". The line stays as
+  # the parser's own statement of its input contract; losing that filter surfaces here.
+  mutate 'planlint/statement-is-mutate' 'scripts/multi-review-planlint.sh' delete \
+    'SURVIVES-BY-DESIGN' 'multi-review-planlint.test.sh' \
+    '      if (toks[1] != "mutate") { print k "\037" rawid "\037UNPARSED\037not a mutate statement"; next }'
+  # Both fields are joined onto ${repo} and read, so the reviewed document could otherwise name a
+  # file outside the repository.
+  mutate 'planlint/rel-inside-repo' 'scripts/multi-review-planlint.sh' replace \
+    'a .. segment in file-rel was not refused' 'multi-review-planlint.test.sh' \
+    '    elif [[ "/${rel}/${suite}/" == */../* || "$rel" == /* || "$suite" == /* ]]; then' \
+    '    elif false; then'
 }
 
 if (( list )); then mutations; exit 0; fi

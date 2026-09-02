@@ -16,9 +16,11 @@
 # in under a second, and BEFORE anyone is dispatched is where a mechanical finding belongs.
 #
 # NEVER EVALS THE DOCUMENT. The entries are bash and the obvious parser is bash. This script does
-# not use it: a conservative tokenizer reads single-quoted words, double-quoted words with only
-# \" \\ \$ as escapes, and bare words; anything else makes the row `unparsed`. A reviewed document
-# is untrusted input here exactly as a PR body is to the PR helpers.
+# not use it: a conservative tokenizer reads single-quoted words, double-quoted words and bare
+# words. Inside double quotes a `\` before `$`, a backtick, `"` or `\` yields that character, and
+# before anything else a literal backslash plus that character (bash's own rule); a BARE `$` or
+# backtick is refused. Anything else makes the row `unparsed`. A reviewed document is untrusted
+# input here exactly as a PR body is to the PR helpers.
 set -uo pipefail
 
 die() { echo "multi-review-planlint: $1" >&2; exit "${2:-1}"; }
@@ -105,7 +107,10 @@ _parse() { # <statements-file>
           j = index(substr(s, i + 1), "\047"); if (j == 0) return -1
           cur = cur substr(s, i + 1, j - 1); inw = 1; i += j + 1; continue
         }
-        if (c == "\"") {                                     # double quotes: \" \\ \$ only
+        # Double quotes, the rule bash itself uses: \" \\ \$ \` collapse to that one character,
+        # any other backslash is a literal backslash plus the character, and a bare $ or ` is
+        # refused as a live substitution.
+        if (c == "\"") {
           i++
           while (i <= L) {
             c = substr(s, i, 1)
@@ -186,6 +191,11 @@ cmd_check() {
     total=$((total + 1)); v=ok; detail=""
     if [[ "$rel" == "UNPARSED" ]]; then
       v=unparsed; detail="$mode"
+    # Both fields are joined onto ${repo} and read below, so an absolute path or a `..` segment
+    # would have the reviewed document choose a file outside the repository. Wrapping both in
+    # slashes makes a `..` PATH SEGMENT match without also rejecting a name like `a..b`.
+    elif [[ "/${rel}/${suite}/" == */../* || "$rel" == /* || "$suite" == /* ]]; then
+      v=unparsed; detail="file-rel/suite must be a relative path inside the repo"
     elif grep -qFx -- "$id" "${TMPD}/dups"; then
       v=duplicate-id; detail="the id appears more than once in the document"
     elif ! _line_present "$old" "${TMPD}/corpus" \

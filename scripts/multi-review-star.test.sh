@@ -3413,7 +3413,14 @@ grep -qx $'codex-rd1-f\t1\tunresolved:review-only-token' <<<"$out" \
   && ok "witness-gaps: a token that occurs only inside ## Review does not resolve" || bad "review-only token resolved: $out"
 grep -qx $'codex-rd1-g\t1\tunresolved:(no-backticked-token)' <<<"$out" && ok "witness-gaps: a witness naming no backticked token is a gap, as one space-free verdict" || bad "token-less witness accepted or mangled: $out"
 grep -qx $'codex-rd1-h\t1\tunresolved:(empty-token)' <<<"$out" && ok "witness-gaps: an empty backticked token does not resolve" || bad "empty token resolved (codex-rd1-r1): $out"
-bash "$SUT" witness-gaps "${WORK}/nope-wg.md" >/dev/null 2>&1 && bad "witness-gaps accepted a missing doc" || ok "witness-gaps: missing doc fails loud"
+# The argument guard, not just some non-zero exit: without it the missing file reaches _table and
+# comes back as "contract violation", which reads as a malformed DOCUMENT rather than a bad path.
+wgerr="$(bash "$SUT" witness-gaps "${WORK}/nope-wg.md" 2>&1 >/dev/null)"; rc=$?
+if [[ $rc -ne 0 ]] && grep -qF "doc not found: ${WORK}/nope-wg.md" <<<"$wgerr" && ! grep -qF 'contract violation' <<<"$wgerr"; then
+  ok "witness-gaps: missing doc fails loud, at the argument"
+else
+  bad "witness-gaps accepted a missing doc, or blamed the document for it (rc=$rc): $wgerr"
+fi
 
 # --- PR flavor: tokens resolve only against ADDED lines of ## Diff ---
 WP="$(mkcc wit-pr.md '# PR' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' '- **PR:** https://github.com/o/r/pull/1' '' \
@@ -3465,6 +3472,12 @@ RC4="$(mkcc rc4.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->
 bash "$SUT" refan-check "$RC4" >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "refan-check: a fully witnessed round passes" || bad "refan-check refused a witnessed round"
 RC5="$(mkstar rc5.md '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
 bash "$SUT" refan-check "$RC5" >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "refan-check: no marker is a usage error, never a pass" || bad "refan-check without a marker rc=$?"
+# A missing doc is a usage error naming the PATH: without the argument guard it reaches the marker
+# read, which reports the same exit 2 as "no readable state marker" — a bad path blamed on the doc.
+bash "$SUT" refan-check "${WORK}/nope-rc.md" >/dev/null 2>"${WORK}/rcm.err"; rc=$?
+[[ $rc -eq 2 ]] && grep -qF "doc not found: ${WORK}/nope-rc.md" "${WORK}/rcm.err" \
+  && ok "refan-check: a missing doc exits 2 and names it" \
+  || bad "refan-check accepted a missing doc, or did not name it (rc=$rc): $(cat "${WORK}/rcm.err")"
 
 # a current-round DISPUTE carrying a witness is reported, but never holds a re-fan (codex-rd2-r1)
 RC6="$(mkcc rc6.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' 'body `tok`' '' '## Review' \

@@ -7,7 +7,7 @@
 #   available
 #   open-findings <doc>
 #   observations <doc>
-#   resolved <doc>          -> "ns-id\tnote\tmodel" per `> [resolved:]` record (issue #88)
+#   resolved <doc>          -> "ns-id\tnote\tmodel\twitness" per `> [resolved:]` record (issue #88)
 #   merge --round N [--quarantined p:reason ...] [--pass <copy> ...] <doc> <copy> ...
 #   check-converged <doc>
 #   gate-summary <doc> <primary-model-id>
@@ -606,7 +606,8 @@ cmd_observations() { # <doc> -> "text<TAB>model" per observation; exit 2 on an u
   '
 }
 
-# cmd_resolved <doc> -> "ns-id\tnote\tmodel" per resolved record; exit 2 on a contract violation.
+# cmd_resolved <doc> -> "ns-id\tnote\tmodel\twitness" per resolved record; exit 2 on a contract
+# violation. The fourth column is the record's optional `> — witness:` text, empty when it has none.
 #
 # `> [resolved:<ns-id>] <note>` + `> — via <model>` (issue #88). A finding the primary AGREED with
 # in an earlier round and has since verified fixed at the current head. Without it, compose-review
@@ -1656,7 +1657,8 @@ cmd_gate_summary() {
   # record — and how many were recorded as `none`, so a primary hiding behind `none` is visible.
   # Dormant when the doc carries no response at all, so a findings-only doc renders as before.
   local wt wt_total wt_ok wt_none wt_gaps wt_ngaps
-  wt="$(_witnesses "$doc")" || die "gate-summary: contract violation in $doc" 1
+  # _table and cmd_resolved have already died above on a malformed doc, so _witnesses cannot fail here
+  wt="$(_witnesses "$doc")"
   if [[ -n "$wt" ]]; then
     wt_total="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $2 != "dispute"' | grep -c . || true)"
     wt_ok="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 == "ok"' | grep -c . || true)"

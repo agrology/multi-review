@@ -1209,10 +1209,12 @@ fi
 # Windowed guards, each bounded by the next step heading or a named paragraph — never a fixed
 # offset (a fixed window shipped zero-margin twice in #84).
 PLC="${ROOT}/commands/multi-review.md"
-# (a) the lint runs in fan-out step 1, every round, before any copy is seeded
-n="$(grep -nF '**Snapshot the baseline.**' "$PLC" | head -1 | cut -d: -f1)"
+# (a) the lint runs in the fan-out, every round, BEFORE the baseline snapshot step 2 seeds from.
+# The window opens at the section heading, not at the snapshot step: the lint must be allowed to
+# sit above that step, and a window anchored to it could never see the ordering it exists to pin.
+n="$(grep -nF '#### Fan-out (on' "$PLC" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
-  bad "command: fan-out step 1 ('**Snapshot the baseline.**') is gone"
+  bad "command: the fan-out section heading ('#### Fan-out (on') is gone"
 else
   ne="$(awk -v s="$n" 'NR>s && /^2\. /{print NR; exit}' "$PLC")"; [[ -n "$ne" ]] || ne="$(( $(wc -l < "$PLC") + 1 ))"
   blk="$(sed -n "${n},$((ne-1))p" "$PLC")"
@@ -1222,6 +1224,15 @@ else
     || bad "command: step 1 does not say the lint runs every round — a round-1-only reading skips exactly the re-fan path it exists for"
   grep -qF 'do NOT seed or dispatch anyone until it exits 0 or 3' <<<"$blk" && ok "command: an exit-1 lint blocks the fan-out" \
     || bad "command: step 1 does not make exit 1 block seeding — the lint would be advisory"
+  # Ordering, not mere presence: step 2 seeds every copy from the baseline snapshot, so a lint
+  # that runs after the snapshot fixes the doc for a set of copies that were already taken.
+  pl_ln="$(grep -nF 'multi-review-planlint.sh check "<doc>"' <<<"$blk" | head -1 | cut -d: -f1)"
+  pl_sn="$(grep -nF '**Snapshot the baseline.**' <<<"$blk" | head -1 | cut -d: -f1)"
+  if [[ -n "$pl_ln" && -n "$pl_sn" ]] && (( pl_ln < pl_sn )); then
+    ok "command: the plan lint precedes the baseline snapshot the copies are seeded from"
+  else
+    bad "command: the plan lint does not precede the baseline snapshot — copies would be seeded from the un-linted doc (lint=${pl_ln:-none} snapshot=${pl_sn:-none})"
+  fi
 fi
 # (b) step 8 records the durable line, every round
 n="$(grep -nF '**Plan-lint coverage, in this same step' "$PLC" | head -1 | cut -d: -f1)"

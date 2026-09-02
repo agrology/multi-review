@@ -12,6 +12,8 @@ bad() { echo "  FAIL: $1"; fails=$((fails+1)); }
 mkdoc() { local p="${WORK}/$1"; shift; printf '%s\n' "$@" > "$p"; echo "$p"; }
 # verdict <rows> <id> -> the verdict column for <id>
 verdict() { awk -F'\t' -v i="$2" '$1 == i { print $2 }' <<<"$1"; }
+# detail <rows> <id> -> the detail column for <id>
+detail() { awk -F'\t' -v i="$2" '$1 == i { print $3 }' <<<"$1"; }
 
 # A fake repo the --repo half of the union resolves against. Hermetic: never this checkout.
 REPO="${WORK}/repo"; mkdir -p "${REPO}/scripts"
@@ -83,6 +85,10 @@ D="$(mkdoc unparsed.md '# Plan' '' '```bash' 'x || die' 'bad "lbl"' '```' '' '``
   "  mutate 'u/mode' 'scripts/x.sh' rewrite 'lbl' 'x.test.sh' 'x || die' 'y'" \
   "  mutate 'u/fine' 'scripts/x.sh' replace:2 'lbl' 'x.test.sh' 'x || die' 'y'" \
   "  mutate 'u/unterm' 'scripts/x.sh' replace 'lbl' 'x.test.sh' 'x || die' \"y" \
+  "  mutate 'u/bare' 'scripts/x.sh' delete \$LBL 'x.test.sh' 'x || die'" \
+  "  mutate 'u/dqbt' 'scripts/x.sh' delete \"a \`b\` c\" 'x.test.sh' 'x || die'" \
+  "  mutate 'u/sqterm' 'scripts/x.sh' delete 'lbl' 'x.test.sh' 'x || die" \
+  "  mutate 'u/darity' 'scripts/x.sh' delete 'lbl' 'x.test.sh' 'x || die' 'extra'" \
   '```' '' '## Review' '')"
 out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"; rc=$?
 [[ "$(verdict "$out" u/subst)" == unparsed ]] && ok "check: a bare \$( inside double quotes is unparsed" || bad "check: subst verdict '$(verdict "$out" u/subst)'"
@@ -91,7 +97,29 @@ out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"; rc=$?
 [[ "$(verdict "$out" u/mode)" == unparsed ]] && ok "check: an unknown mode is unparsed" || bad "check: mode verdict '$(verdict "$out" u/mode)'"
 [[ "$(verdict "$out" u/fine)" == ok ]] && ok "check: replace:N (a named occurrence) parses" || bad "check: replace:2 verdict '$(verdict "$out" u/fine)'"
 [[ "$(verdict "$out" u/unterm)" == unparsed ]] && ok "check: an unterminated double quote is unparsed even at the right arity" || bad "check: unterminated-quote verdict '$(verdict "$out" u/unterm)'"
+[[ "$(verdict "$out" u/bare)" == unparsed ]] && ok "check: a bare \$ outside any quotes is unparsed" || bad "check: bare-word substitution verdict '$(verdict "$out" u/bare)'"
+[[ "$(verdict "$out" u/dqbt)" == unparsed ]] && ok "check: a backtick inside double quotes is unparsed" || bad "check: double-quoted backtick verdict '$(verdict "$out" u/dqbt)'"
+[[ "$(verdict "$out" u/sqterm)" == unparsed ]] && ok "check: an unterminated single quote is unparsed" || bad "check: unterminated single-quote verdict '$(verdict "$out" u/sqterm)'"
+[[ "$(verdict "$out" u/darity)" == unparsed ]] && ok "check: a delete with seven arguments is unparsed" || bad "check: a delete with seven arguments parsed anyway (verdict '$(verdict "$out" u/darity)')"
 [[ $rc -eq 1 ]] && ok "check: unparsed is a defect, not a skip" || bad "check: rc=$rc with unparsed rows"
+
+# --- a file-rel or suite that escapes the repo is a defect: both are joined onto ${repo} and read,
+# so an absolute path or a `..` segment makes the lint read a file the reviewed document chose ---
+D="$(mkdoc traverse.md '# Plan' '' '```bash' 'g || die' 'bad "lbl"' '```' '' '```bash' \
+  "  mutate 't/dotdot' '../../etc/hosts' delete 'lbl' 'x.test.sh' 'g || die'" \
+  "  mutate 't/abs' '/etc/hosts' delete 'lbl' 'x.test.sh' 'g || die'" \
+  "  mutate 't/abs-suite' 'scripts/x.sh' delete 'lbl' '/etc/hosts' 'g || die'" \
+  '```' '' '## Review' '')"
+out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"
+[[ "$(verdict "$out" t/dotdot)" == unparsed ]] && ok "check: a .. segment in file-rel is unparsed" \
+  || bad "check: a .. segment in file-rel was not refused (verdict '$(verdict "$out" t/dotdot)')"
+[[ "$(verdict "$out" t/abs)" == unparsed ]] && ok "check: an absolute file-rel is unparsed" \
+  || bad "check: an absolute file-rel was not refused (verdict '$(verdict "$out" t/abs)')"
+[[ "$(verdict "$out" t/abs-suite)" == unparsed ]] && ok "check: an absolute suite is unparsed" \
+  || bad "check: an absolute suite was not refused (verdict '$(verdict "$out" t/abs-suite)')"
+[[ "$(detail "$out" t/dotdot)" == *"must be a relative path inside the repo"* ]] \
+  && ok "check: the escaping-path row says why" \
+  || bad "check: the escaping-path row does not name the reason ('$(detail "$out" t/dotdot)')"
 
 # --- continuation lines and escaped double-quoted content (the real table's shape) ---
 D="$(mkdoc cont.md '# Plan' '' '```bash' \
@@ -169,6 +197,17 @@ out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"; rc=$?
 [[ $rc -eq 0 && "$(verdict "$out" f/unterm)" == ok ]] \
   && ok "check: an entry on the last line of an unterminated final block is still linted" \
   || bad "check: unterminated final block: rc=$rc out='$out'"
+
+# --- an EMPTY fenced block must contribute nothing: `sed -n "N,N-1p"` prints line N on both BSD and
+# GNU sed, so a span check that lets a zero-line block through leaks its closing fence into the
+# corpus, and an entry whose old-line is a bare fence would then verify against it ---
+D="$(mkdoc emptyblock.md '# Plan' '' '```bash' '```' '' '```bash' 'g || die' 'bad "lbl"' '```' '' '```bash' \
+  "  mutate 'e/fence' 'scripts/x.sh' delete 'lbl' 'x.test.sh' '\`\`\`'" \
+  '```' '' '## Review' '')"
+out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"
+[[ "$(verdict "$out" e/fence)" == target-missing ]] \
+  && ok "check: an empty fenced block leaks no closing fence into the corpus" \
+  || bad "check: empty-block fence verdict '$(verdict "$out" e/fence)' — a fence line reached the corpus"
 
 # --- usage ---
 bash "$SUT" check >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "check: no doc is a usage error" || bad "check: no-doc rc=$?"
