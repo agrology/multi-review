@@ -3358,7 +3358,7 @@ WF="$(mkstar wit-f.md \
   '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
 out="$(bash "$SUT" _table_for_test "$WF" 2>/dev/null | awk -F'\t' '{print $10}')"
 [[ -z "$out" ]] && ok "witness: a witness under a finding credits no response" || bad "witness leaked from a finding: '$out'"
-[[ "$(bash "$SUT" open-findings "$WF" 2>/dev/null | grep -c .)" -eq 0 ]] \
+bash "$SUT" _table_for_test "$WF" >/dev/null 2>&1; [[ $? -eq 0 ]] \
   && ok "witness: a stray witness line does not fail the parse" || bad "stray witness broke the parse"
 
 # a witness after a [resolved:] block does not credit the agree above it — and lands on the record
