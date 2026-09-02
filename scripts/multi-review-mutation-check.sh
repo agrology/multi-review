@@ -1748,14 +1748,14 @@ mutations() {
 
   # Block line ranges are ABSOLUTE document lines. Without the base offset a reviewer is pointed at
   # section-relative numbers — the wrong lines, silently.
-  mutate 'symcheck/block-line-base' 'scripts/multi-review-symcheck.sh' replace \
+  mutate 'symcheck/block-line-base' 'scripts/multi-review-core.sh' replace \
     "B3's range looks section-relative" 'multi-review-symcheck.test.sh' \
     '        bstart = base + NR - 1' \
     '        bstart = NR'
 
   # An untagged block still gets a row. `rows` is a worklist, not a filter: pre-filtering by
   # language silently drops the rows most likely to be defects.
-  mutate 'symcheck/untagged-block-kept' 'scripts/multi-review-symcheck.sh' delete \
+  mutate 'symcheck/untagged-block-kept' 'scripts/multi-review-core.sh' delete \
     'the untagged block was filtered out' 'multi-review-symcheck.test.sh' \
     '        if (btag == "") btag = "-"'
 

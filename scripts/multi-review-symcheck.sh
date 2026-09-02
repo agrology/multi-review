@@ -80,28 +80,8 @@ _file_sections() { # <doc> -> the core rows whose span contains a **Files:** lin
 # emitted ending at the span end — an unterminated fence is itself worth a verdict, and dropping it
 # would silently shrink the worklist.
 _blocks_in() { # <doc> <start> <end>
-  sed -n "${2},${3}p" "$1" | awk -v base="$2" '
-    {
-      s = $0; sub(/^ ? ? ?/, "", s)
-      ticks = 0; fc = ""
-      if (match(s, /^`+/))      { ticks = RLENGTH; fc = "`" }
-      else if (match(s, /^~+/)) { ticks = RLENGTH; fc = "~" }
-      if (infence) {
-        if (fc == fchar && ticks >= flen) {
-          rest = substr(s, ticks + 1); gsub(/[ \t]/, "", rest)
-          if (rest == "") { print bstart "\t" (base + NR - 1) "\t" btag; infence = 0; flen = 0; fchar = "" }
-        }
-        next
-      }
-      if (ticks >= 3) {
-        infence = 1; flen = ticks; fchar = fc
-        btag = substr(s, ticks + 1); gsub(/[ \t]/, "", btag)
-        if (btag == "") btag = "-"
-        bstart = base + NR - 1
-      }
-    }
-    END { if (infence) print bstart "\t" (base + NR - 1) "\t" btag }
-  '
+  "$CORE_SH" blocks "$1" "$2" "$3" 2>"${TMPD}/blocks.err" \
+    || die "core.sh blocks failed for ${1}: $(head -1 "${TMPD}/blocks.err")" 1
 }
 
 # What the DOCUMENT introduces: every `- Create:` path and every `- Produces:` entry, document-wide.
@@ -160,11 +140,12 @@ cmd_rows() { # <doc>
   local n=0 idx start end sid title bs be tag
   while IFS=$'\t' read -r idx start end sid title; do
     [[ -n "$sid" ]] || continue
+    _blocks_in "$doc" "$start" "$end" > "${TMPD}/blk"     # not a subshell: die inside exits rows itself
     while IFS=$'\t' read -r bs be tag; do
       [[ -n "$bs" ]] || continue
       n=$((n + 1))
       printf 'B%d\t%s\t%s:%s-%s\t%s\n' "$n" "$sid" "$tag" "$bs" "$be" "$intro" >> "${TMPD}/rows"
-    done < <(_blocks_in "$doc" "$start" "$end")
+    done < "${TMPD}/blk"
   done <<< "$secs"
 
   # ONE block is enough. Unlike the crossref pass — where a single section has no pair to check and
