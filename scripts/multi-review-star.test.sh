@@ -507,6 +507,27 @@ case "$out" in
   *) bad "merge missing-manifest message unhelpful: $out" ;;
 esac
 
+# ...and the guard is NOT made redundant by the pre-commit self-check downstream of it (#107).
+# That check compares the doc's parsed finding ids against the manifest's, so it only notices a
+# manifest rebuilt from one round when the dropped round left a FINDING behind — which is the only
+# reason the BASE57 case above is refused twice over. A round whose sole manifest entry is a
+# quarantine leaves none: the id sets match trivially, the footer count passes (2 >= 2), and the
+# merge COMMITS a doc whose round-1 quarantine record is orphaned from its manifest — a state
+# `verify` then reports as consistent, because guard (d) only walks manifest -> doc.
+# Reachable exactly the way #57 was: one secondary times out (quarantined) while the other returns
+# [no-findings], then the terminal gate deletes the manifest before the follow-up round.
+BASE57Q="${WORK}/m57-quarantine.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASE57Q"
+mkcopy "${BASE57Q}.codex" '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5.5'
+bash "$SUT" merge --round 1 --quarantined gemini:dispatch-timeout "$BASE57Q" "${BASE57Q}.codex" >/dev/null 2>&1
+rm -f "${BASE57Q}.manifest"                     # what the gate cleanup did
+before="$(shasum "$BASE57Q" | cut -d' ' -f1)"
+mkcopy "${BASE57Q}.codex" '> [finding:r2|low] beta' '> — via gpt-5.5' '> — risk: rb'
+bash "$SUT" merge --round 2 "$BASE57Q" "${BASE57Q}.codex" >/dev/null 2>&1; rc=$?
+after="$(shasum "$BASE57Q" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$before" == "$after" ]] \
+  && ok "merge: missing manifest over a quarantine-only round -> refuse, doc untouched" \
+  || bad "merge missing-manifest mutated a quarantine-only doc (partial merge)"
+
 # The guard must key off LIVE footers only: a doc that documents this protocol legitimately shows
 # a star-findings footer inside a code block, and that must not make round 1 unmergeable.
 BASE57F="${WORK}/m57-fenced.md"

@@ -853,11 +853,15 @@ mutations() {
   # --- _roster: the roster off the VALIDATED mode hint (#59) ---
   # --- merge's missing-manifest pre-check (#57) ---
   # Without the footer count, merge takes the round-1 path over a doc that already carries merged
-  # rounds: it appends, rebuilds the manifest from THAT ROUND ALONE, and only the post-merge
-  # self-check notices — after the doc is mutated. The gate is still red, so only the "doc left
-  # untouched" assertion distinguishes a refusal from a corrupting failure.
+  # rounds: it appends and rebuilds the manifest from THAT ROUND ALONE. Since #107 (1da040f) the
+  # self-check runs on the STAGED merge, so on the BASE57 doc the finding-id cross-check refuses the
+  # write and leaves the doc untouched — every BASE57 assertion passes with this line deleted, and
+  # this entry credited BASE57 until it did. What the cross-check cannot see is a dropped round that
+  # left no FINDING: the quarantine-only round in BASE57Q rebuilds the manifest, matches the id sets
+  # trivially, passes the footer count, and COMMITS — orphaning round 1's quarantine record from its
+  # manifest, a doc `verify` then calls consistent. That is the assertion this entry names.
   mutate 'star/merge-missing-manifest' 'scripts/multi-review-star.sh' replace \
-    'merge missing-manifest mutated the doc (partial merge)' 'multi-review-star.test.sh' \
+    'merge missing-manifest mutated a quarantine-only doc (partial merge)' 'multi-review-star.test.sh' \
     "    nfoot=\"\$(review_section \"\$doc\" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->\$')\"" \
     '    nfoot=0'
 
@@ -870,10 +874,21 @@ mutations() {
     "    nfoot=\"\$(review_section \"\$doc\" | grep -cE '^<!-- star-findings: .*-->\$')\""
 
   # ...and fence-stripping is itself the guard's bypass if the fence never closes: strip_fences
-  # drops every line after it, so a real footer hidden behind one counts as zero and the corrupting
-  # merge proceeds. Refusing on an unterminated fence is what makes the count trustworthy.
+  # drops every line after it, so a real footer hidden behind one counts as zero and the count is
+  # not trustworthy. Refusing on an unterminated fence is still the right call HERE — it names the
+  # cause at the guard that cares ("cannot tell whether a round was already merged here") — but
+  # since #107 (1da040f) it is no longer the only thing between that input and a write, so it is
+  # recorded rather than dropped (§11).
+  #
+  # The covering outer layer: merge now self-checks the STAGED merge before committing, and
+  # `_structural_consistency` calls `_table` first, which runs its OWN unterminated_fence_line check
+  # and dies with "unterminated code fence in ## Review" — the very substring BASE57U's second
+  # assertion matches. The merge can never close a pre-existing open fence (the block goes in after
+  # the `## Review` heading, the footer at EOF, and neither is a fence), so any input that tripped
+  # this line still dies inside `_table` with the doc byte-unchanged. Losing the staging or `_table`'s
+  # check makes this line load-bearing again and turns this entry STALE, which is the point.
   mutate 'star/merge-missing-manifest-unterminated' 'scripts/multi-review-star.sh' replace \
-    'merge unterminated-fence bypass' 'multi-review-star.test.sh' \
+    'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
     '    ufl="$(review_section "$doc" | unterminated_fence_line /dev/stdin)"' \
     '    ufl=""'
 
