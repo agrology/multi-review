@@ -2949,7 +2949,7 @@ RS1="$(mkstar rsv-ok.md \
   '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
   '> [resolved:codex-rd1-a] fixed at deadbee — the guard now runs' '> — via claude-opus-4-8')"
 out="$(bash "$SUT" resolved "$RS1" 2>/dev/null)"; rc=$?
-[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee — the guard now runs"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
+[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee — the guard now runs"$'\t'"claude-opus-4-8"$'\t' && $rc -eq 0 ]] \
   && ok "resolved: a well-formed record emits id/text/model" \
   || bad "resolved did not parse a well-formed record (out='$out' rc=$rc)"
 
@@ -3070,8 +3070,8 @@ RS12="$(mkstar rsv-tab-ok.md \
   '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
   "$(printf '> [resolved:codex-rd1-a] fixed at deadbee\tand more note')" '> — via claude-opus-4-8')"
 out="$(bash "$SUT" resolved "$RS12" 2>/dev/null)"; rc=$?
-[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee and more note"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
-  && ok "resolved: a tab in the note is normalised, keeping the record three fields" \
+[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee and more note"$'\t'"claude-opus-4-8"$'\t' && $rc -eq 0 ]] \
+  && ok "resolved: a tab in the note is normalised, keeping the record four fields" \
   || bad "resolved emitted a tabbed note as extra fields (out='$out' rc=$rc)"
 
 # --- earlier-round only (fable-rd1-r4 + codex-rd1-r1, raised independently by two vendors) ---
@@ -3101,7 +3101,7 @@ RR2="$(mkround rsv-earlier-round.md 2 \
   '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
   '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
 out="$(bash "$SUT" resolved "$RR2" 2>/dev/null)"; rc=$?
-[[ $rc -eq 0 && "$out" == "codex-rd1-a"$'\t'"fixed at deadbee"$'\t'"claude-opus-4-8" ]] \
+[[ $rc -eq 0 && "$out" == "codex-rd1-a"$'\t'"fixed at deadbee"$'\t'"claude-opus-4-8"$'\t' ]] \
   && ok "resolved: an earlier-round record in a later round is accepted" \
   || bad "resolved refused a legitimate earlier-round record (out='$out' rc=$rc)"
 
@@ -3344,6 +3344,44 @@ bash "$SUT" verify "$VR" >/dev/null 2>&1 \
   && bad "verify missed a resolved naming an unknown finding" \
   || ok "verify: detects a resolved naming an unknown finding"
 cp "${VR}.bak" "$VR"; rm -f "${VR}.bak"
+
+# --- fix witness: the tenth column, attributed to the response (spec 2026-09-01 A1/A3) ---
+WA="$(mkstar wit-a.md \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: entry `x/y` goes red')"
+out="$(bash "$SUT" _table_for_test "$WA" 2>/dev/null | awk -F'\t' '{print $10}')"
+[[ "$out" == 'entry `x/y` goes red' ]] && ok "witness: the tenth column carries the agree's witness" || bad "witness column: '$out'"
+
+# a witness under a FINDING (no response yet) credits nothing and breaks nothing
+WF="$(mkstar wit-f.md \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — witness: `stray`' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
+out="$(bash "$SUT" _table_for_test "$WF" 2>/dev/null | awk -F'\t' '{print $10}')"
+[[ -z "$out" ]] && ok "witness: a witness under a finding credits no response" || bad "witness leaked from a finding: '$out'"
+[[ "$(bash "$SUT" open-findings "$WF" 2>/dev/null | grep -c .)" -eq 0 ]] \
+  && ok "witness: a stray witness line does not fail the parse" || bad "stray witness broke the parse"
+
+# a witness after a [resolved:] block does not credit the agree above it — and lands on the record
+WR="$(mkcc wit-r.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body' '' '## Review' \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [resolved:codex-rd1-a] fixed at abc123' '> — via claude-opus-5' '> — witness: entry `only-on-the-record`')"
+out="$(bash "$SUT" _table_for_test "$WR" 2>/dev/null | awk -F'\t' '{print $10}')"
+[[ -z "$out" ]] && ok "witness: a witness after a resolved record does not credit the agree above it" \
+  || bad "witness crossed a [resolved:] boundary: '$out'"
+out="$(bash "$SUT" resolved "$WR" 2>/dev/null | awk -F'\t' '{print $4}')"
+[[ "$out" == 'entry `only-on-the-record`' ]] && ok "resolved: the fourth column carries the record's witness" \
+  || bad "resolved witness column: '$out'"
+
+# a witness after a LATER control line (an observation) does not credit the resolved record above it
+WR2="$(mkcc wit-r2.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body' '' '## Review' \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: none — prose' \
+  '> [resolved:codex-rd1-a] fixed at abc123' '> — via claude-opus-5' \
+  '> [observation] unrelated note' '> — via claude-opus-5' '> — witness: entry `should-not-land`')"
+out="$(bash "$SUT" resolved "$WR2" 2>/dev/null | awk -F'\t' '{print $4}')"
+[[ -z "$out" ]] && ok "resolved: a witness after a later control line does not credit the record" \
+  || bad "resolved witness crossed an [observation] boundary: '$out'"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

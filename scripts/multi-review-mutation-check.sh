@@ -2149,8 +2149,8 @@ mutations() {
   # above: that one fires on the next-line branch and this one cannot be reached through it.
   mutate 'star/resolved-via-required-eof' 'scripts/multi-review-star.sh' replace \
     'resolved accepted a trailing record with no via' 'multi-review-star.test.sh' \
-    '    END { if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line") }' \
-    '    END { }'
+    '      if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line")' \
+    '      # (eof arm removed)'
 
   # The non-empty model requirement. A bare "> — via " strips to an empty model and publishes a
   # fix claim attributed to nobody — the one thing CLAUDE.md section 8 requires of agent content.

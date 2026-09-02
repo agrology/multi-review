@@ -14,6 +14,9 @@
 #   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
 #                              and a converge/re-fan verdict (advisory; pure read)
 #   evidence-gaps <doc>     -> high/med findings lacking a "> — evidence:" line (report, not gate)
+#   witness-gaps <doc>      -> agrees/resolved records whose "> — witness:" is missing or does not
+#                              resolve (report, not gate)
+#   refan-check <doc>       -> exit 1 on a CURRENT-round witness gap; run before the re-fan bump
 #   blind-check <copy>      -> exit 1 if a SEEDED copy still carries a previous round's
 #                              findings/responses (issue #39); the reviewer would not be blind
 #   channel-check --seed <seed> <copy> -> exit 1 if a reviewer's findings landed outside the
@@ -462,7 +465,7 @@ cmd_available() {
 # respond to a finding disclosed under its own model id. On any grammar violation, prints an
 # error to stderr and exits 2. Pure awk (portable associative arrays); control line + its
 # required "> — via" line are consumed as a pair.
-_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tevidence" per finding
+_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tevidence\twitness" per finding
   local doc="${1:?doc}" ufl rstart
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   ufl="$(review_section "$doc" | unterminated_fence_line /dev/stdin)"
@@ -499,7 +502,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
           } else {
             if (psev != "") fail("severity tag not allowed on " pv ": " pi)
             if (pi in rverb) fail("multiple responses to finding: " pi)
-            rverb[pi] = pv; rmodel[pi] = m; rwhy[pi] = pwhy
+            rverb[pi] = pv; rmodel[pi] = m; rwhy[pi] = pwhy; cur_response = pi
           }
           pend = 0; next
         } else {
@@ -526,6 +529,18 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
         }
         next
       }
+      # Optional `> — witness:` line (spec 2026-09-01 A1), credited to the RESPONSE whose block we
+      # are still inside — never to a finding. Any control-shaped line clears it, so a witness
+      # written after a [resolved:] or [observation] block cannot credit the agree above it. Never
+      # fatal when absent, for the same reason the evidence line is not.
+      if (line ~ /^> \[/) cur_response = ""
+      if (line ~ /^> — witness:/) {
+        if (cur_response != "") {
+          w = line; sub(/^> — witness:[ ]*/, "", w); gsub(/[ \t]+$/, "", w)
+          if (w != "") rwit[cur_response] = w
+        }
+        next
+      }
       if (parse(line)) { pv = V; pi = I; pwhy = WHY; psev = SEV; pend = 1; cur_finding = "" }
     }
     END {
@@ -539,7 +554,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
         if (rverb[id] == "agree") state = "agreed"
         else if (rverb[id] == "dispute") state = "dissent"
         resp = (id in rmodel) ? rmodel[id] : ""
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id]
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id], rwit[id]
       }
     }
   '
@@ -595,7 +610,7 @@ cmd_observations() { # <doc> -> "text<TAB>model" per observation; exit 2 on an u
 #
 # Undisclosed or empty records fail loud rather than being dropped: a claim that a defect is fixed
 # is agent-authored content a human acts on, so it names its model or it is a contract violation.
-cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
+cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel\twitness" per record
   local doc="${1:?doc}" raw t
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   raw="$(review_section "$doc" | strip_fences /dev/stdin | awk '
@@ -607,9 +622,16 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
         # otherwise strip to an empty model and publish a disclosure naming nobody.
         if (line ~ /^> — via [^[:space:]]/) {
           via = line; sub(/^> — via[[:space:]]+/, "", via); sub(/[[:space:]]+$/, "", via)
-          print pid "\t" ptxt "\t" via; pend = 0; next
+          recs[++nr] = pid "\t" ptxt "\t" via; wit[nr] = ""; wfor = nr; pend = 0; next
         }
         else { fail("resolved record " pid " not followed by a \"> — via <model>\" line") }
+      }
+      # Optional `> — witness:` on the record just closed (spec 2026-09-01 A1); cleared by any
+      # control-shaped line so it can never credit a record it does not follow.
+      if (line ~ /^> \[/) wfor = 0
+      if (line ~ /^> — witness:/) {
+        if (wfor) { w = line; sub(/^> — witness:[ ]*/, "", w); gsub(/[ \t]+$/, "", w); if (w != "") wit[wfor] = w }
+        next
       }
       if (line ~ /^> \[resolved:[A-Za-z0-9_-]+]/) {
         s = substr(line, 13)                      # after the literal "> [resolved:"
@@ -625,7 +647,10 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
         pend = 1
       }
     }
-    END { if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line") }
+    END {
+      if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line")
+      for (i = 1; i <= nr; i++) print recs[i] "\t" wit[i]
+    }
   ')" || return 2
   [[ -n "$raw" ]] || return 0                     # dormant: no records, nothing to cross-check
 
@@ -2026,6 +2051,8 @@ main() {
     # codex-rd2-r1) is a contract: asserting it only through gate-summary's output cannot tell an
     # empty roster from an ignored one. Underscore-prefixed and undocumented on purpose.
     _roster_for_test) _roster "$@" ;;
+    # Same rationale: the witness column is a contract later consumers read by index.
+    _table_for_test) _table "$@" ;;
     *)    die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }
