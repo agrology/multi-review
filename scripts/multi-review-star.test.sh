@@ -3385,7 +3385,7 @@ out="$(bash "$SUT" resolved "$WR2" 2>/dev/null | awk -F'\t' '{print $4}')"
 
 # --- witness-gaps: kinds, and local-flavor resolution against the body outside ## Review ---
 WG="$(mkcc wit-g.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' \
-  'The body mentions `in-body-token` once.' '' '## Review' \
+  'The body mentions `in-body-token` once.' '' '## Context' '- **PR:** https://github.com/o/r/pull/9' '' '## Review' \
   '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
   '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
   '> [finding:codex-rd1-b|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
@@ -3423,13 +3423,15 @@ WP="$(mkcc wit-pr.md '# PR' '<!-- multi-review: awaiting-primary · round 1/5 --
   '> [finding:codex-rd1-b|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-b]' '> — via claude-opus-5' '> — witness: `ctx-token`' \
   '> [finding:codex-rd1-c|med] c' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-c]' '> — via claude-opus-5' '> — witness: `gone-token`' \
   '> [finding:codex-rd1-d|med] d' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-d]' '> — via claude-opus-5' '> — witness: `body-only-token`' \
-  '> [finding:codex-rd1-e|med] e' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-e]' '> — via claude-opus-5')"
+  '> [finding:codex-rd1-e|med] e' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-e]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-f|med] f' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-f]' '> — via claude-opus-5' '> — witness: `b/x.sh`')"
 out="$(bash "$SUT" witness-gaps "$WP" 2>/dev/null)"
 ! grep -q 'codex-rd1-a' <<<"$out" && ok "witness-gaps (PR): a token in an added diff line resolves" || bad "added-token unresolved: $out"
 grep -qx $'codex-rd1-b\t1\tunresolved:ctx-token' <<<"$out" && ok "witness-gaps (PR): a context line does not resolve" || bad "ctx-token: $out"
 grep -qx $'codex-rd1-c\t1\tunresolved:gone-token' <<<"$out" && ok "witness-gaps (PR): a removed line does not resolve" || bad "gone-token: $out"
 grep -qx $'codex-rd1-d\t1\tunresolved:body-only-token' <<<"$out" && ok "witness-gaps (PR): the description body does not resolve" || bad "body-only-token: $out"
 ! grep -q 'codex-rd1-e' <<<"$out" && ok "witness-gaps (PR): an agree without a witness is not a gap — the fix is the author's future push" || bad "PR-flavor agree flagged (fable-rd1-r5): $out"
+grep -qx $'codex-rd1-f\t1\tunresolved:b/x.sh' <<<"$out" && ok "witness-gaps (PR): the +++ file header is not an added line" || bad "+++ file header resolved: $out"
 # --- flavor is the PR identity line, not a heading: a local doc with a REAL ## Diff section stays
 # local, so its witnesses resolve against the body (fable-rd2-r3) ---
 WFA="$(mkcc wit-flavor.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' \
