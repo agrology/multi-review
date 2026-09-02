@@ -164,6 +164,29 @@ it. It does **not** dispute to save a round: a finding it cannot refute on the m
 agrees with, however inconvenient. Leniency is not neutral — every `agree` obliges an edit, and
 those edits are what later rounds spend their time reviewing.
 
+**Every `agree` carries a witness.** Immediately after the response's `> — via` line:
+
+    > — witness: <what goes red if this fix is wrong — named in backticks>
+
+The line answers one question — what goes red if the fix is wrong — and names the thing that does
+the catching in backticks: an entry id, an assertion label, a test name, a step's stated RED. Every
+backticked token must **resolve**: for a local doc, in the body outside `## Review`; for a PR
+scratch, in an added line of the current `## Diff` — the author's push is the fix, so a witness
+that is not in the push is not a witness for it. Flavor is read from the document, never from a
+flag. A fix with nothing to witness says so, `> — witness: none — <why>`, a recorded decision the
+gate counts separately. A `[resolved:]` record carries one on the same terms. A witness is never
+valid on a `dispute`, and a missing one is never a parse error: `witness-gaps <doc>` reports the
+gaps, `gate-summary` renders the counts, and `refan-check <doc>` refuses a re-fan while a
+current-round `agree` or any resolved record lacks a resolving witness. In PR flavor the primary
+never edits the diff, so an `agree` cannot be witnessed at agree time — there the witness belongs
+on the `[resolved:]` record, and a witness-less `agree` is not a gap. Converging is never blocked
+by a gap — the human gate sees the count — because the chain this closes runs through re-fan:
+measured on 2026-09-01 over the eighteen review artifacts then retained locally (four spec/plan
+reviews under `docs/superpowers/`, fourteen PR scratches under `.multi-review/reviews/`, both
+gitignored), counting `> [finding:` lines by their `-rd<N>-` round, 73 of 143 findings came from
+rounds 2+, nearly all of them about the previous round's fixes — a different sample from the
+four-PR figure in "Bounds & terminal state", and the same shape.
+
 **Model-id distinctness:** every secondary and the primary discloses its own *real* model id
 on `> — via <model>`. The primary's disclosed id must differ from every secondary's — the
 self-response guard fails a response whose model equals the finding's raiser model, so a
@@ -349,6 +372,31 @@ symbol as `new`, never invent one. The **unsafe** direction is narrower and wort
 is built from ordinal sections only, so a `- Produces:` declared in a non-ordinal preamble never
 reaches it, and a later section's valid call to that interface reads as a missing repo symbol.
 Both are silent.
+
+## Plan lint
+
+A mechanical check (`multi-review-planlint.sh check <doc> [--repo <root>]`) over the `mutate`
+entries a document ships in its fenced code. Every entry's target line must occur, as an exact
+line, in the document's own fenced code (outside the entries themselves) or in the repo file it
+names; its expect-substring must occur in that code or in the named suite (`SURVIVES-BY-DESIGN` is
+exempt); ids must be unique; and an entry the lint cannot tokenize under a conservative,
+never-evaluating grammar is `unparsed`, which is a defect rather than a skip. Exit 3 is *not
+applicable* (no entries), announced on stderr; 0 is clean; 1 is at least one defect; 2 is usage.
+
+It is **not a pass**: no model, no dispatch, no verdict rows, no findings. The primary runs it in
+every round's fan-out, **before seeding any copy**, and an exit 1 blocks the dispatch until the
+entries are fixed (exit 3 — no entries, or a PR scratch — is announced and the fan-out continues) — a stale entry is cheapest to catch before three reviewers spend a round on
+it, and fixes add entries, so the re-fan path is exactly where it matters. Each round records a
+durable line alongside the quarantine records:
+
+    > [planlint-coverage: not applicable]
+    > [planlint-coverage: <M> entries checked]
+
+`gate-summary` renders it as `Plan lint: not applicable`, `Plan lint: <M> entries checked`, or —
+when no line was recorded — derives applicability from the lint's exit code on the final doc and
+renders `Plan lint: NO RECORD — the lint was applicable and nothing was recorded`, for the reason
+the cross-reference pass does. The line records that the lint ran; passing is what the blocking
+step guarantees.
 
 ## Bounds & terminal state
 
