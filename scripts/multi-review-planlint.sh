@@ -110,8 +110,8 @@ _parse() { # <statements-file>
           while (i <= L) {
             c = substr(s, i, 1)
             if (c == "\\") { d = substr(s, i + 1, 1)
-              if (d == "\"" || d == "\\" || d == "$") { cur = cur d; i += 2; continue }
-              return -1 }
+              if (d == "\"" || d == "\\" || d == "$" || d == "`") { cur = cur d; i += 2; continue }
+              cur = cur "\\" d; i += 2; continue }
             if (c == "$" || c == "`") return -1              # a live substitution: refuse
             if (c == "\"") break
             cur = cur c; i++

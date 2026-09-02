@@ -105,6 +105,31 @@ out="$(bash "$SUT" check "$D" --repo "$REPO" 2>"${WORK}/c.err")"; rc=$?
 [[ "$(verdict "$out" c/esc)" == ok ]] && ok "check: a backslash-continued entry with \\\" \\\$ \\\\ escapes parses and matches" \
   || bad "check: escaped entry verdict '$(verdict "$out" c/esc)' rc=$rc: $out / $(cat "${WORK}/c.err")"
 
+# --- bash's real double-quote escape rule: \$ \` \" \\ collapse to that one character, but a
+# backslash before any OTHER character (e.g. \* or \n, as in a table's own `grep -qE
+# '^\*\*Files:\*\*'` old-lines) is a literal backslash plus that character, not a rejection ---
+D="$(mkdoc esc.md '# Plan' '' \
+  '```bash' \
+  '  x=a\*b\n' \
+  '  echo `hi`' \
+  'bad "the escape label"' \
+  '```' '' \
+  '```bash' \
+  "  mutate 'e/star-nl' 'scripts/x.sh' replace \\" \
+  "    'the escape label' 'x.test.sh' \\" \
+  '    "  x=a\*b\n" \' \
+  "    'x=a-star-nl-new'" \
+  "  mutate 'e/backtick' 'scripts/x.sh' replace \\" \
+  "    'the escape label' 'x.test.sh' \\" \
+  '    "  echo \`hi\`" \' \
+  "    'echo hi-new'" \
+  '```' '' '## Review' '')"
+out="$(bash "$SUT" check "$D" --repo "$REPO" 2>"${WORK}/esc.err")"; rc=$?
+[[ "$(verdict "$out" e/star-nl)" == ok ]] && ok "check: a double-quoted \\* and \\n (backslash + a non-special char) is a literal backslash plus that char" \
+  || bad "check: star-nl verdict '$(verdict "$out" e/star-nl)' rc=$rc: $out / $(cat "${WORK}/esc.err")"
+[[ "$(verdict "$out" e/backtick)" == ok ]] && ok "check: a double-quoted backslash-backtick is a literal backtick" \
+  || bad "check: backtick verdict '$(verdict "$out" e/backtick)' rc=$rc: $out / $(cat "${WORK}/esc.err")"
+
 # --- a fenced "## Review" must not truncate the lint's view (found by linting this feature's own
 # plan: the fixture it quotes carries one, the plan has no real ## Review heading, and a raw scan
 # took the fenced one as the body's end — every entry after it went unlinted). No trailing real
@@ -135,6 +160,15 @@ D="$(mkdoc fixture.md '# Plan' '' '````markdown fixture' '```bash' "  mutate 'f/
 out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"; rc=$?
 [[ $rc -eq 0 && "$(verdict "$out" f/live)" == ok ]] && ! grep -q 'f/stale' <<<"$out" \
   && ok "check: a fixture-tagged block's entries are not linted" || bad "check: the fixture block was linted (rc=$rc out='$out')"
+
+# --- an unterminated LAST fenced block whose final line is itself the mutate entry: the closing
+# fence is missing entirely, so the entry's own line must still be read as code ---
+D="$(mkdoc unterm2.md '# Plan' '' '```bash' 'g || die' 'bad "lbl"' '```' '' '```bash' \
+  "  mutate 'f/unterm' 'scripts/x.sh' delete 'lbl' 'x.test.sh' 'g || die'")"
+out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 && "$(verdict "$out" f/unterm)" == ok ]] \
+  && ok "check: an entry on the last line of an unterminated final block is still linted" \
+  || bad "check: unterminated final block: rc=$rc out='$out'"
 
 # --- usage ---
 bash "$SUT" check >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "check: no doc is a usage error" || bad "check: no-doc rc=$?"
