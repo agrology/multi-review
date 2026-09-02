@@ -1980,6 +1980,84 @@ cmd_evidence_gaps() { # <doc> -> "<ns-id> <sev>" per undocumented high/med findi
   printf '%s\n' "$t" | awk -F'\t' 'NF && ($7=="high" || $7=="med") && $9=="" { print $1, $7 }'
 }
 
+# ---- fix witnesses (spec 2026-09-01, Part A) -----------------------------------------------------
+# A `> — witness:` line on an [agree:] or [resolved:] names, in backticks, what goes red if the fix
+# is wrong. Every backticked token must RESOLVE: for a local doc, in the body outside ## Review; for
+# a PR scratch, in an ADDED line of ## Diff — the author's push is the fix, so a witness that is not
+# in the push is not a witness for it. Flavor is read from the document, never from a flag.
+
+_doc_flavor() { # <doc> -> "pr" when the header carries pr.sh's own `- **PR:** <url>` identity line, else "local"
+  # The header region, not a bare "## Diff" heading: a local plan may legitimately carry a Diff
+  # section, and pr.sh both writes this line at ingest and reads it back to publish (fable-rd2-r3).
+  if grep -qE '^- \*\*PR:\*\* ' <<<"$(header_region "$1")"; then echo pr; else echo local; fi
+}
+
+_witness_corpus() { # <doc> <outfile> — the text a witness token must occur in
+  if [[ "$(_doc_flavor "$1")" == pr ]]; then
+    # A raw scan is right here: every line of a hunk carries a `+`/`-`/` ` sign, so no "## " line
+    # can occur inside the diff, and the section ends at the first real heading after it.
+    awk '/^## Diff[[:space:]]*$/ { d = 1; next } d && /^## / { d = 0 } d && /^\+/ && !/^\+\+\+ / { print substr($0, 2) }' "$1" > "$2"
+  else
+    # The body is everything before the review section — the SAME boundary `_table` reads
+    # (review_section_start), so corpus and table can never disagree about where the channel
+    # begins. That helper's raw scan is a pre-existing limit (a fenced "## Review" inside the
+    # review section moves both), not one this branch could fix alone.
+    local n; n="$(review_section_start "$1")"
+    if (( n > 0 )); then head -n "$((n - 1))" "$1" > "$2"; else cat "$1" > "$2"; fi
+  fi
+}
+
+# _witness_verdict <kind> <witness> <corpus-file> -> ok | none | missing | unresolved:<token> | on-dispute
+_witness_verdict() {
+  local kind="$1" w="$2" corpus="$3" rest tok found=0
+  [[ "$kind" != dispute ]] || { echo on-dispute; return 0; }     # a dispute changes nothing
+  [[ -n "$w" ]] || { echo missing; return 0; }
+  case "$w" in none|none\ *) echo none; return 0 ;; esac         # a recorded decision, like SURVIVES-BY-DESIGN
+  rest="$w"
+  while [[ "$rest" == *\`*\`* ]]; do
+    rest="${rest#*\`}"; tok="${rest%%\`*}"; rest="${rest#*\`}"; found=1
+    # An EMPTY token (a bare ``) must not resolve: `grep -F ""` matches any non-empty corpus, so
+    # a witness naming nothing would pass the gate by naming nothing (codex-rd1-r1).
+    [[ -n "$tok" ]] || { echo "unresolved:(empty-token)"; return 0; }
+    grep -qF -- "$tok" "$corpus" || { echo "unresolved:${tok}"; return 0; }
+  done
+  if (( found )); then echo ok; else echo "unresolved:(no-backticked-token)"; fi
+}
+
+# _witnesses <doc> -> "id\tkind\tverdict\twitness" for every agree, every resolved record, and every
+# dispute that (wrongly) carries a witness. kind is agree | resolved | dispute.
+#
+# PR flavor: an agree's witness is structurally impossible at agree time — the primary never edits
+# the diff, so the fix is the author's FUTURE push and no token can sit in the CURRENT ## Diff.
+# There the witness belongs on the [resolved:] record; an agree without one is not a gap, and an
+# agree that carries one is still checked (fable-rd1-r5).
+_witnesses() {
+  local doc="$1" t rsv corpus id kind w pr=0
+  t="$(_table "$doc")" || return 2
+  rsv="$(cmd_resolved "$doc")" || return 2
+  corpus="$(mktemp)" || die "mktemp failed" 2
+  _witness_corpus "$doc" "$corpus"
+  [[ "$(_doc_flavor "$doc")" != pr ]] || pr=1
+  { printf '%s\n' "$t"   | awk -F'\t' -v pr="$pr" 'NF && $3 == "agreed" && (pr == 0 || $10 != "") { print $1 "\tagree\t" $10 }
+                                       NF && $3 == "dissent" && $10 != "" { print $1 "\tdispute\t" $10 }'
+    printf '%s\n' "$rsv" | awk -F'\t' 'NF { print $1 "\tresolved\t" $4 }'
+  } | while IFS=$'\t' read -r id kind w; do
+    [[ -n "$id" ]] || continue
+    printf '%s\t%s\t%s\t%s\n' "$id" "$kind" "$(_witness_verdict "$kind" "$w" "$corpus")" "$w"
+  done
+  rm -f "$corpus"
+}
+
+cmd_witness_gaps() { # <doc> -> "<ns-id>\t<round>\t<verdict>" per gap; a report, exit 0 on any readable doc
+  local doc="${1:?doc}" wt
+  [[ -f "$doc" ]] || die "doc not found: $doc" 1
+  wt="$(_witnesses "$doc")" || die "witness-gaps: contract violation in $doc" 1
+  # TAB-separated: a verdict carries the offending token verbatim, which may contain spaces.
+  printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 != "ok" && $3 != "none" {
+    rd = "?"; if (match($1, /-rd[0-9]+/)) rd = substr($1, RSTART + 3, RLENGTH - 3)
+    print $1 "\t" rd "\t" $3 }'
+}
+
 # remember-set --pref-file <path> (--reviewers <csv> | --clear)
 # Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
 # (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
@@ -2043,6 +2121,7 @@ main() {
     gate-summary) cmd_gate_summary "$@" ;;
     round-stats) cmd_round_stats "$@" ;;
     evidence-gaps) cmd_evidence_gaps "$@" ;;
+    witness-gaps) cmd_witness_gaps "$@" ;;
     channel-check) cmd_channel_check "$@" ;;
     blind-check) cmd_blind_check "$@" ;;
     compose-review) cmd_compose_review "$@" ;;
