@@ -3475,6 +3475,28 @@ bash "$SUT" refan-check "$RC6" >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "refan-chec
 grep -qx $'codex-rd1-b\t1\ton-dispute' <<<"$(bash "$SUT" witness-gaps "$RC6" 2>/dev/null)" && ok "witness-gaps: the on-dispute slip is still reported at the gate" \
   || bad "witness-gaps dropped the on-dispute row"
 
+# --- gate-summary: the two witness lines ---
+out="$(bash "$SUT" gate-summary "$WG" claude-opus-5 2>/dev/null)"
+grep -qF 'Fix witnesses: 1/7 agreed findings and resolved records carry a resolving witness — 6 gaps' <<<"$out" \
+  && ok "gate-summary: counts resolving witnesses, total, and gaps" || bad "gate-summary witness line: $(grep -F 'Fix witnesses' <<<"$out")"
+grep -qF 'Fix witnesses recorded as none: 1' <<<"$out" && ok "gate-summary: counts none witnesses separately" || bad "none count: $(grep -F 'none' <<<"$out")"
+grep -qF '  - codex-rd1-e (round 1: on-dispute)' <<<"$out" && ok "gate-summary: lists each gap" || bad "gap list: $out"
+out="$(bash "$SUT" gate-summary "$EVGAP" claude-opus-5 2>/dev/null)"
+! grep -qF 'Fix witnesses' <<<"$out" && ok "gate-summary: witness lines are dormant with no responses" || bad "gate-summary printed witness lines for a response-less doc"
+
+# --- gate-summary: plan lint coverage, and NO RECORD ---
+PL1="$(mkstar pl1.md '> [planlint-coverage: 3 entries checked]')"
+out="$(bash "$SUT" gate-summary "$PL1" claude-opus-5 2>/dev/null)"
+grep -qF 'Plan lint: 3 entries checked' <<<"$out" && ok "gate-summary: renders the plan lint coverage line" || bad "plan lint line: $out"
+PL2="$(mkstar pl2.md '> [planlint-coverage: not applicable]')"
+out="$(bash "$SUT" gate-summary "$PL2" claude-opus-5 2>/dev/null)"
+grep -qF 'Plan lint: not applicable' <<<"$out" && ok "gate-summary: renders not applicable" || bad "plan lint n/a: $out"
+PL3="$(mkcc pl3.md '# Doc' '<!-- multi-review-mode: star -->' '' '```bash' "mutate 'a/b' 'scripts/x.sh' delete 'lbl' 'x.test.sh' 'line'" '```' '' '## Review' '')"
+out="$(bash "$SUT" gate-summary "$PL3" claude-opus-5 2>/dev/null)"
+grep -qF 'Plan lint: NO RECORD' <<<"$out" && ok "gate-summary: an applicable doc with no record renders NO RECORD" || bad "NO RECORD missing: $out"
+out="$(bash "$SUT" gate-summary "$EVGAP" claude-opus-5 2>/dev/null)"
+! grep -qF 'Plan lint' <<<"$out" && ok "gate-summary: plan lint is dormant on a doc with no entries and no record" || bad "plan lint not dormant: $out"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

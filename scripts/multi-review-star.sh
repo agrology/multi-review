@@ -211,6 +211,16 @@ _symcheck_coverage() { # <doc> -> "not applicable" | "N/M rows verdicted"
     | tail -1
 }
 
+# _planlint_coverage <doc> — the plan lint's durable line (spec B5), read the way the two pass
+# readers above read theirs. Records that the lint RAN this round; passing is what the blocking
+# fan-out step guarantees.
+_planlint_coverage() { # <doc> -> "not applicable" | "N entries checked"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -oE '^> \[planlint-coverage: (not applicable|[0-9]+ entries checked)\]' \
+    | sed -E 's/^> \[planlint-coverage: (.*)\]$/\1/' \
+    | tail -1
+}
+
 STAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Overridable for tests (dependency injection of the reviewer-helper PATH — not a behavior hook).
 REVIEWER_SH="${MULTI_REVIEW_REVIEWER_SH:-${STAR_DIR}/multi-review-reviewer.sh}"
@@ -1642,6 +1652,23 @@ cmd_gate_summary() {
     echo
   fi
 
+  # Fix witnesses (spec 2026-09-01 A4). What goes red if a fix is wrong, per agree and per resolved
+  # record — and how many were recorded as `none`, so a primary hiding behind `none` is visible.
+  # Dormant when the doc carries no response at all, so a findings-only doc renders as before.
+  local wt wt_total wt_ok wt_none wt_gaps wt_ngaps
+  wt="$(_witnesses "$doc")" || die "gate-summary: contract violation in $doc" 1
+  if [[ -n "$wt" ]]; then
+    wt_total="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $2 != "dispute"' | grep -c . || true)"
+    wt_ok="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 == "ok"' | grep -c . || true)"
+    wt_none="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 == "none"' | grep -c . || true)"
+    wt_gaps="$(cmd_witness_gaps "$doc")"
+    wt_ngaps="$(printf '%s\n' "$wt_gaps" | grep -c . || true)"
+    echo "Fix witnesses: ${wt_ok}/${wt_total} agreed findings and resolved records carry a resolving witness — ${wt_ngaps} gaps"
+    echo "Fix witnesses recorded as none: ${wt_none}"
+    [[ -z "$wt_gaps" ]] || printf '%s\n' "$wt_gaps" | awk -F'\t' 'NF{ printf "  - %s (round %s: %s)\n", $1, $2, $3 }'
+    echo
+  fi
+
   # quarantined secondaries (readability channel: the in-doc records, via the shared parser)
   local qlist; qlist="$(_quarantines "$doc")"
   if [[ -n "$qlist" ]]; then
@@ -1700,6 +1727,25 @@ cmd_gate_summary() {
       fi
     fi
     echo
+  fi
+
+  # plan lint coverage (spec B5), beside the two pass lines. Same NO RECORD derivation as the
+  # crossref block: only the lint's EXIT CODE decides applicability (3 = no entries), never its rows.
+  local pl; pl="$(_planlint_coverage "$doc")"
+  if [[ -n "$pl" ]]; then
+    if [[ "$pl" == "not applicable" ]]; then
+      echo "Plan lint: not applicable (no mutation entries in fenced code)"
+    else
+      echo "Plan lint: ${pl}"
+    fi
+    echo
+  else
+    "${STAR_DIR}/multi-review-planlint.sh" check "$doc" >/dev/null 2>&1
+    case $? in
+      3) : ;;   # no entries: nothing was ever expected, stay dormant
+      0|1) echo "Plan lint: NO RECORD — the lint was applicable and nothing was recorded"; echo ;;
+      *) echo "Plan lint: applicability could not be determined — treat as unrecorded"; echo ;;
+    esac
   fi
 
   # agreed findings, compactly
