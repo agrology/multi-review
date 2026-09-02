@@ -318,6 +318,40 @@ err="$(bash "$SUT" sections "${WORK}/nope.md" 2>&1 >/dev/null)"; rc=$?
   && ok "sections: a missing doc exits 2 and says so" \
   || bad "sections: missing doc rc=$rc err='$err'"
 
+# --- blocks: fenced-block ranges, absolute lines, fence-character matched ---
+# Moved here from symcheck's private _blocks_in so the plan lint can share it (spec B6). The
+# fence-character rule matters: a ``` line inside a ~~~ block is content, not a closer.
+BL="${WORK}/blocks.md"
+printf '%s\n' '# Doc' '' 'prose' '```bash' 'echo one' '```' '' '~~~' '```' 'still inside' '~~~' '' '```' 'untagged' '```' '' '````md' 'never closed' > "$BL"
+out="$(bash "$SUT" blocks "$BL" 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && ok "blocks: exits 0 on a doc with blocks" || bad "blocks: rc=$rc"
+n="$(printf '%s\n' "$out" | grep -c . || true)"
+[[ "$n" == 4 ]] && ok "blocks: one row per block (got $n)" || bad "blocks: expected 4 rows, got $n: $out"
+[[ "$(sed -n 1p <<<"$out")" == $'4\t6\tbash' ]] && ok "blocks: absolute lines and the language tag" \
+  || bad "blocks: first row is '$(sed -n 1p <<<"$out")' (want 4<TAB>6<TAB>bash)"
+[[ "$(sed -n 2p <<<"$out")" == $'8\t11\t-' ]] && ok "blocks: a \`\`\` line inside a ~~~ block does not close it" \
+  || bad "blocks: a \`\`\` line closed the ~~~ block: '$(sed -n 2p <<<"$out")'"
+[[ "$(sed -n 3p <<<"$out")" == $'13\t15\t-' ]] && ok "blocks: an untagged block reports '-'" \
+  || bad "blocks: untagged row is '$(sed -n 3p <<<"$out")'"
+[[ "$(sed -n 4p <<<"$out")" == $'17\t18\tmd' ]] && ok "blocks: an unterminated block ends at the last line" \
+  || bad "blocks: unterminated row is '$(sed -n 4p <<<"$out")' (want 17<TAB>18<TAB>md)"
+
+# a span restricts the scan and keeps line numbers absolute
+out="$(bash "$SUT" blocks "$BL" 7 12 2>/dev/null)"
+[[ "$out" == $'8\t11\t-' ]] && ok "blocks: a span restricts the scan and stays absolute" \
+  || bad "blocks: span 7-12 gave '$out'"
+
+# a span with no block: exit 0, no rows
+out="$(bash "$SUT" blocks "$BL" 1 3 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 && -z "$out" ]] && ok "blocks: a block-free span is empty, not an error" || bad "blocks: block-free span rc=$rc out='$out'"
+
+# usage errors are loud
+bash "$SUT" blocks >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "blocks: no doc is a usage error" || bad "blocks: no-doc rc=$?"
+err="$(bash "$SUT" blocks "${WORK}/nope.md" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 2 ]] && grep -qF 'doc not found' <<<"$err" && ok "blocks: a missing doc exits 2 and says so" \
+  || bad "blocks: missing doc rc=$rc err='$err' — the -f guard is what names the cause; without it the numeric-span check fails first with the wrong message"
+bash "$SUT" blocks "$BL" x 3 >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "blocks: non-numeric span exits 2" || bad "blocks: bad span rc=$?"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

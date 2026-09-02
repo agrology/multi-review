@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # multi-review-core.sh — deterministic marker read/init logic for multi-review review.
-# Subcommands: init <doc> [max] | marker <doc> | resolve-doc
+# Subcommands: init <doc> [max] | marker <doc> | resolve-doc | sections <doc> | blocks <doc> [<start> <end>]
 # cmd_init is the only writer in this script — its marker write is atomic (temp + mv) and
 # preserves the doc's mode. The star protocol (commands/multi-review.md) hand-flips the
 # marker directly thereafter, following the protocol.
@@ -300,6 +300,44 @@ cmd_sections() { # <doc> -> "idx\tstart\tend\tshort-id\ttitle"
   ' "$1"
 }
 
+# Fenced blocks with their line ranges and language tag, within one span of the document. Emits
+# "<start>\t<end>\t<lang>" in ABSOLUTE document lines; <lang> is "-" for an untagged block. A block
+# that never closes is emitted ending at the span end — an unterminated fence is itself worth a
+# verdict, and dropping it would silently shrink a worklist.
+#
+# A fence closes only with the SAME character, at least as long (CommonMark): a ``` line inside a
+# ~~~ block is content. Shared here because two consumers need it — symcheck's rows and the plan
+# lint's code extraction — and a second private copy would mask the first under mutation.
+cmd_blocks() { # <doc> [<start> <end>]
+  [[ $# -ge 1 ]] || die "usage: multi-review-core.sh blocks <doc> [<start> <end>]" 2
+  [[ -f "$1" ]] || die "blocks: doc not found: $1" 2
+  local doc="$1" start="${2:-1}" end="${3:-}"
+  [[ -n "$end" ]] || end="$(wc -l < "$doc" | tr -d ' ')"
+  [[ "$start" =~ ^[0-9]+$ && "$end" =~ ^[0-9]+$ ]] || die "blocks: start and end must be line numbers, got '${start}' '${end}'" 2
+  sed -n "${start},${end}p" "$doc" | awk -v base="$start" '
+    {
+      s = $0; sub(/^ ? ? ?/, "", s)
+      ticks = 0; fc = ""
+      if (match(s, /^`+/))      { ticks = RLENGTH; fc = "`" }
+      else if (match(s, /^~+/)) { ticks = RLENGTH; fc = "~" }
+      if (infence) {
+        if (fc == fchar && ticks >= flen) {
+          rest = substr(s, ticks + 1); gsub(/[ \t]/, "", rest)
+          if (rest == "") { print bstart "\t" (base + NR - 1) "\t" btag; infence = 0; flen = 0; fchar = "" }
+        }
+        next
+      }
+      if (ticks >= 3) {
+        infence = 1; flen = ticks; fchar = fc
+        btag = substr(s, ticks + 1); gsub(/[ \t]/, "", btag)
+        if (btag == "") btag = "-"
+        bstart = base + NR - 1
+      }
+    }
+    END { if (infence) print bstart "\t" (base + NR - 1) "\t" btag }
+  '
+}
+
 main() {
   local cmd="${1:-}"; shift || true
   case "$cmd" in
@@ -307,6 +345,7 @@ main() {
     init)   cmd_init "$@" ;;
     resolve-doc) cmd_resolve_doc "$@" ;;
     sections)     cmd_sections "$@" ;;
+    blocks)       cmd_blocks "$@" ;;
     *)      die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }
