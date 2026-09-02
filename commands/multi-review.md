@@ -310,6 +310,29 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    Then copy `<doc>.baseline` to `<doc>.baseline.rd<N>` for this round and **retain it** — round
    N+1 diffs against it. `<doc>.baseline` keeps its current meaning (the snapshot `verify-vendor`
    diffs against for the CURRENT round), so that guard is unaffected.
+   **Lint the document's mutation entries — every round, before seeding any copy** (spec
+   2026-09-01 Part B). Fixes add entries, so the entry set changes exactly on the re-fan path, and
+   this fan-out is where a stale entry is cheapest to catch — before three reviewers spend a round
+   on it (codex-rd2-r1, gemini-rd2-mutation-target-mismatch and fable-rd2-r2 were one such entry).
+
+       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-planlint.sh check "<doc>" --repo "<session-root>"
+
+   - **Exit 3** → not applicable: the doc ships no `mutate` entries. State it out loud — a lint
+     that silently does not run is indistinguishable at the gate from one that ran clean — and
+     continue. Step 8 records `not applicable`.
+   - **Exit 0** → every entry is consistent. Continue; step 8 records the count.
+   - **Exit 1** → the rows name each defect (`target-missing`, `label-missing`, `duplicate-id`,
+     `unparsed`). Fix them in the doc body and re-run;
+     **do NOT seed or dispatch anyone until it exits 0 or 3.** This is the one blocking step in
+     the fan-out, and it blocks only you, only on your own text. `unparsed` is a defect, not a
+     skip: an entry the lint cannot read is one it cannot vouch for.
+   - **Exit 2** → a usage/infra error on your side. Fix the invocation; stop if you cannot.
+
+   The lint never evaluates the document, and never reads a PR scratch: the `- **PR:** <url>`
+   identity line pr.sh writes into the header makes it exit 3 by construction, because the diff is
+   the author's read-only change, not shipped code, and the real table is covered there by
+   `--verify-table` in CI.
+
 2. **Seed one copy per provider**, using the SAME resolved set from §2 — a later round does not
    shrink the set, even for a provider quarantined earlier; it gets a fresh independent copy
    again.
@@ -817,6 +840,14 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
         `> [symcheck-coverage: <N>/<M> rows verdicted]`. Never optional: an unrecorded exit-1 turn
         is byte-identical at the gate to a review where this pass was never wired up.
       - **Exit 2** → a usage/infra error on YOUR side. Fix the invocation; nothing is recorded.
+   **Plan-lint coverage, in this same step — EVERY round, not round 1 only.** Step 1's lint ran
+   this round (it blocks the fan-out until it exits 0 or 3), so record which. If it exited 3,
+   append `> [planlint-coverage: not applicable]` under `<doc>`'s `## Review` heading, alongside
+   this round's quarantine records;
+   otherwise append `> [planlint-coverage: <M> entries checked]`, with `<M>` the number of rows it
+   printed. The line records that the lint RAN — passing is what the blocking step guarantees —
+   and `gate-summary` renders it beside the two pass lines, deriving `NO RECORD` from the lint's
+   exit code when a round forgot to write it.
 9. **Flip the marker.** Edit `<doc>`'s marker from `awaiting-secondaries` to `awaiting-primary`,
    same round number — your final edit of this step. Retain every regenerable working file this
    round's fan-out wrote beside `<doc>` — every `<doc>.<id>` and `<doc>.<id>.seed` (provider or
@@ -858,6 +889,26 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    being made; falsifiability is.** A guard can be provably load-bearing for the cases someone
    wrote and still be checking the wrong thing — so when the finding is about a check, name the
    break you performed and what went red.
+
+   **Every `agree` carries a witness** (spec 2026-09-01 Part A). Immediately after the response's
+   `> — via` line, add:
+
+       > — witness: <what goes red if this fix is wrong — name it in backticks>
+
+   Name, in backticks, the thing that does the catching: an entry id, an assertion label, a test
+   name, a step's stated RED. Every backticked token must RESOLVE — for a local doc, in the doc
+   body outside `## Review` (the entry you added, the label the plan prints); for a PR scratch, in
+   an ADDED line of the current `## Diff`, because the author's push is the fix and a witness that
+   is not in the push is not a witness for it. A fix with nothing to witness says so:
+   `> — witness: none — <why>` — a recorded decision, like `SURVIVES-BY-DESIGN`, counted
+   separately at the gate so a review whose agrees are mostly `none` is visible as such. A witness
+   is never valid on a `dispute` (nothing changed) and is never parse-fatal when missing:
+   `witness-gaps <doc>` lists the gaps, and step 5's `refan-check` refuses to re-fan on one.
+
+   **In PR flavor the witness belongs on the `[resolved:]` record (step 4), not on the `agree`.**
+   You never edit the diff, so at agree time the fix is the author's future push and no token can
+   sit in the current `## Diff`; an `agree` without a witness is not a gap there, and one that
+   carries a witness is still checked.
 
    **Adjudicate, do not rubber-stamp.** Every `agree` obliges an edit, every edit is fresh
    unreviewed text, and that is the engine that drives extra rounds — so a lenient primary is
@@ -923,6 +974,15 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    gate and nothing can verify it mechanically, so `gate-summary` prints it as a primary claim.
    The helpers refuse a record that names an unknown finding, one you disputed or never answered,
    a second record for the same finding, or one disclosed under the raiser's own model id.
+
+   **A resolved record carries a witness too**, on the same `> — witness:` line and terms as an
+   `agree` (step 2), resolved by the document's flavor: on a PR scratch the backticked token must
+   occur in an ADDED line of this round's `## Diff` — the assertion or entry the push added that
+   now covers the fix, present because fan-out step 2's `refresh` re-fetched the diff at the
+   author's current head before this round's copies were seeded; on a local doc, in the body
+   outside `## Review`. `refan-check` refuses a re-fan
+   while any resolved record lacks one, in every round: a record names an earlier-round finding by
+   rule, so its own round cannot be read from the id, and it is your claim regardless.
 
 5. Decide: **converge**, or re-enter `awaiting-secondaries` for another round.
 
@@ -1025,6 +1085,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    claim (fable-rd2-r1). Converging catches it (the terminal check runs at the same round
    number); re-fanning is the path that does not, which is why the check belongs here rather
    than after the edit.
+
+   **And `refan-check`, on the re-fan branch, before the same bump:**
+
+       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh refan-check "<doc>"
+
+   **Exit 1** → a current-round `agree` or a resolved record has no resolving witness; the gaps
+   are listed. Add the witness (or `none — <why>`) and re-run;
+   **do NOT bump the marker until it exits 0.** It reads the round from the marker at call time
+   for the same reason `verify` does: after the bump, every current-round gap reads as an
+   earlier-round one and the check passes vacuously. Converging is not blocked by a gap — the gate
+   shows the count and the human decides — but the chain this check exists to break runs through
+   re-fan.
 
    Edit the marker directly:
    - **Converge** → state word only: `awaiting-primary` → `converged` (same round number).
