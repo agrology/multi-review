@@ -2693,6 +2693,10 @@ mutations() {
     'local doc rendered the PR pending line' 'multi-review-star.test.sh' \
     '  if [[ "$(_doc_flavor "$doc")" == pr ]]; then' \
     '  if true; then'
+  mutate 'star/gate-witness-pr-pending-resolved' 'scripts/multi-review-star.sh' replace \
+    'resolved agree still pending' 'multi-review-star.test.sh' \
+    "      NF && \$3 == \"agreed\" && \$10 == \"\" && !(\$1 in done)' | grep -c . || true)\"" \
+    "      NF && \$3 == \"agreed\" && \$10 == \"\"' | grep -c . || true)\""
   mutate 'star/gate-witness-pr-pending-dormant' 'scripts/multi-review-star.sh' replace \
     'printed witness lines for a response-less doc' 'multi-review-star.test.sh' \
     '  if (( wt_pending > 0 )); then' \

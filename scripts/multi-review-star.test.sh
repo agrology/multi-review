@@ -3530,6 +3530,17 @@ grep -qF 'Fix witnesses awaiting a resolved record (PR flavor): 2' <<<"$out" \
   && ok "gate-summary (PR): counts witness-less agrees awaiting a resolved record" || bad "PR pending witnesses (fable-rd1-r1): $(grep -F 'Fix witnesses' <<<"$out")"
 out="$(bash "$SUT" gate-summary "$WG" claude-opus-5 2>/dev/null)"
 ! grep -qF 'awaiting a resolved record' <<<"$out" && ok "gate-summary (local): a witness-less agree is a gap, never a pending record" || bad "local doc rendered the PR pending line"
+# An agree that already HAS a resolved record is no longer pending — the record is where its witness
+# lives. Found at the gate of the round-2 self-review of PR #113: all three agrees resolved, and the
+# line still said three were awaiting a record.
+WPR="$(mkcc wit-pr-resolved.md '# PR' '<!-- multi-review: converged · round 2/5 -->' '<!-- multi-review-mode: star -->' '' '- **PR:** https://github.com/o/r/pull/1' '' \
+  '## Diff' '```diff' '+added `tok`' '```' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-b|low] b' '> — via gpt-5.6-terra' '> — risk: r' '> [agree:codex-rd1-b]' '> — via claude-opus-5' \
+  '> [resolved:codex-rd1-a] fixed at abc123' '> — via claude-opus-5' '> — witness: `tok`')"
+out="$(bash "$SUT" gate-summary "$WPR" claude-opus-5 2>/dev/null)"
+grep -qF 'Fix witnesses awaiting a resolved record (PR flavor): 1' <<<"$out" \
+  && ok "gate-summary (PR): an agree with a resolved record is no longer pending" || bad "resolved agree still pending: $(grep -F 'awaiting a resolved record' <<<"$out")"
 
 # --- gate-summary: plan lint coverage, and NO RECORD ---
 PL1="$(mkstar pl1.md '> [planlint-coverage: 3 entries checked]')"

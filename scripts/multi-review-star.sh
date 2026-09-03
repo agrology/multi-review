@@ -1674,9 +1674,14 @@ cmd_gate_summary() {
   # so on the default one-round PR review `wt` is empty and the two lines above are silent — N
   # agreed-but-unverified fixes invisible at the very gate that decides them (fable-rd1-r1 on
   # PR #113). Counted from the table directly, on its own line, independent of `wt`.
-  local wt_pending=0
+  # An agree that already has a [resolved:] record is not pending — the record is where its witness
+  # lives and where it was just counted (found at the gate of PR #113's own round 2).
+  local wt_pending=0 rsv_ids
   if [[ "$(_doc_flavor "$doc")" == pr ]]; then
-    wt_pending="$(printf '%s\n' "$t" | awk -F'\t' 'NF && $3 == "agreed" && $10 == ""' | grep -c . || true)"
+    rsv_ids="$(printf '%s\n' "$rsv" | awk -F'\t' 'NF { print $1 }' | tr '\n' ' ')"
+    wt_pending="$(printf '%s\n' "$t" | awk -F'\t' -v rsv="$rsv_ids" '
+      BEGIN { n = split(rsv, a, " "); for (i = 1; i <= n; i++) done[a[i]] = 1 }
+      NF && $3 == "agreed" && $10 == "" && !($1 in done)' | grep -c . || true)"
   fi
   if (( wt_pending > 0 )); then
     echo "Fix witnesses awaiting a resolved record (PR flavor): ${wt_pending} agreed findings — witnessed on their [resolved:] record once the author pushes"
