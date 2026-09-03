@@ -841,7 +841,7 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
         `> [symcheck-coverage: <N>/<M> rows verdicted]`. Never optional: an unrecorded exit-1 turn
         is byte-identical at the gate to a review where this pass was never wired up.
       - **Exit 2** → a usage/infra error on YOUR side. Fix the invocation; nothing is recorded.
-   **Plan-lint coverage, in this same step — EVERY round, not round 1 only.** Step 1's lint ran
+   **Plan-lint coverage, in this same step — EVERY round, not round 1 only.** The fan-out's lint ran
    this round (it blocks the fan-out until it exits 0 or 3), so record which. If it exited 3,
    append `> [planlint-coverage: not applicable]` under `<doc>`'s `## Review` heading, alongside
    this round's quarantine records;

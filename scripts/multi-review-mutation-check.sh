@@ -2709,8 +2709,8 @@ mutations() {
     '     Fix them when convenient. This is a step in'
   mutate 'command/planlint-coverage-recorded' 'commands/multi-review.md' replace \
     'step 8 never records plan-lint coverage' 'multi-review-packaging.test.sh' \
-    '   **Plan-lint coverage, in this same step — EVERY round, not round 1 only.** Step 1'"'"'s lint ran' \
-    '   Step 1'"'"'s lint ran'
+    '   **Plan-lint coverage, in this same step — EVERY round, not round 1 only.** The fan-out'"'"'s lint ran' \
+    '   The fan-out'"'"'s lint ran'
   mutate 'command/planlint-coverage-counted' 'commands/multi-review.md' replace \
     'missing the <M> entries checked plan-lint coverage line' 'multi-review-packaging.test.sh' \
     '   otherwise append `> [planlint-coverage: <M> entries checked]`, with `<M>` the number of rows it' \
