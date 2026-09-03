@@ -1764,7 +1764,7 @@ cmd_gate_summary() {
       # Exit 3 has two causes and the durable line records neither; the flavor tells them apart
       # (issue #118): on a PR scratch the diff may carry dozens of entries the lint never reads.
       if [[ "$(_doc_flavor "$doc")" == pr ]]; then
-        echo "Plan lint: not applicable (PR scratch — the diff is the author's change, not shipped code; the real table is checked by --verify-table in CI)"
+        echo "Plan lint: not applicable (PR scratch — the diff is the author's change, not shipped code, so the lint never reads it)"
       else
         echo "Plan lint: not applicable (no mutation entries in fenced code)"
       fi

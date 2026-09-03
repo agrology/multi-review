@@ -2870,6 +2870,15 @@ mutations() {
     'deleted the manifest' 'multi-review-star.test.sh' \
     '  for f in "${doc}.baseline" "${doc}".baseline.rd[0-9]*; do' \
     '  for f in "${doc}".*; do'
+  # fable-rd1-r2 on #130: the allowlist's pass-id and log-kind terms are guards too.
+  mutate 'star/release-covers-passes' 'scripts/multi-review-star.sh' replace \
+    'left symcheck.rows behind' 'multi-review-star.test.sh' \
+    '  for id in $ids crossref symcheck; do' \
+    '  for id in $ids crossref; do'
+  mutate 'star/release-covers-dispatch-log' 'scripts/multi-review-star.sh' replace \
+    'left codex.multi-review.log behind' 'multi-review-star.test.sh' \
+    '    for f in "${doc}.${id}" "${doc}.${id}.seed" "${doc}.${id}.multi-review.log" "${doc}.${id}.rows"; do' \
+    '    for f in "${doc}.${id}" "${doc}.${id}.seed" "${doc}.${id}.rows"; do'
   mutate 'pr/record-diff-empty-body' 'scripts/multi-review-pr.sh' delete \
     'recorded the digest of an empty body' 'multi-review-pr.test.sh' \
     '  [[ -s "$bodyf" ]] || die "diff body file is empty: $bodyf — refusing to record the digest of nothing" 1'
