@@ -3511,10 +3511,16 @@ grep -qx $'codex-rd1-b\t1\ton-dispute' <<<"$(bash "$SUT" witness-gaps "$RC6" 2>/
 
 # --- gate-summary: the two witness lines ---
 out="$(bash "$SUT" gate-summary "$WG" claude-opus-5 2>/dev/null)"
-grep -qF 'Fix witnesses: 1/7 agreed findings and resolved records carry a resolving witness — 6 gaps' <<<"$out" \
+grep -qF 'Fix witnesses: 1/7 agreed findings and resolved records carry a resolving witness — 5 gaps (+1 witness on a dispute)' <<<"$out" \
   && ok "gate-summary: counts resolving witnesses, total, and gaps" || bad "gate-summary witness line: $(grep -F 'Fix witnesses' <<<"$out")"
 grep -qF 'Fix witnesses recorded as none: 1' <<<"$out" && ok "gate-summary: counts none witnesses separately" || bad "none count: $(grep -F 'none' <<<"$out")"
 grep -qF '  - codex-rd1-e (round 1: on-dispute)' <<<"$out" && ok "gate-summary: lists each gap" || bad "gap list: $out"
+# Issue #116: the ratio's total excludes disputes, so the gap count on that line must too —
+# 1 ok + 1 none + 5 gaps = 7. The on-dispute slip is reported beside it, not inside it.
+out="$(bash "$SUT" gate-summary "$WP" claude-opus-5 2>/dev/null)"
+grep -qF 'Fix witnesses: 1/5 agreed findings and resolved records carry a resolving witness — 4 gaps' <<<"$out" \
+  && ! grep -qF '(+' <<<"$out" \
+  && ok "gate-summary: no dispute suffix when no dispute carries a witness" || bad "dispute suffix on a doc without one (#116): $(grep -F 'Fix witnesses:' <<<"$out")"
 out="$(bash "$SUT" gate-summary "$EVGAP" claude-opus-5 2>/dev/null)"
 ! grep -qF 'Fix witnesses' <<<"$out" && ok "gate-summary: witness lines are dormant with no responses" || bad "gate-summary printed witness lines for a response-less doc"
 # PR flavor: a witness-less agree is not a gap, so on the default one-round PR review `wt` is empty
@@ -3548,12 +3554,38 @@ out="$(bash "$SUT" gate-summary "$PL1" claude-opus-5 2>/dev/null)"
 grep -qF 'Plan lint: 3 entries checked' <<<"$out" && ok "gate-summary: renders the plan lint coverage line" || bad "plan lint line: $out"
 PL2="$(mkstar pl2.md '> [planlint-coverage: not applicable]')"
 out="$(bash "$SUT" gate-summary "$PL2" claude-opus-5 2>/dev/null)"
-grep -qF 'Plan lint: not applicable' <<<"$out" && ok "gate-summary: renders not applicable" || bad "plan lint n/a: $out"
+grep -qF 'Plan lint: not applicable (no mutation entries in fenced code)' <<<"$out" && ok "gate-summary: renders not applicable" || bad "plan lint n/a: $out"
+# Issue #118: on a PR scratch exit 3 means "PR scratch", not "no entries" — the diff may carry dozens.
+PLP="$(mkcc plp.md '# PR' '<!-- multi-review: converged · round 1/5 -->' '<!-- multi-review-mode: star -->' '' '- **PR:** https://github.com/o/r/pull/1' '' '## Diff' '```diff' '+x' '```' '' '## Review' '> [planlint-coverage: not applicable]')"
+out="$(bash "$SUT" gate-summary "$PLP" claude-opus-5 2>/dev/null)"
+grep -qF 'Plan lint: not applicable (PR scratch' <<<"$out" && ok "gate-summary: a PR scratch renders its own not-applicable reason" || bad "plan lint n/a reason on a PR scratch (#118): $(grep -F 'Plan lint' <<<"$out")"
 PL3="$(mkcc pl3.md '# Doc' '<!-- multi-review-mode: star -->' '' '```bash' "mutate 'a/b' 'scripts/x.sh' delete 'lbl' 'x.test.sh' 'line'" '```' '' '## Review' '')"
 out="$(bash "$SUT" gate-summary "$PL3" claude-opus-5 2>/dev/null)"
 grep -qF 'Plan lint: NO RECORD' <<<"$out" && ok "gate-summary: an applicable doc with no record renders NO RECORD" || bad "NO RECORD missing: $out"
 out="$(bash "$SUT" gate-summary "$EVGAP" claude-opus-5 2>/dev/null)"
 ! grep -qF 'Plan lint' <<<"$out" && ok "gate-summary: plan lint is dormant on a doc with no entries and no record" || bad "plan lint not dormant: $out"
+
+# --- release: delete by an allowlist derived from the roster, keep everything else (issue #112) ---
+# The prose rule ("every regenerable file") had no defence against over-deleting: `.records` sits
+# beside the doc with the same prefix and is NOT regenerable — losing it blocks the next refresh.
+RL="$(mkcc rel.md '# Doc' '<!-- multi-review: converged · round 2/5 -->' '<!-- multi-review-mode: star · reviewers: codex fable -->' '' '## Review' '')"
+for sfx in codex codex.seed codex.multi-review.log fable fable.seed baseline baseline.rd1 baseline.rd2 crossref crossref.seed crossref.rows symcheck.rows manifest records gemini gemini.seed keepme; do : > "$RL.$sfx"; done
+out="$(bash "$SUT" release "$RL" 2>&1)"; rc=$?
+[[ $rc -eq 0 ]] && ok "release: exits 0 on a converged doc" || bad "release rc=$rc: $out"
+gone=1; for sfx in codex codex.seed codex.multi-review.log fable fable.seed baseline baseline.rd1 baseline.rd2 crossref crossref.seed crossref.rows symcheck.rows; do [[ -e "$RL.$sfx" ]] && { gone=0; bad "release: left $sfx behind"; }; done
+(( gone )) && ok "release: removes every regenerable working file"
+[[ -e "$RL.manifest" ]] && ok "release: keeps the manifest" || bad "release: deleted the manifest"
+[[ -e "$RL.records" ]] && ok "release: keeps the records sidecar" || bad "release: deleted the records sidecar (issue #112)"
+[[ -e "$RL.keepme" && -e "$RL.gemini" ]] && ok "release: keeps what it does not recognise (an id outside the roster, an unknown suffix)" || bad "release: deleted an unrecognised file"
+[[ -f "$RL" ]] && ok "release: never touches the doc" || bad "release: deleted the doc"
+RL2="$(mkcc rel2.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star · reviewers: codex -->' '' '## Review' '')"; : > "$RL2.codex"; : > "$RL2.baseline"
+bash "$SUT" release "$RL2" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 3 && -e "$RL2.codex" && -e "$RL2.baseline" ]] && ok "release: refuses before the gate (exit 3) and deletes nothing" || bad "release: acted on a non-terminal doc (rc=$rc)"
+bash "$SUT" release "${WORK}/nope-rel.md" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 ]] && ok "release: a missing doc is a usage error" || bad "release: missing doc rc=$rc"
+RL3="$(mkcc rel3.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' '<!-- multi-review-mode: star -->' '' '## Review' '')"; : > "$RL3.codex"
+bash "$SUT" release "$RL3" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 2 && -e "$RL3.codex" ]] && ok "release: no reviewers suffix is a usage error, nothing deleted" || bad "release: acted without a roster (rc=$rc)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

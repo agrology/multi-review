@@ -1456,6 +1456,16 @@ bash "$SUT" diff-span "$TR" >/dev/null 2>&1 \
   && ok "seed: the previous document is still verifiable after a failed re-seed" \
   || bad "seed: a failed re-seed wedged a previously readable scratch (sidecar reset too early)"
 
+# --- record-diff: a zero-byte body is refused (issue #112) ---
+# The digest of empty input is a well-formed hash, so the empty-DIGEST guard never fires; the
+# sidecar then looks repaired and matches nothing, which is harder to diagnose than a missing file.
+rdE="$(mktemp -d)"; f="${rdE}/pr.md"; printf '# PR\n\n## Diff\n\n## Review\n' > "$f"; b="${rdE}/body"; : > "$b"
+bash "$SUT" record-diff "$f" "$b" >/dev/null 2>&1; rc=$?
+[[ $rc -ne 0 ]] && ! grep -qs 'multi-review-pr-diff' "$f.records" \
+  && ok "record-diff: a zero-byte body is refused and nothing is recorded" \
+  || bad "record-diff: recorded the digest of an empty body (issue #112, rc=$rc)"
+rm -rf "$rdE"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

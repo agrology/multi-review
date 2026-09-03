@@ -17,6 +17,9 @@
 #   witness-gaps <doc>      -> agrees/resolved records whose "> — witness:" is missing or does not
 #                              resolve (report, not gate)
 #   refan-check <doc>       -> exit 1 on a CURRENT-round witness gap; run before the re-fan bump
+#   release <doc>           -> after the gate: remove the regenerable working files beside <doc> by
+#                              an ALLOWLIST derived from its roster; keeps .manifest, .records and
+#                              anything unrecognised (issue #112). Exit 3 before a terminal marker.
 #   blind-check <copy>      -> exit 1 if a SEEDED copy still carries a previous round's
 #                              findings/responses (issue #39); the reviewer would not be blind
 #   channel-check --seed <seed> <copy> -> exit 1 if a reviewer's findings landed outside the
@@ -1656,7 +1659,7 @@ cmd_gate_summary() {
   # Fix witnesses (spec 2026-09-01 A4). What goes red if a fix is wrong, per agree and per resolved
   # record — and how many were recorded as `none`, so a primary hiding behind `none` is visible.
   # Dormant when the doc carries no response at all, so a findings-only doc renders as before.
-  local wt wt_total wt_ok wt_none wt_gaps wt_ngaps
+  local wt wt_total wt_ok wt_none wt_gaps wt_ngaps wt_ondisp wt_sfx
   # _table and cmd_resolved have already died above on a malformed doc, so _witnesses cannot fail here
   wt="$(_witnesses "$doc")"
   if [[ -n "$wt" ]]; then
@@ -1664,8 +1667,13 @@ cmd_gate_summary() {
     wt_ok="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 == "ok"' | grep -c . || true)"
     wt_none="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 == "none"' | grep -c . || true)"
     wt_gaps="$(cmd_witness_gaps "$doc")"
-    wt_ngaps="$(printf '%s\n' "$wt_gaps" | grep -c . || true)"
-    echo "Fix witnesses: ${wt_ok}/${wt_total} agreed findings and resolved records carry a resolving witness — ${wt_ngaps} gaps"
+    # The ratio's total excludes disputes, so the gap count on the same line must too, or
+    # ok + none + gaps never adds up to it (issue #116). The on-dispute slip is a grammar error
+    # the gate still reports — beside the count, and in the list below.
+    wt_ngaps="$(printf '%s\n' "$wt_gaps" | awk -F'\t' 'NF && $3 != "on-dispute"' | grep -c . || true)"
+    wt_ondisp="$(printf '%s\n' "$wt_gaps" | awk -F'\t' 'NF && $3 == "on-dispute"' | grep -c . || true)"
+    wt_sfx=""; if (( wt_ondisp > 0 )); then wt_sfx=" (+${wt_ondisp} witness on a dispute)"; fi
+    echo "Fix witnesses: ${wt_ok}/${wt_total} agreed findings and resolved records carry a resolving witness — ${wt_ngaps} gaps${wt_sfx}"
     echo "Fix witnesses recorded as none: ${wt_none}"
     [[ -z "$wt_gaps" ]] || printf '%s\n' "$wt_gaps" | awk -F'\t' 'NF{ printf "  - %s (round %s: %s)\n", $1, $2, $3 }'
     echo
@@ -1753,7 +1761,13 @@ cmd_gate_summary() {
   local pl; pl="$(_planlint_coverage "$doc")"
   if [[ -n "$pl" ]]; then
     if [[ "$pl" == "not applicable" ]]; then
-      echo "Plan lint: not applicable (no mutation entries in fenced code)"
+      # Exit 3 has two causes and the durable line records neither; the flavor tells them apart
+      # (issue #118): on a PR scratch the diff may carry dozens of entries the lint never reads.
+      if [[ "$(_doc_flavor "$doc")" == pr ]]; then
+        echo "Plan lint: not applicable (PR scratch — the diff is the author's change, not shipped code; the real table is checked by --verify-table in CI)"
+      else
+        echo "Plan lint: not applicable (no mutation entries in fenced code)"
+      fi
     else
       echo "Plan lint: ${pl}"
     fi
@@ -2149,6 +2163,35 @@ cmd_refan_check() {
   echo "refan-check: ${doc} — no current-round witness gap (round ${cur})"
 }
 
+# release <doc> -> 0 released · 2 usage · 3 the marker is not terminal (the gate is presented FROM
+# these files). Deletes by ALLOWLIST, never by "everything except the exceptions I remembered": the
+# prose rule this replaces protected against under-listing and had no defence against over-deleting,
+# and `<doc>.records` — the PR sidecar holding the diff digest and per-round heads, which nothing
+# regenerates — went with the rest, so the next round's refresh refused (issue #112). An
+# unrecognised file is kept: cheap and harmless, where deleting it is neither.
+cmd_release() {
+  local doc="${1:?doc}" state ids id f n=0
+  [[ -f "$doc" ]] || die "doc not found: $doc" 2
+  state="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $1}')" || state=""
+  case "$state" in
+    converged|exhausted) ;;
+    "") die "release: ${doc} carries no readable state marker" 2 ;;
+    *) die "release: ${doc} is ${state} — the gate is presented FROM these files; release only after it" 3 ;;
+  esac
+  ids="$(_roster "$doc")" || exit $?
+  [[ -n "$ids" ]] || die "release: ${doc} carries no 'reviewers:' suffix, so the provider copies cannot be derived — release by hand, keeping ${doc}.manifest and ${doc}.records" 2
+  # shellcheck disable=SC2086  # ids are [a-z0-9]+ by STAR_RE
+  for id in $ids crossref symcheck; do
+    for f in "${doc}.${id}" "${doc}.${id}.seed" "${doc}.${id}.multi-review.log" "${doc}.${id}.rows"; do
+      if [[ -e "$f" ]]; then rm -f -- "$f"; echo "released: ${f#"$doc"}"; n=$((n + 1)); fi
+    done
+  done
+  for f in "${doc}.baseline" "${doc}".baseline.rd[0-9]*; do
+    if [[ -e "$f" ]]; then rm -f -- "$f"; echo "released: ${f#"$doc"}"; n=$((n + 1)); fi
+  done
+  echo "release: ${doc} — ${n} file(s) released; kept .manifest and .records (not regenerable) and anything unrecognised"
+}
+
 # remember-set --pref-file <path> (--reviewers <csv> | --clear)
 # Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
 # (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
@@ -2214,6 +2257,7 @@ main() {
     evidence-gaps) cmd_evidence_gaps "$@" ;;
     witness-gaps) cmd_witness_gaps "$@" ;;
     refan-check) cmd_refan_check "$@" ;;
+    release) cmd_release "$@" ;;
     channel-check) cmd_channel_check "$@" ;;
     blind-check) cmd_blind_check "$@" ;;
     compose-review) cmd_compose_review "$@" ;;

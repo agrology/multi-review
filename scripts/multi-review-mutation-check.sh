@@ -1667,8 +1667,8 @@ mutations() {
   # provider-or-pass `.seed` pattern) — otherwise they are never released (R10).
   mutate 'command/crossref-gate-releases' 'commands/multi-review.md' replace \
     'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
-    '  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` and' \
-    '  `<doc>.<id>.seed` (per provider only),'
+    '  (`<doc>.crossref`/`<doc>.crossref.seed` and `<doc>.symcheck`/`<doc>.symcheck.seed` included),' \
+    '  (per provider only),'
 
   # The release rule's guard is a two-term conjunct (the seed shape AND the worklist shape), so it
   # gets TWO entries. One entry would catch whichever term the mutation happened to touch and leave
@@ -1676,8 +1676,8 @@ mutations() {
   # worklist shape that replaced the enumerated `<doc>.crossref.rows` when #89 added a second pass.
   mutate 'command/gate-releases-pass-worklist' 'commands/multi-review.md' replace \
     'the terminal gate'"'"'s release-rule paragraph never names' 'multi-review-packaging.test.sh' \
-    '  `<doc>.baseline.rd<N>`, and every pass'"'"'s derived worklist (`<doc>.<pass>.rows`). State the rule this' \
-    '  `<doc>.baseline.rd<N>`. State the rule this'
+    '  every pass'"'"'s derived worklist (`<doc>.<pass>.rows`), `<doc>.baseline` and every' \
+    '  `<doc>.baseline` and every'
 
   # ---- the symbol-check pass (#89) ----------------------------------------------------------
   # ONE ENTRY PER GUARD, never one per function: an entry that replaces a whole function catches
@@ -2838,11 +2838,45 @@ mutations() {
     "    if (\$2 == \"resolved\" || 1) print \$1 \" \" \$2 \" \" \$3 }')\""
   mutate 'star/gate-witness-ratio' 'scripts/multi-review-star.sh' delete \
     'gate-summary witness line' 'multi-review-star.test.sh' \
-    '    echo "Fix witnesses: ${wt_ok}/${wt_total} agreed findings and resolved records carry a resolving witness — ${wt_ngaps} gaps"'
+    '    echo "Fix witnesses: ${wt_ok}/${wt_total} agreed findings and resolved records carry a resolving witness — ${wt_ngaps} gaps${wt_sfx}"'
+  # Issue #116: the gap count excludes on-dispute rows so ok + none + gaps = total; the slip is
+  # reported beside the count instead.
+  mutate 'star/gate-witness-gaps-exclude-dispute' 'scripts/multi-review-star.sh' replace \
+    'gate-summary witness line' 'multi-review-star.test.sh' \
+    "    wt_ngaps=\"\$(printf '%s\\n' \"\$wt_gaps\" | awk -F'\\t' 'NF && \$3 != \"on-dispute\"' | grep -c . || true)\"" \
+    "    wt_ngaps=\"\$(printf '%s\\n' \"\$wt_gaps\" | grep -c . || true)\""
+  mutate 'star/gate-witness-dispute-suffix' 'scripts/multi-review-star.sh' replace \
+    'gate-summary witness line' 'multi-review-star.test.sh' \
+    '    wt_sfx=""; if (( wt_ondisp > 0 )); then wt_sfx=" (+${wt_ondisp} witness on a dispute)"; fi' \
+    '    wt_sfx=""'
   mutate 'star/gate-planlint-not-applicable' 'scripts/multi-review-star.sh' replace \
     'plan lint n/a' 'multi-review-star.test.sh' \
-    '      echo "Plan lint: not applicable (no mutation entries in fenced code)"' \
-    '      :'
+    '        echo "Plan lint: not applicable (no mutation entries in fenced code)"' \
+    '        :'
+  # Issue #118: exit 3 on a PR scratch means "PR scratch", and the flavor decides the reason.
+  mutate 'star/gate-planlint-pr-reason' 'scripts/multi-review-star.sh' replace \
+    'plan lint n/a reason on a PR scratch' 'multi-review-star.test.sh' \
+    '      if [[ "$(_doc_flavor "$doc")" == pr ]]; then' \
+    '      if [[ "$(_doc_flavor "$doc")" == never ]]; then'
+  # Issue #112: release deletes by allowlist after the gate; record-diff refuses an empty body.
+  mutate 'star/release-refuses-before-gate' 'scripts/multi-review-star.sh' replace \
+    'acted on a non-terminal doc' 'multi-review-star.test.sh' \
+    '    *) die "release: ${doc} is ${state} — the gate is presented FROM these files; release only after it" 3 ;;' \
+    '    *) : ;;'
+  mutate 'star/release-needs-roster' 'scripts/multi-review-star.sh' delete \
+    'acted without a roster' 'multi-review-star.test.sh' \
+    '  [[ -n "$ids" ]] || die "release: ${doc} carries no '"'"'reviewers:'"'"' suffix, so the provider copies cannot be derived — release by hand, keeping ${doc}.manifest and ${doc}.records" 2'
+  mutate 'star/release-allowlist-not-glob' 'scripts/multi-review-star.sh' replace \
+    'deleted the manifest' 'multi-review-star.test.sh' \
+    '  for f in "${doc}.baseline" "${doc}".baseline.rd[0-9]*; do' \
+    '  for f in "${doc}".*; do'
+  mutate 'pr/record-diff-empty-body' 'scripts/multi-review-pr.sh' delete \
+    'recorded the digest of an empty body' 'multi-review-pr.test.sh' \
+    '  [[ -s "$bodyf" ]] || die "diff body file is empty: $bodyf — refusing to record the digest of nothing" 1'
+  mutate 'command/gate-releases-via-helper' 'commands/multi-review.md' replace \
+    'terminal cleanup still hand-rolls the deletion' 'multi-review-packaging.test.sh' \
+    '      ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh release "<doc>"' \
+    '      (remove the working files by hand)'
   mutate 'star/gate-witness-dormant' 'scripts/multi-review-star.sh' replace \
     'printed witness lines for a response-less doc' 'multi-review-star.test.sh' \
     '  if [[ -n "$wt" ]]; then' \

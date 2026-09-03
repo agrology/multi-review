@@ -1156,16 +1156,26 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
     post inline, the rest in the summary; it reads the PR url from the scratch header). STOP.
 
   This is the **human gate**: never implement, commit, or open/merge a PR from this command. Only
-  once the engineer confirms the review is done, remove every regenerable working file this
+  once the engineer confirms the review is done, release the regenerable working files this
   review created beside `<doc>` — never before the gate, since the gate is presented FROM them
-  (`check-converged`/`gate-summary` read the manifest). That is EVERY `<doc>.<id>` and
-  `<doc>.<id>.seed` (per provider AND per pass — `<doc>.crossref`/`<doc>.crossref.seed` and
-  `<doc>.symcheck`/`<doc>.symcheck.seed` included), every `<doc>.baseline` and
-  `<doc>.baseline.rd<N>`, and every pass's derived worklist (`<doc>.<pass>.rows`). State the rule this
-  way — by what it is FOR, not as a fixed list — on purpose: this repo shipped the identical
-  contradiction twice already (an enumerated exception with a missing entry), and a list is
-  exactly the shape that silently stops covering a working-file kind this protocol adds later.
-  The one thing this rule does NOT cover is next, by name.
+  (`check-converged`/`gate-summary` read the manifest):
+
+      ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh release "<doc>"
+
+  It deletes by an ALLOWLIST derived from the doc's own roster — every `<doc>.<id>`,
+  `<doc>.<id>.seed` and `<doc>.<id>.multi-review.log` per provider AND per pass
+  (`<doc>.crossref`/`<doc>.crossref.seed` and `<doc>.symcheck`/`<doc>.symcheck.seed` included),
+  every pass's derived worklist (`<doc>.<pass>.rows`), `<doc>.baseline` and every
+  `<doc>.baseline.rd<N>` — and KEEPS everything else: `<doc>.manifest` and `<doc>.records` by
+  name, and any file it does not recognise by default. **Do not hand-roll the deletion.** The
+  prose rule this replaced ("every regenerable file") was stated by intent so it would keep
+  covering working-file kinds added later; that protected against under-listing and had no
+  defence against over-deleting, and `<doc>.records` — the PR sidecar holding the diff digest and
+  per-round heads, which nothing can regenerate — was swept with the rest, so the next round's
+  `refresh` refused and the only recovery was `ingest --fresh` (issue #112). The helper refuses
+  (exit 3) while the marker is not terminal, and exits 2 on a header with no `reviewers:` suffix
+  (a doc armed before the suffix existed) — release those by hand, keeping the two files named.
+  The one file the allowlist protects that this paragraph has not yet explained is next, by name.
 
   **Keep `<doc>.manifest`.** It is the one retained file that is not regenerable, and it is tiny
   next to the copies/seeds/baselines this step releases — so releasing them without it gets the
