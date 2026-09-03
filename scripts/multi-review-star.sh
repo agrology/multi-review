@@ -1670,6 +1670,18 @@ cmd_gate_summary() {
     [[ -z "$wt_gaps" ]] || printf '%s\n' "$wt_gaps" | awk -F'\t' 'NF{ printf "  - %s (round %s: %s)\n", $1, $2, $3 }'
     echo
   fi
+  # PR flavor: a witness-less agree is exempt from _witnesses (the fix is the author's future push),
+  # so on the default one-round PR review `wt` is empty and the two lines above are silent — N
+  # agreed-but-unverified fixes invisible at the very gate that decides them (fable-rd1-r1 on
+  # PR #113). Counted from the table directly, on its own line, independent of `wt`.
+  local wt_pending=0
+  if [[ "$(_doc_flavor "$doc")" == pr ]]; then
+    wt_pending="$(printf '%s\n' "$t" | awk -F'\t' 'NF && $3 == "agreed" && $10 == ""' | grep -c . || true)"
+  fi
+  if (( wt_pending > 0 )); then
+    echo "Fix witnesses awaiting a resolved record (PR flavor): ${wt_pending} agreed findings — witnessed on their [resolved:] record once the author pushes"
+    echo
+  fi
 
   # quarantined secondaries (readability channel: the in-doc records, via the shared parser)
   local qlist; qlist="$(_quarantines "$doc")"

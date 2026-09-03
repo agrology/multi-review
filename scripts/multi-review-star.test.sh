@@ -3517,6 +3517,19 @@ grep -qF 'Fix witnesses recorded as none: 1' <<<"$out" && ok "gate-summary: coun
 grep -qF '  - codex-rd1-e (round 1: on-dispute)' <<<"$out" && ok "gate-summary: lists each gap" || bad "gap list: $out"
 out="$(bash "$SUT" gate-summary "$EVGAP" claude-opus-5 2>/dev/null)"
 ! grep -qF 'Fix witnesses' <<<"$out" && ok "gate-summary: witness lines are dormant with no responses" || bad "gate-summary printed witness lines for a response-less doc"
+# PR flavor: a witness-less agree is not a gap, so on the default one-round PR review `wt` is empty
+# and both lines above stay dormant — N agreed-but-unverified fixes invisible at the gate
+# (fable-rd1-r1 on PR #113). The pending count is its own line, printed whether or not `wt` has rows.
+WPG="$(mkcc wit-pr-gate.md '# PR' '<!-- multi-review: converged · round 1/5 -->' '<!-- multi-review-mode: star -->' '' '- **PR:** https://github.com/o/r/pull/1' '' \
+  '## Diff' '```diff' '+added' '```' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-b|low] b' '> — via gpt-5.6-terra' '> — risk: r' '> [agree:codex-rd1-b]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-c|low] c' '> — via gpt-5.6-terra' '> — risk: r' '> [dispute:codex-rd1-c] no' '> — via claude-opus-5')"
+out="$(bash "$SUT" gate-summary "$WPG" claude-opus-5 2>/dev/null)"
+grep -qF 'Fix witnesses awaiting a resolved record (PR flavor): 2' <<<"$out" \
+  && ok "gate-summary (PR): counts witness-less agrees awaiting a resolved record" || bad "PR pending witnesses (fable-rd1-r1): $(grep -F 'Fix witnesses' <<<"$out")"
+out="$(bash "$SUT" gate-summary "$WG" claude-opus-5 2>/dev/null)"
+! grep -qF 'awaiting a resolved record' <<<"$out" && ok "gate-summary (local): a witness-less agree is a gap, never a pending record" || bad "local doc rendered the PR pending line"
 
 # --- gate-summary: plan lint coverage, and NO RECORD ---
 PL1="$(mkstar pl1.md '> [planlint-coverage: 3 entries checked]')"

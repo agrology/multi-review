@@ -2685,6 +2685,18 @@ mutations() {
     'gap list' 'multi-review-star.test.sh' \
     "    [[ -z \"\$wt_gaps\" ]] || printf '%s\\n' \"\$wt_gaps\" | awk -F'\\t' 'NF{ printf \"  - %s (round %s: %s)\\n\", \$1, \$2, \$3 }'" \
     '    :'
+  # PR flavor pending count (fable-rd1-r1 on PR #113): the line, its flavor guard, and its dormancy.
+  mutate 'star/gate-witness-pr-pending' 'scripts/multi-review-star.sh' delete \
+    'PR pending witnesses' 'multi-review-star.test.sh' \
+    '    echo "Fix witnesses awaiting a resolved record (PR flavor): ${wt_pending} agreed findings — witnessed on their [resolved:] record once the author pushes"'
+  mutate 'star/gate-witness-pr-pending-flavor' 'scripts/multi-review-star.sh' replace \
+    'local doc rendered the PR pending line' 'multi-review-star.test.sh' \
+    '  if [[ "$(_doc_flavor "$doc")" == pr ]]; then' \
+    '  if true; then'
+  mutate 'star/gate-witness-pr-pending-dormant' 'scripts/multi-review-star.sh' replace \
+    'printed witness lines for a response-less doc' 'multi-review-star.test.sh' \
+    '  if (( wt_pending > 0 )); then' \
+    '  if true; then'
   mutate 'star/gate-planlint-no-record' 'scripts/multi-review-star.sh' replace \
     'NO RECORD missing' 'multi-review-star.test.sh' \
     '      0|1) echo "Plan lint: NO RECORD — the lint was applicable and nothing was recorded"; echo ;;' \
