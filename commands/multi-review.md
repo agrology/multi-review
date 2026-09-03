@@ -551,6 +551,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      and ask the engineer whether to proceed on the remaining set or stop. `check` gates this
      before arming, so reaching it here means the environment changed mid-run.
 
+     **A TRANSIENT harness error is the other case** — the Agent tool dies on an API error
+     (`529 Overloaded`, a rate limit, a dropped connection) before the reviewer opens its copy.
+     Nothing about the reviewer is known: its copy is still byte-identical to the seed and still
+     blind, so re-dispatch it **once**, on the same copy, in the same round. If the retry dies the
+     same way, quarantine with the reason **`dispatch failed: <error class>`** — e.g. `dispatch
+     failed: API 529 Overloaded` — naming the class of error, never pasting its text (a request id
+     or a quota message is not a reason). This is NOT `no turn taken`: that reason is reserved for
+     a reviewer that ran and wrote nothing, and the two mean opposite things to the author reading
+     the published review (issue #124: three 529 deaths in one round were recorded as a reviewer
+     that declined). For the two-consecutive-rounds stop rule below, a harness error that recurs
+     next round is the same reason — stop paying for it the same way.
+
      **`--background` is not optional for `codex`.** The rescue wrapper forwards to
      `codex-companion.mjs task`, which runs in the FOREGROUND by default; a real review outlives
      the harness's 10-minute foreground window, so the subagent's turn ends and the detached codex
@@ -687,7 +699,10 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      **once** as grace before recording anything. A reviewer 82 seconds past the bound is not a
      reviewer that failed (issue #71: a bound-hit copy completed with 11 findings, one `high`).
      If the second wait also returns 9, quarantine with the reason **`no turn taken`** — the one
-     state that proves the reviewer contributed nothing, as opposed to finishing late.
+     state that proves the reviewer contributed nothing, as opposed to finishing late. **Only when
+     the dispatch itself succeeded:** a copy that is pristine because the Agent tool died before
+     the reviewer ran is step 4's transient case, reason `dispatch failed: <error class>`, and this
+     wait's exit 9 is merely the expected shape of that — never its reason.
    - **Exit 10** — a terminal state preempted the wait. Stop and surface it; this is not a
      quarantine.
    - **Exit 2** — a usage error on your side (bad path, missing seed). Fix the invocation.

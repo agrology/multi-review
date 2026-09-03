@@ -2219,6 +2219,20 @@ mutations() {
     'nothing requires a check-related fix to be demonstrated' 'multi-review-packaging.test.sh' \
     '   **A fix about whether a CHECK CAN FAIL must demonstrate the failure, not assert it**' \
     '   A fix about whether a check can fail should ideally be demonstrated.'
+  # Issue #124: a harness-level dispatch failure has its own reason, the exit-9 bullet refuses to
+  # lend it `no turn taken`, and the protocol states the distinction.
+  mutate 'command/harness-dispatch-failed-reason' 'commands/multi-review.md' replace \
+    'a harness dispatch failure has no reason of its own' 'multi-review-packaging.test.sh' \
+    '     same way, quarantine with the reason **`dispatch failed: <error class>`** — e.g. `dispatch' \
+    '     same way, quarantine it with a reason of your choosing — e.g. `dispatch'
+  mutate 'command/exit-9-not-a-failed-dispatch' 'commands/multi-review.md' replace \
+    'exit 9 still reports a failed dispatch as no turn taken' 'multi-review-packaging.test.sh' \
+    '     the reviewer ran is step 4'"'"'s transient case, reason `dispatch failed: <error class>`, and this' \
+    '     the reviewer ran is step 4'"'"'s transient case, and this'
+  mutate 'protocol/quarantine-reason-vocabulary' 'docs/multi-review.md' replace \
+    'quarantine reasons never distinguish a failed dispatch' 'multi-review-packaging.test.sh' \
+    '  ran and wrote nothing; `dispatch failed: <error class>` is a reviewer the harness never reached' \
+    '  ran and wrote nothing; the other is a reviewer the harness never reached'
 
   # §4. The never-drop rule protects a reviewer that REVIEWED and found nothing. Without this
   # carve-out it also protects one that cannot run: gemini was re-dispatched in all four rounds

@@ -214,7 +214,11 @@ that ran and found nothing; a dispatch failure is a different signal from silenc
   read what everyone else already said while every downstream check still passes.
 - A secondary is **quarantined** — excluded from the merge, with its reason recorded durably
   in the doc — when it can't be dispatched, times out, or fails vendor verification (its
-  disclosed model doesn't match the vendor it was dispatched as). All secondaries quarantined
+  disclosed model doesn't match the vendor it was dispatched as). The reason says what happened
+  to the *process*, and two of them are deliberately distinct: `no turn taken` is a reviewer that
+  ran and wrote nothing; `dispatch failed: <error class>` is a reviewer the harness never reached
+  (an API error before the copy was opened) — the author reads the second as an outage, the first
+  as a verdict, so they are never interchanged. All secondaries quarantined
   in the same round, including `fable`, is an anomaly: the primary stops rather than merging a
   round with zero trustworthy findings.
 - A later round re-dispatches the FULL resolved secondary set, not just previously-admitted

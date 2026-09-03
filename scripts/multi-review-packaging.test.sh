@@ -800,6 +800,31 @@ else
     || bad "command: resume-rebuild block never mentions UNDISPATCHABLE — the quarantine-binding rule routes past this path"
 fi
 
+# A harness-level dispatch failure (the Agent tool dies on an API 529 before the reviewer opens its
+# copy) is not a reviewer that declined. Issue #124: three such deaths in one round were recorded as
+# `no turn taken`, the reason reserved for a reviewer that RAN and wrote nothing, and the published
+# review told the author a healthy reviewer contributed nothing. The subagent branch must give the
+# case its own reason, and the exit-9 bullet must refuse to lend it `no turn taken`.
+n="$(grep -n 'If the Agent tool itself errors' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: Agent-tool-error anchor not found — the guard's anchor is gone"
+else
+  grep -q 'dispatch failed: ' <<<"$(sed -n "${n},$((n+24))p" "$CMD")" \
+    && ok "command: a transient harness dispatch failure has a reason of its own" \
+    || bad "command: a harness dispatch failure has no reason of its own (issue #124)"
+fi
+n="$(grep -n 'quarantine with the reason \*\*`no turn taken`\*\*' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: exit-9 no-turn-taken anchor not found — the guard's anchor is gone"
+else
+  grep -q 'dispatch failed' <<<"$(sed -n "${n},$((n+6))p" "$CMD")" \
+    && ok "command: exit 9 does not lend no-turn-taken to a failed dispatch" \
+    || bad "command: exit 9 still reports a failed dispatch as no turn taken (issue #124)"
+fi
+grep -q 'dispatch failed' "${ROOT}/docs/multi-review.md" \
+  && ok "protocol: quarantine reasons distinguish a failed dispatch from a silent turn" \
+  || bad "protocol: quarantine reasons never distinguish a failed dispatch (issue #124)"
+
 # EXTRACTING the flag is not FORWARDING it. §2's fresh-request call is the only place --allow-missing
 # reaches resolve-set, and resolve-set is the only thing that acts on it — so without this the
 # engineer types the documented opt-out, §1 dutifully parses it off the positional, and the run
