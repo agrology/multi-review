@@ -2223,12 +2223,20 @@ mutations() {
   # lend it `no turn taken`, and the protocol states the distinction.
   mutate 'command/harness-dispatch-failed-reason' 'commands/multi-review.md' replace \
     'a harness dispatch failure has no reason of its own' 'multi-review-packaging.test.sh' \
-    '     same way, quarantine with the reason **`dispatch failed: <error class>`** — e.g. `dispatch' \
-    '     same way, quarantine it with a reason of your choosing — e.g. `dispatch'
+    '       **`dispatch failed: <error class>`**, naming the retry'"'"'s error class — e.g. `dispatch' \
+    '       a reason of your choosing, naming the retry'"'"'s error class — e.g. `dispatch'
   mutate 'command/exit-9-not-a-failed-dispatch' 'commands/multi-review.md' replace \
     'exit 9 still reports a failed dispatch as no turn taken' 'multi-review-packaging.test.sh' \
     '     the reviewer ran is step 4'"'"'s transient case, reason `dispatch failed: <error class>`, and this' \
     '     the reviewer ran is step 4'"'"'s transient case, and this'
+  mutate 'command/mid-turn-death-not-redispatched' 'commands/multi-review.md' replace \
+    'a mid-turn harness death is re-dispatched onto a written copy' 'multi-review-packaging.test.sh' \
+    '     - **Changed** → the reviewer ran and the harness died mid-turn. Do NOT re-dispatch: a second' \
+    '     - **Changed** → the reviewer ran and the harness died mid-turn. Re-dispatch anyway: a second'
+  mutate 'command/retry-death-any-class' 'commands/multi-review.md' replace \
+    'a differently classed retry death has no disposition' 'multi-review-packaging.test.sh' \
+    '       the reviewer runs — on any harness error, not only the same one — quarantine with the reason' \
+    '       the reviewer runs the same way — quarantine with the reason'
   mutate 'protocol/quarantine-reason-vocabulary' 'docs/multi-review.md' replace \
     'quarantine reasons never distinguish a failed dispatch' 'multi-review-packaging.test.sh' \
     '  ran and wrote nothing; `dispatch failed: <error class>` is a reviewer the harness never reached' \

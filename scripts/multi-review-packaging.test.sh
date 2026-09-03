@@ -824,6 +824,21 @@ fi
 grep -q 'dispatch failed' "${ROOT}/docs/multi-review.md" \
   && ok "protocol: quarantine reasons distinguish a failed dispatch from a silent turn" \
   || bad "protocol: quarantine reasons never distinguish a failed dispatch (issue #124)"
+# Review of #129: the tool reports a pre-turn and a mid-turn death the same way, so the retry must
+# be gated on the copy being pristine (fable-rd1-r1), and a retry that dies on a DIFFERENT harness
+# error still needs a disposition (codex-rd1-r1).
+n="$(grep -n 'If the Agent tool itself errors' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: Agent-tool-error anchor not found — the guard's anchor is gone"
+else
+  win="$(sed -n "${n},$((n+30))p" "$CMD")"
+  grep -q 'Do NOT re-dispatch' <<<"$win" \
+    && ok "command: a mid-turn harness death is never re-dispatched onto a written copy" \
+    || bad "command: a mid-turn harness death is re-dispatched onto a written copy (fable-rd1-r1 on #129)"
+  grep -q 'not only the same one' <<<"$win" \
+    && ok "command: a retry that dies on a different harness error still has a disposition" \
+    || bad "command: a differently classed retry death has no disposition (codex-rd1-r1 on #129)"
+fi
 
 # EXTRACTING the flag is not FORWARDING it. §2's fresh-request call is the only place --allow-missing
 # reaches resolve-set, and resolve-set is the only thing that acts on it — so without this the

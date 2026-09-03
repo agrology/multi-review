@@ -552,12 +552,23 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      before arming, so reaching it here means the environment changed mid-run.
 
      **A TRANSIENT harness error is the other case** — the Agent tool dies on an API error
-     (`529 Overloaded`, a rate limit, a dropped connection) before the reviewer opens its copy.
-     Nothing about the reviewer is known: its copy is still byte-identical to the seed and still
-     blind, so re-dispatch it **once**, on the same copy, in the same round. If the retry dies the
-     same way, quarantine with the reason **`dispatch failed: <error class>`** — e.g. `dispatch
-     failed: API 529 Overloaded` — naming the class of error, never pasting its text (a request id
-     or a quota message is not a reason). This is NOT `no turn taken`: that reason is reserved for
+     (`529 Overloaded`, a rate limit, a dropped connection). A subagent's turn is many API calls,
+     so the death can land before the reviewer opens its copy or halfway through its findings, and
+     the tool reports both the same way. **Compare the copy to its seed before doing anything**
+     (`cmp "<doc>.<id>" "<doc>.<id>.seed"`):
+     - **Pristine** → nothing about the reviewer is known and the copy is still blind, so
+       re-dispatch it **once**, on the same copy, in the same round. If the retry ALSO dies before
+       the reviewer runs — on any harness error, not only the same one — quarantine with the reason
+       **`dispatch failed: <error class>`**, naming the retry's error class — e.g. `dispatch
+       failed: API 529 Overloaded` — never pasting its text (a request id or a quota message is not
+       a reason).
+     - **Changed** → the reviewer ran and the harness died mid-turn. Do NOT re-dispatch: a second
+       reviewer restarts its ids on a copy that already carries them (a duplicate id is a parse
+       error) or writes `[no-findings]` beside real findings (a channel-check contradiction). Take
+       step 5's "wrote something and died" path instead: `channel-check` what it wrote, admit the
+       turn if the findings are readable, and only otherwise quarantine with `died mid-turn after
+       writing`.
+     This is NOT `no turn taken`: that reason is reserved for
      a reviewer that ran and wrote nothing, and the two mean opposite things to the author reading
      the published review (issue #124: three 529 deaths in one round were recorded as a reviewer
      that declined). For the two-consecutive-rounds stop rule below, a harness error that recurs
