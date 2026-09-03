@@ -551,13 +551,20 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      and ask the engineer whether to proceed on the remaining set or stop. `check` gates this
      before arming, so reaching it here means the environment changed mid-run.
 
-     **A TRANSIENT harness error is the other case** — the Agent tool dies on an API error
-     (`529 Overloaded`, a rate limit, a dropped connection). A subagent's turn is many API calls,
+     **A TRANSIENT harness error is the other case** — the Agent tool dies on an API error whose
+     class itself says retry: a 5xx (`529 Overloaded`), a `429` rate limit, a dropped connection.
+     Any other 4xx (`401` auth, `400` malformed) is deterministic and belongs to the paragraph
+     above — stop and ask. A subagent's turn is many API calls,
      so the death can land before the reviewer opens its copy or halfway through its findings, and
      the tool reports both the same way. **Compare the copy to its seed before doing anything**
      (`cmp "<doc>.<id>" "<doc>.<id>.seed"`):
-     - **Pristine** → nothing about the reviewer is known and the copy is still blind, so
-       re-dispatch it **once**, on the same copy, in the same round. If the retry ALSO dies before
+     - **Pristine** → the copy is still blind. For `codex`, first check whether the tool had
+       reported a job id before it died: the companion job survives the rescue subagent (see
+       below), so a reported id means the reviewer IS running and the copy is pristine only
+       because it has not written yet — do not retry; go to step 5's wait as normal. Otherwise
+       nothing about the reviewer is known, so re-dispatch it **once**, on the same copy, in the
+       same round. If the retry's tool call dies too, **compare again**: a changed copy takes the
+       mid-turn path below; a copy still pristine means the retry ALSO died before
        the reviewer runs — on any harness error, not only the same one — quarantine with the reason
        **`dispatch failed: <error class>`**, naming the retry's error class — e.g. `dispatch
        failed: API 529 Overloaded` — never pasting its text (a request id or a quota message is not

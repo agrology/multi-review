@@ -809,7 +809,7 @@ n="$(grep -n 'If the Agent tool itself errors' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
   bad "command: Agent-tool-error anchor not found — the guard's anchor is gone"
 else
-  grep -q 'dispatch failed: ' <<<"$(sed -n "${n},$((n+24))p" "$CMD")" \
+  grep -q 'dispatch failed: ' <<<"$(sed -n "${n},$((n+40))p" "$CMD")" \
     && ok "command: a transient harness dispatch failure has a reason of its own" \
     || bad "command: a harness dispatch failure has no reason of its own (issue #124)"
 fi
@@ -831,13 +831,25 @@ n="$(grep -n 'If the Agent tool itself errors' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
   bad "command: Agent-tool-error anchor not found — the guard's anchor is gone"
 else
-  win="$(sed -n "${n},$((n+30))p" "$CMD")"
+  win="$(sed -n "${n},$((n+40))p" "$CMD")"
   grep -q 'Do NOT re-dispatch' <<<"$win" \
     && ok "command: a mid-turn harness death is never re-dispatched onto a written copy" \
     || bad "command: a mid-turn harness death is re-dispatched onto a written copy (fable-rd1-r1 on #129)"
   grep -q 'not only the same one' <<<"$win" \
     && ok "command: a retry that dies on a different harness error still has a disposition" \
     || bad "command: a differently classed retry death has no disposition (codex-rd1-r1 on #129)"
+  # Round 2 of #129: a retry that writes then dies is compared again (codex-rd2-r1); a codex
+  # background job that outlives the dead rescue subagent is not re-dispatched (fable-rd2-r1);
+  # transient is defined by error class, not by example (fable-rd2-r2).
+  grep -q 'compare again' <<<"$win" \
+    && ok "command: a retry that writes then dies is compared again, not classed as a failed dispatch" \
+    || bad "command: a retry that writes then dies is classified as a failed dispatch (codex-rd2-r1 on #129)"
+  grep -q 'reported a job id' <<<"$win" \
+    && ok "command: a codex retry checks for a live background job first" \
+    || bad "command: a codex retry ignores a live background job (fable-rd2-r1 on #129)"
+  grep -q 'deterministic and belongs to the paragraph' <<<"$win" \
+    && ok "command: transient is defined by error class, with the rest routed to the deterministic rule" \
+    || bad "command: transient is defined only by example (fable-rd2-r2 on #129)"
 fi
 
 # EXTRACTING the flag is not FORWARDING it. §2's fresh-request call is the only place --allow-missing
