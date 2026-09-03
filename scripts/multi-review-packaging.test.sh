@@ -800,6 +800,58 @@ else
     || bad "command: resume-rebuild block never mentions UNDISPATCHABLE — the quarantine-binding rule routes past this path"
 fi
 
+# A harness-level dispatch failure (the Agent tool dies on an API 529 before the reviewer opens its
+# copy) is not a reviewer that declined. Issue #124: three such deaths in one round were recorded as
+# `no turn taken`, the reason reserved for a reviewer that RAN and wrote nothing, and the published
+# review told the author a healthy reviewer contributed nothing. The subagent branch must give the
+# case its own reason, and the exit-9 bullet must refuse to lend it `no turn taken`.
+n="$(grep -n 'If the Agent tool itself errors' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: Agent-tool-error anchor not found — the guard's anchor is gone"
+else
+  grep -q 'dispatch failed: ' <<<"$(sed -n "${n},$((n+40))p" "$CMD")" \
+    && ok "command: a transient harness dispatch failure has a reason of its own" \
+    || bad "command: a harness dispatch failure has no reason of its own (issue #124)"
+fi
+n="$(grep -n 'quarantine with the reason \*\*`no turn taken`\*\*' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: exit-9 no-turn-taken anchor not found — the guard's anchor is gone"
+else
+  grep -q 'dispatch failed' <<<"$(sed -n "${n},$((n+6))p" "$CMD")" \
+    && ok "command: exit 9 does not lend no-turn-taken to a failed dispatch" \
+    || bad "command: exit 9 still reports a failed dispatch as no turn taken (issue #124)"
+fi
+grep -q 'dispatch failed' "${ROOT}/docs/multi-review.md" \
+  && ok "protocol: quarantine reasons distinguish a failed dispatch from a silent turn" \
+  || bad "protocol: quarantine reasons never distinguish a failed dispatch (issue #124)"
+# Review of #129: the tool reports a pre-turn and a mid-turn death the same way, so the retry must
+# be gated on the copy being pristine (fable-rd1-r1), and a retry that dies on a DIFFERENT harness
+# error still needs a disposition (codex-rd1-r1).
+n="$(grep -n 'If the Agent tool itself errors' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: Agent-tool-error anchor not found — the guard's anchor is gone"
+else
+  win="$(sed -n "${n},$((n+40))p" "$CMD")"
+  grep -q 'Do NOT re-dispatch' <<<"$win" \
+    && ok "command: a mid-turn harness death is never re-dispatched onto a written copy" \
+    || bad "command: a mid-turn harness death is re-dispatched onto a written copy (fable-rd1-r1 on #129)"
+  grep -q 'not only the same one' <<<"$win" \
+    && ok "command: a retry that dies on a different harness error still has a disposition" \
+    || bad "command: a differently classed retry death has no disposition (codex-rd1-r1 on #129)"
+  # Round 2 of #129: a retry that writes then dies is compared again (codex-rd2-r1); a codex
+  # background job that outlives the dead rescue subagent is not re-dispatched (fable-rd2-r1);
+  # transient is defined by error class, not by example (fable-rd2-r2).
+  grep -q 'compare again' <<<"$win" \
+    && ok "command: a retry that writes then dies is compared again, not classed as a failed dispatch" \
+    || bad "command: a retry that writes then dies is classified as a failed dispatch (codex-rd2-r1 on #129)"
+  grep -q 'reported a job id' <<<"$win" \
+    && ok "command: a codex retry checks for a live background job first" \
+    || bad "command: a codex retry ignores a live background job (fable-rd2-r1 on #129)"
+  grep -q 'deterministic and belongs to the paragraph' <<<"$win" \
+    && ok "command: transient is defined by error class, with the rest routed to the deterministic rule" \
+    || bad "command: transient is defined only by example (fable-rd2-r2 on #129)"
+fi
+
 # EXTRACTING the flag is not FORWARDING it. §2's fresh-request call is the only place --allow-missing
 # reaches resolve-set, and resolve-set is the only thing that acts on it — so without this the
 # engineer types the documented opt-out, §1 dutifully parses it off the positional, and the run

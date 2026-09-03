@@ -2219,6 +2219,40 @@ mutations() {
     'nothing requires a check-related fix to be demonstrated' 'multi-review-packaging.test.sh' \
     '   **A fix about whether a CHECK CAN FAIL must demonstrate the failure, not assert it**' \
     '   A fix about whether a check can fail should ideally be demonstrated.'
+  # Issue #124: a harness-level dispatch failure has its own reason, the exit-9 bullet refuses to
+  # lend it `no turn taken`, and the protocol states the distinction.
+  mutate 'command/harness-dispatch-failed-reason' 'commands/multi-review.md' replace \
+    'a harness dispatch failure has no reason of its own' 'multi-review-packaging.test.sh' \
+    '       **`dispatch failed: <error class>`**, naming the retry'"'"'s error class — e.g. `dispatch' \
+    '       a reason of your choosing, naming the retry'"'"'s error class — e.g. `dispatch'
+  mutate 'command/exit-9-not-a-failed-dispatch' 'commands/multi-review.md' replace \
+    'exit 9 still reports a failed dispatch as no turn taken' 'multi-review-packaging.test.sh' \
+    '     the reviewer ran is step 4'"'"'s transient case, reason `dispatch failed: <error class>`, and this' \
+    '     the reviewer ran is step 4'"'"'s transient case, and this'
+  mutate 'command/mid-turn-death-not-redispatched' 'commands/multi-review.md' replace \
+    'a mid-turn harness death is re-dispatched onto a written copy' 'multi-review-packaging.test.sh' \
+    '     - **Changed** → the reviewer ran and the harness died mid-turn. Do NOT re-dispatch: a second' \
+    '     - **Changed** → the reviewer ran and the harness died mid-turn. Re-dispatch anyway: a second'
+  mutate 'command/retry-death-any-class' 'commands/multi-review.md' replace \
+    'a differently classed retry death has no disposition' 'multi-review-packaging.test.sh' \
+    '       the reviewer runs — on any harness error, not only the same one — quarantine with the reason' \
+    '       the reviewer runs the same way — quarantine with the reason'
+  mutate 'command/retry-writes-then-dies-compared' 'commands/multi-review.md' replace \
+    'a retry that writes then dies is classified as a failed dispatch' 'multi-review-packaging.test.sh' \
+    "       same round. If the retry's tool call dies too, **compare again**: a changed copy takes the" \
+    "       same round. If the retry's tool call dies too, the same reason applies: a changed copy takes the"
+  mutate 'command/codex-retry-checks-live-job' 'commands/multi-review.md' replace \
+    'a codex retry ignores a live background job' 'multi-review-packaging.test.sh' \
+    '       reported a job id before it died: the companion job survives the rescue subagent (see' \
+    '       printed anything before it died: the companion job survives the rescue subagent (see'
+  mutate 'command/transient-defined-by-class' 'commands/multi-review.md' replace \
+    'transient is defined only by example' 'multi-review-packaging.test.sh' \
+    '     Any other 4xx (`401` auth, `400` malformed) is deterministic and belongs to the paragraph' \
+    '     Any other 4xx (`401` auth, `400` malformed) is usually deterministic; use judgement on the paragraph'
+  mutate 'protocol/quarantine-reason-vocabulary' 'docs/multi-review.md' replace \
+    'quarantine reasons never distinguish a failed dispatch' 'multi-review-packaging.test.sh' \
+    '  ran and wrote nothing; `dispatch failed: <error class>` is a reviewer the harness never reached' \
+    '  ran and wrote nothing; the other is a reviewer the harness never reached'
 
   # §4. The never-drop rule protects a reviewer that REVIEWED and found nothing. Without this
   # carve-out it also protects one that cannot run: gemini was re-dispatched in all four rounds

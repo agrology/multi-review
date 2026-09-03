@@ -551,6 +551,36 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      and ask the engineer whether to proceed on the remaining set or stop. `check` gates this
      before arming, so reaching it here means the environment changed mid-run.
 
+     **A TRANSIENT harness error is the other case** — the Agent tool dies on an API error whose
+     class itself says retry: a 5xx (`529 Overloaded`), a `429` rate limit, a dropped connection.
+     Any other 4xx (`401` auth, `400` malformed) is deterministic and belongs to the paragraph
+     above — stop and ask. A subagent's turn is many API calls,
+     so the death can land before the reviewer opens its copy or halfway through its findings, and
+     the tool reports both the same way. **Compare the copy to its seed before doing anything**
+     (`cmp "<doc>.<id>" "<doc>.<id>.seed"`):
+     - **Pristine** → the copy is still blind. For `codex`, first check whether the tool had
+       reported a job id before it died: the companion job survives the rescue subagent (see
+       below), so a reported id means the reviewer IS running and the copy is pristine only
+       because it has not written yet — do not retry; go to step 5's wait as normal. Otherwise
+       nothing about the reviewer is known, so re-dispatch it **once**, on the same copy, in the
+       same round. If the retry's tool call dies too, **compare again**: a changed copy takes the
+       mid-turn path below; a copy still pristine means the retry ALSO died before
+       the reviewer runs — on any harness error, not only the same one — quarantine with the reason
+       **`dispatch failed: <error class>`**, naming the retry's error class — e.g. `dispatch
+       failed: API 529 Overloaded` — never pasting its text (a request id or a quota message is not
+       a reason).
+     - **Changed** → the reviewer ran and the harness died mid-turn. Do NOT re-dispatch: a second
+       reviewer restarts its ids on a copy that already carries them (a duplicate id is a parse
+       error) or writes `[no-findings]` beside real findings (a channel-check contradiction). Take
+       step 5's "wrote something and died" path instead: `channel-check` what it wrote, admit the
+       turn if the findings are readable, and only otherwise quarantine with `died mid-turn after
+       writing`.
+     This is NOT `no turn taken`: that reason is reserved for
+     a reviewer that ran and wrote nothing, and the two mean opposite things to the author reading
+     the published review (issue #124: three 529 deaths in one round were recorded as a reviewer
+     that declined). For the two-consecutive-rounds stop rule below, a harness error that recurs
+     next round is the same reason — stop paying for it the same way.
+
      **`--background` is not optional for `codex`.** The rescue wrapper forwards to
      `codex-companion.mjs task`, which runs in the FOREGROUND by default; a real review outlives
      the harness's 10-minute foreground window, so the subagent's turn ends and the detached codex
@@ -687,7 +717,10 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      **once** as grace before recording anything. A reviewer 82 seconds past the bound is not a
      reviewer that failed (issue #71: a bound-hit copy completed with 11 findings, one `high`).
      If the second wait also returns 9, quarantine with the reason **`no turn taken`** — the one
-     state that proves the reviewer contributed nothing, as opposed to finishing late.
+     state that proves the reviewer contributed nothing, as opposed to finishing late. **Only when
+     the dispatch itself succeeded:** a copy that is pristine because the Agent tool died before
+     the reviewer ran is step 4's transient case, reason `dispatch failed: <error class>`, and this
+     wait's exit 9 is merely the expected shape of that — never its reason.
    - **Exit 10** — a terminal state preempted the wait. Stop and surface it; this is not a
      quarantine.
    - **Exit 2** — a usage error on your side (bad path, missing seed). Fix the invocation.
