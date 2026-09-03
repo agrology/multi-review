@@ -15,6 +15,13 @@
 # gemini-rd2-mutation-target-mismatch, fable-rd2-r2 in the 2026-08-13 plan review). A grep finds it
 # in under a second, and BEFORE anyone is dispatched is where a mechanical finding belongs.
 #
+# KNOWN LIMIT. A target line is accepted when it occurs in the document's fenced code OR in the
+# repo file the entry names, as that file is TODAY. An entry whose old-line the plan's own code
+# rewrites — the plan replaces a guard and keeps the old guard's entry — therefore lints `ok` and
+# becomes the stale-target class only once implemented; the mutation sweep is what catches it then
+# (fable-rd1-r3 on PR #113). Telling the two apart would mean diffing the plan's blocks against the
+# repo file, which the lint does not attempt.
+#
 # NEVER EVALS THE DOCUMENT. The entries are bash and the obvious parser is bash. This script does
 # not use it: a conservative tokenizer reads single-quoted words, double-quoted words and bare
 # words. Inside double quotes a `\` before `$`, a backtick, `"` or `\` yields that character, and

@@ -382,6 +382,9 @@ names; its expect-substring must occur in that code or in the named suite (`SURV
 exempt); ids must be unique; and an entry the lint cannot tokenize under a conservative,
 never-evaluating grammar is `unparsed`, which is a defect rather than a skip. Exit 3 is *not
 applicable* (no entries), announced on stderr; 0 is clean; 1 is at least one defect; 2 is usage.
+One blind spot, by design: the repo file is checked as it is *today*, so an entry whose target line
+the plan's own code rewrites lints `ok` and turns stale only once implemented — the mutation sweep
+catches that one, not the lint.
 
 It is **not a pass**: no model, no dispatch, no verdict rows, no findings. The primary runs it in
 every round's fan-out, **before seeding any copy**, and an exit 1 blocks the dispatch until the
