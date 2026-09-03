@@ -184,10 +184,12 @@ run. Reset it with a "forget the reviewers" request.
 - **Identity-checked.** After each turn, `verify-vendor` confirms the finding's `> — via`
   disclosure maps to the selected provider's **vendor**. A mismatch or a no-show → that secondary
   is **quarantined** (set aside, surfaced), and the round proceeds on the rest.
-- **Witnessed fixes.** Every `agree` on a local doc, and every `[resolved:]` record on a PR, names
-  in backticks what goes red if its fix is wrong, and the tokens must resolve (doc body, or the
-  PR's added lines). A re-fan is refused while a current-round fix has no resolving witness — the
-  human gate still sees the count either way.
+- **Witnessed fixes.** Every `agree` and every `[resolved:]` record names in backticks what goes
+  red if its fix is wrong, and the tokens must resolve — in the doc body on a local doc, in the
+  PR's added lines on a PR scratch (where an `agree` is exempt, since the fix is the author's
+  future push; its witness lands on the `[resolved:]` record). A re-fan is refused while a
+  current-round `agree` or *any* `[resolved:]` record lacks a resolving witness — the human gate
+  still sees the counts either way.
 - **Adaptive rounds.** The primary re-fans-out while a round still surfaces new findings, up to
   `MAX`; it converges the moment a round goes dry. Convergence is **coverage** — every finding has
   an agree/dispute — not agreement.
