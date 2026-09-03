@@ -305,6 +305,9 @@ _diff_digest() { shasum -a 256 | cut -d' ' -f1; }   # stdin -> sha256; never via
 cmd_record_diff() { # <scratch> <body-file> — record the digest of the body the CALLER composed
   local scratch="${1:?scratch}" bodyf="${2:?body-file}" d rf
   [[ -f "$bodyf" ]] || die "diff body file not found: $bodyf" 1
+  # The digest of EMPTY input is a well-formed hash, so the empty-digest guard below never fires
+  # on it; a recorded empty digest matches no window and reads as a repaired sidecar (issue #112).
+  [[ -s "$bodyf" ]] || die "diff body file is empty: $bodyf — refusing to record the digest of nothing" 1
   d="$(_diff_digest < "$bodyf")" || die "cannot digest the diff body" 1
   [[ -n "$d" ]] || die "empty digest for the diff body" 1
   rf="$(_records_path "$scratch")"

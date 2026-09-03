@@ -1435,4 +1435,11 @@ done
   && ok "no pipeline feeds an early-exiting grep under pipefail (SIGPIPE cannot fake a failed check)" \
   || bad "${sigpipe_n} pipeline(s) feed an early-exiting grep under pipefail — SIGPIPE (141) reads as a failed check (#110), e.g.${sigpipe_hits}"
 
+# Issue #112: the terminal gate releases working files through the helper's allowlist, never a
+# hand-rolled deletion that takes `.records` along with everything else beside the doc.
+CMD="${ROOT}/commands/multi-review.md"
+grep -q 'multi-review-star.sh release "<doc>"' "$CMD" \
+  && ok "command: the terminal gate releases working files through the helper" \
+  || bad "command: terminal cleanup still hand-rolls the deletion (issue #112)"
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
