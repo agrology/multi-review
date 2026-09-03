@@ -1193,12 +1193,95 @@ fi
 # still names the round it was written in. Bump first and it reads as an earlier-round record and
 # passes every later consumer. Converging catches it; re-fanning is the path that does not, so
 # scheduling this check is what makes the guard reachable on that path at all.
+# Bounded by step 5's heading and the marker edit, not by a fixed line offset: the original
+# `tail -16` window went zero-margin the moment the refan-check paragraph landed above the marker
+# edit (spec 2026-09-01), which is the trap #84 recorded twice.
 RFV="${ROOT}/commands/multi-review.md"
-n="$(grep -n 'Edit the marker directly' "$RFV" | head -1 | cut -d: -f1)"
-if [[ -n "$n" ]] && grep -q 'verify.*BEFORE you touch the marker' <<<"$(sed -n "1,${n}p" "$RFV" | tail -16)"; then
+n="$(grep -nF '5. Decide:' "$RFV" | head -1 | cut -d: -f1)"
+ne="$(grep -n 'Edit the marker directly' "$RFV" | head -1 | cut -d: -f1)"
+if [[ -n "$n" && -n "$ne" ]] && grep -q 'verify.*BEFORE you touch the marker' <<<"$(sed -n "${n},${ne}p" "$RFV")"; then
   ok "command: the re-fan branch runs verify before the marker bump"
 else
   bad "command: nothing schedules verify before the marker bump — the earlier-round guard is unreachable on the re-fan path (fable-rd2-r1)"
+fi
+
+# --- fix witness + plan lint (spec 2026-09-01) ------------------------------------------------
+# Windowed guards, each bounded by the next step heading or a named paragraph — never a fixed
+# offset (a fixed window shipped zero-margin twice in #84).
+PLC="${ROOT}/commands/multi-review.md"
+# (a) the lint runs in the fan-out, every round, BEFORE the baseline snapshot step 2 seeds from.
+# The window opens at the section heading, not at the snapshot step: the lint must be allowed to
+# sit above that step, and a window anchored to it could never see the ordering it exists to pin.
+n="$(grep -nF '#### Fan-out (on' "$PLC" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the fan-out section heading ('#### Fan-out (on') is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^2\. /{print NR; exit}' "$PLC")"; [[ -n "$ne" ]] || ne="$(( $(wc -l < "$PLC") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$PLC")"
+  grep -qF 'multi-review-planlint.sh check "<doc>"' <<<"$blk" && ok "command: the plan lint runs before any copy is seeded" \
+    || bad "command: nothing runs multi-review-planlint.sh check in fan-out step 1"
+  grep -qF 'every round, before seeding any copy' <<<"$blk" && ok "command: the plan lint is stated to run every round" \
+    || bad "command: step 1 does not say the lint runs every round — a round-1-only reading skips exactly the re-fan path it exists for"
+  grep -qF 'do NOT seed or dispatch anyone until it exits 0 or 3' <<<"$blk" && ok "command: an exit-1 lint blocks the fan-out" \
+    || bad "command: step 1 does not make exit 1 block seeding — the lint would be advisory"
+  # Ordering, not mere presence: step 2 seeds every copy from the baseline snapshot, so a lint
+  # that runs after the snapshot fixes the doc for a set of copies that were already taken.
+  pl_ln="$(grep -nF 'multi-review-planlint.sh check "<doc>"' <<<"$blk" | head -1 | cut -d: -f1)"
+  pl_sn="$(grep -nF '**Snapshot the baseline.**' <<<"$blk" | head -1 | cut -d: -f1)"
+  if [[ -n "$pl_ln" && -n "$pl_sn" ]] && (( pl_ln < pl_sn )); then
+    ok "command: the plan lint precedes the baseline snapshot the copies are seeded from"
+  else
+    bad "command: the plan lint does not precede the baseline snapshot — copies would be seeded from the un-linted doc (lint=${pl_ln:-none} snapshot=${pl_sn:-none})"
+  fi
+fi
+# (b) step 8 records the durable line, every round
+n="$(grep -nF '**Plan-lint coverage, in this same step' "$PLC" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 8 never records plan-lint coverage"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^9\. /{print NR; exit}' "$PLC")"; [[ -n "$ne" ]] || ne="$(( $(wc -l < "$PLC") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$PLC")"
+  grep -qF 'planlint-coverage: not applicable]' <<<"$blk" && ok "command: step 8 records the not-applicable plan-lint line" \
+    || bad "command: step 8 is missing the not-applicable plan-lint coverage line"
+  grep -qF 'entries checked]' <<<"$blk" && ok "command: step 8 records the counted plan-lint line" \
+    || bad "command: step 8 is missing the <M> entries checked plan-lint coverage line"
+  grep -qF 'EVERY round, not round 1 only' <<<"$blk" && ok "command: plan-lint coverage is recorded every round" \
+    || bad "command: step 8 does not say the plan-lint line is recorded every round"
+fi
+# (c) the witness grammar is stated in the primary turn, between the demonstrate-the-failure rule
+# and the adjudication rule
+n="$(grep -nF '**A fix about whether a CHECK CAN FAIL' "$PLC" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the demonstrate-the-failure paragraph is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /\*\*Adjudicate, do not rubber-stamp\.\*\*/{print NR; exit}' "$PLC")"; [[ -n "$ne" ]] || ne="$(( $(wc -l < "$PLC") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$PLC")"
+  grep -qF '> — witness: <what goes red if this fix is wrong' <<<"$blk" && ok "command: the witness line is stated on every agree" \
+    || bad "command: step 2 never states the > — witness: grammar"
+  grep -qF '`> — witness: none — <why>`' <<<"$blk" && ok "command: the none witness is a recorded decision" \
+    || bad "command: step 2 does not state the none form — a fix with nothing to witness has no way to say so"
+fi
+# (d) resolved records carry one too
+n="$(grep -nF 'record what the author already fixed' "$PLC" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: step 4 (resolved records) is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /^5\. /{print NR; exit}' "$PLC")"; [[ -n "$ne" ]] || ne="$(( $(wc -l < "$PLC") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$PLC")"
+  grep -qF 'A resolved record carries a witness too' <<<"$blk" && ok "command: resolved records carry a witness" \
+    || bad "command: step 4 never asks for a witness on a resolved record"
+fi
+# (e) refan-check is scheduled before the marker bump, in the same window as verify
+n="$(grep -nF 'BEFORE you touch the marker' "$PLC" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the verify-before-bump paragraph is gone"
+else
+  ne="$(awk -v s="$n" 'NR>s && /Edit the marker directly/{print NR; exit}' "$PLC")"; [[ -n "$ne" ]] || ne="$(( $(wc -l < "$PLC") + 1 ))"
+  blk="$(sed -n "${n},$((ne-1))p" "$PLC")"
+  grep -qF 'multi-review-star.sh refan-check "<doc>"' <<<"$blk" && ok "command: refan-check runs before the marker bump" \
+    || bad "command: nothing schedules refan-check before the re-fan bump — the witness gate is unreachable on the one path it guards"
+  grep -qF 'do NOT bump the marker until it exits 0' <<<"$blk" && ok "command: an exit-1 refan-check blocks the bump" \
+    || bad "command: refan-check exit 1 does not block the bump — it would be advisory"
 fi
 
 # --- step 8 must pin `crossref check` to the dispatched worklist (issue #95) ---

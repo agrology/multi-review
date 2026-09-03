@@ -109,6 +109,7 @@ unless a named test catches it — because a green suite is not by itself eviden
 | `gemini` | google | `gemini` CLI authed + 3 settings (below) |
 | `crossref` *(pass, not a reviewer)* | — | **none** — a mechanical cross-reference sweep over the doc's own internal consistency, dispatched automatically alongside the secondaries on a multi-section document. It does **not** count toward the secondary total or the independence warning — see [`docs/multi-review.md`](docs/multi-review.md). |
 | `symcheck` *(pass, not a reviewer)* | — | **none** — a mechanical check of the doc's ready-to-paste code against the repository it targets, dispatched automatically alongside the secondaries on a document that ships code. It does **not** count toward the secondary total or the independence warning, and it does **not** widen reviewer scope: it runs in-harness as a subagent of the primary, so no secondary gains repo access — see [`docs/multi-review.md`](docs/multi-review.md). |
+| `planlint` *(lint, not a reviewer)* | — | **none** — a mechanical, never-evaluating check of the `mutate` entries a plan ships, against the plan's own code and the repo, run by the primary before **every** fan-out; a defect blocks the dispatch until fixed. Not a pass: no model, no findings — see [`docs/multi-review.md`](docs/multi-review.md). |
 
 **codex prereqs:** two things, and the second is easy to miss because the CLI alone looks
 sufficient.
@@ -183,6 +184,12 @@ run. Reset it with a "forget the reviewers" request.
 - **Identity-checked.** After each turn, `verify-vendor` confirms the finding's `> — via`
   disclosure maps to the selected provider's **vendor**. A mismatch or a no-show → that secondary
   is **quarantined** (set aside, surfaced), and the round proceeds on the rest.
+- **Witnessed fixes.** Every `agree` and every `[resolved:]` record names in backticks what goes
+  red if its fix is wrong, and the tokens must resolve — in the doc body on a local doc, in the
+  PR's added lines on a PR scratch (where an `agree` is exempt, since the fix is the author's
+  future push; its witness lands on the `[resolved:]` record). A re-fan is refused while a
+  current-round `agree` or *any* `[resolved:]` record lacks a resolving witness — the human gate
+  still sees the counts either way.
 - **Adaptive rounds.** The primary re-fans-out while a round still surfaces new findings, up to
   `MAX`; it converges the moment a round goes dry. Convergence is **coverage** — every finding has
   an agree/dispute — not agreement.
@@ -201,11 +208,12 @@ run. Reset it with a "forget the reviewers" request.
 - `docs/multi-review.md` — the star protocol contract (also vendored into the reviewer skill)
 - `.agents/skills/multi-review/` — the self-contained reviewer skill, auto-provisioned into consumer repos for `codex` (git-ignored)
 - `.claude-plugin/plugin.json` — plugin manifest
-- `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / blind-check / channel-check / compose
+- `scripts/multi-review-star.sh` — star grammar: mode / resolve-set / merge / open-findings / check-converged / gate-summary / witness-gaps / refan-check / blind-check / channel-check / compose
 - `scripts/multi-review-reviewer.sh` — provider registry: resolve / check / prompt / command / ensure-skill / doctor / verify-vendor / vendor-of-model
 - `scripts/multi-review-pr.sh` — PR ingest (via `gh`), `refresh` for a later round, per-round head/merge-base records, content-based anchor remapping, a digest-verified diff window (the writer records the SHA-256 of the section body it composed; readers accept the one section that matches, so neither the PR description nor the review channel can move the window), + the one-neutral-review publish
 - `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2: `local-copy` (docs — fence-aware region mapping) and `pr-copy` (PRs — what the author pushed since the last round as a `git diff -W -U10` delta with function context, guarded against rebases and forward merges). Both refuse to emit a scoped copy that comes out no smaller than the artifact it replaces; `local-copy` applies that guard only once the artifact is ≥1 KiB, below which scoping cannot win by construction and the waste is bounded by ~1 KiB. Every path that cannot scope exits 3 with its reason and the round falls back to the full artifact, announced.
-- `scripts/multi-review-core.sh` — marker state; `-wait.sh` — bounded per-copy wait;
+- `scripts/multi-review-planlint.sh` — the plan lint: `check <doc> [--repo <root>]`, run before every fan-out
+- `scripts/multi-review-core.sh` — marker state, `sections`, `blocks`; `-wait.sh` — bounded per-copy wait;
   `-egress-guard.sh` — path validation; `-build-reviewer-bundle.sh` — regenerate the skill bundle;
   `-history-check.sh` — pre-publish sensitive-term gate (see `PUBLISHING.md`)
 - `scripts/*.test.sh` — one suite per script (the gate below)

@@ -305,6 +305,27 @@ err="$(MULTI_REVIEW_CORE_SH=/nonexistent/core.sh bash "$SUT" check "$D" "$C" 2>&
 grep -qF 'core.sh sections failed' <<<"$err" \
   && ok "check: the infra failure names its cause" \
   || bad "check: the infra failure does not name its cause: '$err'"
+
+# --- a failing `core.sh blocks` is loud (spec B6, same rule as core-failure-is-loud) ---
+# The stub answers `sections` truthfully (one qualifying section) and dies on `blocks`, so the only
+# guard that can turn this red is the one on the blocks call. With the exit swallowed, rows would
+# see EOF, emit nothing, and exit 3 "not applicable" — a clean non-run recorded at the gate.
+BSTUB="${WORK}/core-blocks-fails.sh"
+cat > "$BSTUB" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  sections) printf '1\t3\t8\tTask 1\tTask 1: ships\n' ;;
+  blocks)   echo "stub: blocks exploded" >&2; exit 1 ;;
+  *)        exit 2 ;;
+esac
+STUB
+chmod +x "$BSTUB"
+D="$(mkdoc blocks-fail.md '# Plan' '' '### Task 1: ships' '' '**Files:**' '- Modify: `src/a.py`' '' '```python' 'x = 1' '```' '')"
+out="$(MULTI_REVIEW_CORE_SH="$BSTUB" bash "$SUT" rows "$D" 2>"${WORK}/bf.err")"; rc=$?
+[[ $rc -ne 0 && $rc -ne 3 ]] && ok "rows: a failing core.sh blocks exits non-zero, not 'not applicable'" \
+  || bad "rows: core.sh blocks failure was swallowed (rc=$rc, out='$out')"
+grep -qF 'core.sh blocks failed' "${WORK}/bf.err" && ok "rows: the blocks failure is named" \
+  || bad "rows: blocks failure not named: $(cat "${WORK}/bf.err")"
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

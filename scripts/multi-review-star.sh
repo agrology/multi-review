@@ -7,13 +7,16 @@
 #   available
 #   open-findings <doc>
 #   observations <doc>
-#   resolved <doc>          -> "ns-id\tnote\tmodel" per `> [resolved:]` record (issue #88)
+#   resolved <doc>          -> "ns-id\tnote\tmodel\twitness" per `> [resolved:]` record (issue #88)
 #   merge --round N [--quarantined p:reason ...] [--pass <copy> ...] <doc> <copy> ...
 #   check-converged <doc>
 #   gate-summary <doc> <primary-model-id>
 #   round-stats <doc>       -> per-round × per-provider finding counts, trend, dry streaks,
 #                              and a converge/re-fan verdict (advisory; pure read)
 #   evidence-gaps <doc>     -> high/med findings lacking a "> — evidence:" line (report, not gate)
+#   witness-gaps <doc>      -> agrees/resolved records whose "> — witness:" is missing or does not
+#                              resolve (report, not gate)
+#   refan-check <doc>       -> exit 1 on a CURRENT-round witness gap; run before the re-fan bump
 #   blind-check <copy>      -> exit 1 if a SEEDED copy still carries a previous round's
 #                              findings/responses (issue #39); the reviewer would not be blind
 #   channel-check --seed <seed> <copy> -> exit 1 if a reviewer's findings landed outside the
@@ -205,6 +208,16 @@ _symcheck_coverage() { # <doc> -> "not applicable" | "N/M rows verdicted"
   review_section "$1" | strip_fences /dev/stdin \
     | grep -oE '^> \[symcheck-coverage: (not applicable|[0-9]+/[0-9]+ rows verdicted)\]' \
     | sed -E 's/^> \[symcheck-coverage: (.*)\]$/\1/' \
+    | tail -1
+}
+
+# _planlint_coverage <doc> — the plan lint's durable line (spec B5), read the way the two pass
+# readers above read theirs. Records that the lint RAN this round; passing is what the blocking
+# fan-out step guarantees.
+_planlint_coverage() { # <doc> -> "not applicable" | "N entries checked"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -oE '^> \[planlint-coverage: (not applicable|[0-9]+ entries checked)\]' \
+    | sed -E 's/^> \[planlint-coverage: (.*)\]$/\1/' \
     | tail -1
 }
 
@@ -462,7 +475,7 @@ cmd_available() {
 # respond to a finding disclosed under its own model id. On any grammar violation, prints an
 # error to stderr and exits 2. Pure awk (portable associative arrays); control line + its
 # required "> — via" line are consumed as a pair.
-_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tevidence" per finding
+_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tevidence\twitness" per finding
   local doc="${1:?doc}" ufl rstart
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   ufl="$(review_section "$doc" | unterminated_fence_line /dev/stdin)"
@@ -499,7 +512,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
           } else {
             if (psev != "") fail("severity tag not allowed on " pv ": " pi)
             if (pi in rverb) fail("multiple responses to finding: " pi)
-            rverb[pi] = pv; rmodel[pi] = m; rwhy[pi] = pwhy
+            rverb[pi] = pv; rmodel[pi] = m; rwhy[pi] = pwhy; cur_response = pi
           }
           pend = 0; next
         } else {
@@ -526,6 +539,18 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
         }
         next
       }
+      # Optional `> — witness:` line (spec 2026-09-01 A1), credited to the RESPONSE whose block we
+      # are still inside — never to a finding. Any control-shaped line clears it, so a witness
+      # written after a [resolved:] or [observation] block cannot credit the agree above it. Never
+      # fatal when absent, for the same reason the evidence line is not.
+      if (line ~ /^> \[/) cur_response = ""
+      if (line ~ /^> — witness:/) {
+        if (cur_response != "") {
+          w = line; sub(/^> — witness:[ ]*/, "", w); gsub(/[ \t]+$/, "", w)
+          if (w != "") rwit[cur_response] = w
+        }
+        next
+      }
       if (parse(line)) { pv = V; pi = I; pwhy = WHY; psev = SEV; pend = 1; cur_finding = "" }
     }
     END {
@@ -539,7 +564,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
         if (rverb[id] == "agree") state = "agreed"
         else if (rverb[id] == "dispute") state = "dissent"
         resp = (id in rmodel) ? rmodel[id] : ""
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id]
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id], rwit[id]
       }
     }
   '
@@ -581,7 +606,8 @@ cmd_observations() { # <doc> -> "text<TAB>model" per observation; exit 2 on an u
   '
 }
 
-# cmd_resolved <doc> -> "ns-id\tnote\tmodel" per resolved record; exit 2 on a contract violation.
+# cmd_resolved <doc> -> "ns-id\tnote\tmodel\twitness" per resolved record; exit 2 on a contract
+# violation. The fourth column is the record's optional `> — witness:` text, empty when it has none.
 #
 # `> [resolved:<ns-id>] <note>` + `> — via <model>` (issue #88). A finding the primary AGREED with
 # in an earlier round and has since verified fixed at the current head. Without it, compose-review
@@ -595,7 +621,7 @@ cmd_observations() { # <doc> -> "text<TAB>model" per observation; exit 2 on an u
 #
 # Undisclosed or empty records fail loud rather than being dropped: a claim that a defect is fixed
 # is agent-authored content a human acts on, so it names its model or it is a contract violation.
-cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
+cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel\twitness" per record
   local doc="${1:?doc}" raw t
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   raw="$(review_section "$doc" | strip_fences /dev/stdin | awk '
@@ -607,9 +633,16 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
         # otherwise strip to an empty model and publish a disclosure naming nobody.
         if (line ~ /^> — via [^[:space:]]/) {
           via = line; sub(/^> — via[[:space:]]+/, "", via); sub(/[[:space:]]+$/, "", via)
-          print pid "\t" ptxt "\t" via; pend = 0; next
+          recs[++nr] = pid "\t" ptxt "\t" via; wit[nr] = ""; wfor = nr; pend = 0; next
         }
         else { fail("resolved record " pid " not followed by a \"> — via <model>\" line") }
+      }
+      # Optional `> — witness:` on the record just closed (spec 2026-09-01 A1); cleared by any
+      # control-shaped line so it can never credit a record it does not follow.
+      if (line ~ /^> \[/) wfor = 0
+      if (line ~ /^> — witness:/) {
+        if (wfor) { w = line; sub(/^> — witness:[ ]*/, "", w); gsub(/[ \t]+$/, "", w); if (w != "") wit[wfor] = w }
+        next
       }
       if (line ~ /^> \[resolved:[A-Za-z0-9_-]+]/) {
         s = substr(line, 13)                      # after the literal "> [resolved:"
@@ -625,7 +658,10 @@ cmd_resolved() { # <doc> -> "ns-id\tnote\tmodel" per record
         pend = 1
       }
     }
-    END { if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line") }
+    END {
+      if (pend) fail("resolved record " pid " not followed by a \"> — via <model>\" line")
+      for (i = 1; i <= nr; i++) print recs[i] "\t" wit[i]
+    }
   ')" || return 2
   [[ -n "$raw" ]] || return 0                     # dormant: no records, nothing to cross-check
 
@@ -1617,6 +1653,41 @@ cmd_gate_summary() {
     echo
   fi
 
+  # Fix witnesses (spec 2026-09-01 A4). What goes red if a fix is wrong, per agree and per resolved
+  # record — and how many were recorded as `none`, so a primary hiding behind `none` is visible.
+  # Dormant when the doc carries no response at all, so a findings-only doc renders as before.
+  local wt wt_total wt_ok wt_none wt_gaps wt_ngaps
+  # _table and cmd_resolved have already died above on a malformed doc, so _witnesses cannot fail here
+  wt="$(_witnesses "$doc")"
+  if [[ -n "$wt" ]]; then
+    wt_total="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $2 != "dispute"' | grep -c . || true)"
+    wt_ok="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 == "ok"' | grep -c . || true)"
+    wt_none="$(printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 == "none"' | grep -c . || true)"
+    wt_gaps="$(cmd_witness_gaps "$doc")"
+    wt_ngaps="$(printf '%s\n' "$wt_gaps" | grep -c . || true)"
+    echo "Fix witnesses: ${wt_ok}/${wt_total} agreed findings and resolved records carry a resolving witness — ${wt_ngaps} gaps"
+    echo "Fix witnesses recorded as none: ${wt_none}"
+    [[ -z "$wt_gaps" ]] || printf '%s\n' "$wt_gaps" | awk -F'\t' 'NF{ printf "  - %s (round %s: %s)\n", $1, $2, $3 }'
+    echo
+  fi
+  # PR flavor: a witness-less agree is exempt from _witnesses (the fix is the author's future push),
+  # so on the default one-round PR review `wt` is empty and the two lines above are silent — N
+  # agreed-but-unverified fixes invisible at the very gate that decides them (fable-rd1-r1 on
+  # PR #113). Counted from the table directly, on its own line, independent of `wt`.
+  # An agree that already has a [resolved:] record is not pending — the record is where its witness
+  # lives and where it was just counted (found at the gate of PR #113's own round 2).
+  local wt_pending=0 rsv_ids
+  if [[ "$(_doc_flavor "$doc")" == pr ]]; then
+    rsv_ids="$(printf '%s\n' "$rsv" | awk -F'\t' 'NF { print $1 }' | tr '\n' ' ')"
+    wt_pending="$(printf '%s\n' "$t" | awk -F'\t' -v rsv="$rsv_ids" '
+      BEGIN { n = split(rsv, a, " "); for (i = 1; i <= n; i++) done[a[i]] = 1 }
+      NF && $3 == "agreed" && $10 == "" && !($1 in done)' | grep -c . || true)"
+  fi
+  if (( wt_pending > 0 )); then
+    echo "Fix witnesses awaiting a resolved record (PR flavor): ${wt_pending} agreed findings — witnessed on their [resolved:] record once the author pushes"
+    echo
+  fi
+
   # quarantined secondaries (readability channel: the in-doc records, via the shared parser)
   local qlist; qlist="$(_quarantines "$doc")"
   if [[ -n "$qlist" ]]; then
@@ -1675,6 +1746,25 @@ cmd_gate_summary() {
       fi
     fi
     echo
+  fi
+
+  # plan lint coverage (spec B5), beside the two pass lines. Same NO RECORD derivation as the
+  # crossref block: only the lint's EXIT CODE decides applicability (3 = no entries), never its rows.
+  local pl; pl="$(_planlint_coverage "$doc")"
+  if [[ -n "$pl" ]]; then
+    if [[ "$pl" == "not applicable" ]]; then
+      echo "Plan lint: not applicable (no mutation entries in fenced code)"
+    else
+      echo "Plan lint: ${pl}"
+    fi
+    echo
+  else
+    "${STAR_DIR}/multi-review-planlint.sh" check "$doc" >/dev/null 2>&1
+    case $? in
+      3) : ;;   # no entries: nothing was ever expected, stay dormant
+      0|1) echo "Plan lint: NO RECORD — the lint was applicable and nothing was recorded"; echo ;;
+      *) echo "Plan lint: applicability could not be determined — treat as unrecorded"; echo ;;
+    esac
   fi
 
   # agreed findings, compactly
@@ -1955,6 +2045,110 @@ cmd_evidence_gaps() { # <doc> -> "<ns-id> <sev>" per undocumented high/med findi
   printf '%s\n' "$t" | awk -F'\t' 'NF && ($7=="high" || $7=="med") && $9=="" { print $1, $7 }'
 }
 
+# ---- fix witnesses (spec 2026-09-01, Part A) -----------------------------------------------------
+# A `> — witness:` line on an [agree:] or [resolved:] names, in backticks, what goes red if the fix
+# is wrong. Every backticked token must RESOLVE: for a local doc, in the body outside ## Review; for
+# a PR scratch, in an ADDED line of ## Diff — the author's push is the fix, so a witness that is not
+# in the push is not a witness for it. Flavor is read from the document, never from a flag.
+
+_doc_flavor() { # <doc> -> "pr" when the header carries pr.sh's own `- **PR:** <url>` identity line, else "local"
+  # The header region, not a bare "## Diff" heading: a local plan may legitimately carry a Diff
+  # section, and pr.sh both writes this line at ingest and reads it back to publish (fable-rd2-r3).
+  if grep -qE '^- \*\*PR:\*\* ' <<<"$(header_region "$1")"; then echo pr; else echo local; fi
+}
+
+_witness_corpus() { # <doc> <outfile> — the text a witness token must occur in
+  if [[ "$(_doc_flavor "$1")" == pr ]]; then
+    # A raw scan is right here: every line of a hunk carries a `+`/`-`/` ` sign, so no "## " line
+    # can occur inside the diff, and the section ends at the first real heading after it.
+    awk '/^## Diff[[:space:]]*$/ { d = 1; next } d && /^## / { d = 0 } d && /^\+/ && !/^\+\+\+ / { print substr($0, 2) }' "$1" > "$2"
+  else
+    # The body is everything before the review section — the SAME boundary `_table` reads
+    # (review_section_start), so corpus and table can never disagree about where the channel
+    # begins. That helper's raw scan is a pre-existing limit (a fenced "## Review" inside the
+    # review section moves both), not one this branch could fix alone.
+    local n; n="$(review_section_start "$1")"
+    if (( n > 0 )); then head -n "$((n - 1))" "$1" > "$2"; else cat "$1" > "$2"; fi
+  fi
+}
+
+# _witness_verdict <kind> <witness> <corpus-file> -> ok | none | missing | unresolved:<token> | on-dispute
+_witness_verdict() {
+  local kind="$1" w="$2" corpus="$3" rest tok found=0
+  [[ "$kind" != dispute ]] || { echo on-dispute; return 0; }     # a dispute changes nothing
+  [[ -n "$w" ]] || { echo missing; return 0; }
+  case "$w" in none|none\ *) echo none; return 0 ;; esac         # a recorded decision, like SURVIVES-BY-DESIGN
+  rest="$w"
+  while [[ "$rest" == *\`*\`* ]]; do
+    rest="${rest#*\`}"; tok="${rest%%\`*}"; rest="${rest#*\`}"; found=1
+    # An EMPTY token (a bare ``) must not resolve: `grep -F ""` matches any non-empty corpus, so
+    # a witness naming nothing would pass the gate by naming nothing (codex-rd1-r1).
+    [[ -n "$tok" ]] || { echo "unresolved:(empty-token)"; return 0; }
+    grep -qF -- "$tok" "$corpus" || { echo "unresolved:${tok}"; return 0; }
+  done
+  if (( found )); then echo ok; else echo "unresolved:(no-backticked-token)"; fi
+}
+
+# _witnesses <doc> -> "id\tkind\tverdict\twitness" for every agree, every resolved record, and every
+# dispute that (wrongly) carries a witness. kind is agree | resolved | dispute.
+#
+# PR flavor: an agree's witness is structurally impossible at agree time — the primary never edits
+# the diff, so the fix is the author's FUTURE push and no token can sit in the CURRENT ## Diff.
+# There the witness belongs on the [resolved:] record; an agree without one is not a gap, and an
+# agree that carries one is still checked (fable-rd1-r5).
+_witnesses() {
+  local doc="$1" t rsv corpus id kind w pr=0
+  t="$(_table "$doc")" || return 2
+  rsv="$(cmd_resolved "$doc")" || return 2
+  corpus="$(mktemp)" || die "mktemp failed" 2
+  _witness_corpus "$doc" "$corpus"
+  [[ "$(_doc_flavor "$doc")" != pr ]] || pr=1
+  { printf '%s\n' "$t"   | awk -F'\t' -v pr="$pr" 'NF && $3 == "agreed" && (pr == 0 || $10 != "") { print $1 "\tagree\t" $10 }
+                                       NF && $3 == "dissent" && $10 != "" { print $1 "\tdispute\t" $10 }'
+    printf '%s\n' "$rsv" | awk -F'\t' 'NF { print $1 "\tresolved\t" $4 }'
+  } | while IFS=$'\t' read -r id kind w; do
+    [[ -n "$id" ]] || continue
+    printf '%s\t%s\t%s\t%s\n' "$id" "$kind" "$(_witness_verdict "$kind" "$w" "$corpus")" "$w"
+  done
+  rm -f "$corpus"
+}
+
+cmd_witness_gaps() { # <doc> -> "<ns-id>\t<round>\t<verdict>" per gap; a report, exit 0 on any readable doc
+  local doc="${1:?doc}" wt
+  [[ -f "$doc" ]] || die "doc not found: $doc" 1
+  wt="$(_witnesses "$doc")" || die "witness-gaps: contract violation in $doc" 1
+  # TAB-separated: a verdict carries the offending token verbatim, which may contain spaces.
+  printf '%s\n' "$wt" | awk -F'\t' 'NF && $3 != "ok" && $3 != "none" {
+    rd = "?"; if (match($1, /-rd[0-9]+/)) rd = substr($1, RSTART + 3, RLENGTH - 3)
+    print $1 "\t" rd "\t" $3 }'
+}
+
+# refan-check <doc> -> 0 no current-round witness gap · 1 gaps (listed on stderr) · 2 usage
+# Runs BEFORE the marker bump, like verify: the current round is read from the marker at call time,
+# so after the bump every current-round gap reads as an earlier-round one and this passes vacuously.
+# Current-round AGREES are those on findings whose id carries the current round (a finding is
+# adjudicated in the round it merges). EVERY resolved record counts: a record names an earlier-round
+# finding by rule, so its own round cannot be read from the id — and it is a primary claim the
+# primary owns regardless of when it was written.
+cmd_refan_check() {
+  local doc="${1:?doc}" cur wt gaps
+  [[ -f "$doc" ]] || die "doc not found: $doc" 2
+  cur="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')" || cur=""
+  [[ -n "$cur" ]] || die "refan-check: ${doc} carries no readable state marker — the current round cannot be determined" 2
+  wt="$(_witnesses "$doc")" || die "refan-check: contract violation in $doc" 1
+  # Agrees and resolved records only: a witness on a DISPUTE is a grammar slip the gate reports
+  # (`on-dispute`), never a reason to hold a re-fan — a dispute changes nothing (codex-rd2-r1).
+  gaps="$(printf '%s\n' "$wt" | awk -F'\t' -v cur="$cur" 'NF && $3 != "ok" && $3 != "none" && $2 != "dispute" {
+    rd = -1; if (match($1, /-rd[0-9]+/)) rd = substr($1, RSTART + 3, RLENGTH - 3) + 0
+    if ($2 == "resolved" || rd == cur + 0) print $1 " " $2 " " $3 }')"
+  if [[ -n "$gaps" ]]; then
+    echo "multi-review-star: refan-check: round ${cur} has fix-witness gaps — add a \"> — witness:\" line (or \"> — witness: none — <why>\") to each before re-fanning:" >&2
+    printf '%s\n' "$gaps" | sed 's/^/  /' >&2
+    return 1
+  fi
+  echo "refan-check: ${doc} — no current-round witness gap (round ${cur})"
+}
+
 # remember-set --pref-file <path> (--reviewers <csv> | --clear)
 # Persist (or revoke) the user's explicit extra-reviewer choice. --reviewers: registry-validate
 # (NOT availability — the read path in resolve-set handles availability), strip fable, dedup,
@@ -2018,6 +2212,8 @@ main() {
     gate-summary) cmd_gate_summary "$@" ;;
     round-stats) cmd_round_stats "$@" ;;
     evidence-gaps) cmd_evidence_gaps "$@" ;;
+    witness-gaps) cmd_witness_gaps "$@" ;;
+    refan-check) cmd_refan_check "$@" ;;
     channel-check) cmd_channel_check "$@" ;;
     blind-check) cmd_blind_check "$@" ;;
     compose-review) cmd_compose_review "$@" ;;
@@ -2026,6 +2222,8 @@ main() {
     # codex-rd2-r1) is a contract: asserting it only through gate-summary's output cannot tell an
     # empty roster from an ignored one. Underscore-prefixed and undocumented on purpose.
     _roster_for_test) _roster "$@" ;;
+    # Same rationale: the witness column is a contract later consumers read by index.
+    _table_for_test) _table "$@" ;;
     *)    die "unknown subcommand: ${cmd:-<none>}" 2 ;;
   esac
 }

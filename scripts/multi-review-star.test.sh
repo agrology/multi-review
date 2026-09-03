@@ -507,6 +507,27 @@ case "$out" in
   *) bad "merge missing-manifest message unhelpful: $out" ;;
 esac
 
+# ...and the guard is NOT made redundant by the pre-commit self-check downstream of it (#107).
+# That check compares the doc's parsed finding ids against the manifest's, so it only notices a
+# manifest rebuilt from one round when the dropped round left a FINDING behind — which is the only
+# reason the BASE57 case above is refused twice over. A round whose sole manifest entry is a
+# quarantine leaves none: the id sets match trivially, the footer count passes (2 >= 2), and the
+# merge COMMITS a doc whose round-1 quarantine record is orphaned from its manifest — a state
+# `verify` then reports as consistent, because guard (d) only walks manifest -> doc.
+# Reachable exactly the way #57 was: one secondary times out (quarantined) while the other returns
+# [no-findings], then the terminal gate deletes the manifest before the follow-up round.
+BASE57Q="${WORK}/m57-quarantine.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASE57Q"
+mkcopy "${BASE57Q}.codex" '> [no-findings] reviewed in full; nothing to raise' '> — via gpt-5.5'
+bash "$SUT" merge --round 1 --quarantined gemini:dispatch-timeout "$BASE57Q" "${BASE57Q}.codex" >/dev/null 2>&1
+rm -f "${BASE57Q}.manifest"                     # what the gate cleanup did
+before="$(shasum "$BASE57Q" | cut -d' ' -f1)"
+mkcopy "${BASE57Q}.codex" '> [finding:r2|low] beta' '> — via gpt-5.5' '> — risk: rb'
+bash "$SUT" merge --round 2 "$BASE57Q" "${BASE57Q}.codex" >/dev/null 2>&1; rc=$?
+after="$(shasum "$BASE57Q" | cut -d' ' -f1)"
+[[ $rc -ne 0 && "$before" == "$after" ]] \
+  && ok "merge: missing manifest over a quarantine-only round -> refuse, doc untouched" \
+  || bad "merge missing-manifest mutated a quarantine-only doc (partial merge)"
+
 # The guard must key off LIVE footers only: a doc that documents this protocol legitimately shows
 # a star-findings footer inside a code block, and that must not make round 1 unmergeable.
 BASE57F="${WORK}/m57-fenced.md"
@@ -2949,7 +2970,7 @@ RS1="$(mkstar rsv-ok.md \
   '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
   '> [resolved:codex-rd1-a] fixed at deadbee — the guard now runs' '> — via claude-opus-4-8')"
 out="$(bash "$SUT" resolved "$RS1" 2>/dev/null)"; rc=$?
-[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee — the guard now runs"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
+[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee — the guard now runs"$'\t'"claude-opus-4-8"$'\t' && $rc -eq 0 ]] \
   && ok "resolved: a well-formed record emits id/text/model" \
   || bad "resolved did not parse a well-formed record (out='$out' rc=$rc)"
 
@@ -3070,8 +3091,8 @@ RS12="$(mkstar rsv-tab-ok.md \
   '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
   "$(printf '> [resolved:codex-rd1-a] fixed at deadbee\tand more note')" '> — via claude-opus-4-8')"
 out="$(bash "$SUT" resolved "$RS12" 2>/dev/null)"; rc=$?
-[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee and more note"$'\t'"claude-opus-4-8" && $rc -eq 0 ]] \
-  && ok "resolved: a tab in the note is normalised, keeping the record three fields" \
+[[ "$out" == "codex-rd1-a"$'\t'"fixed at deadbee and more note"$'\t'"claude-opus-4-8"$'\t' && $rc -eq 0 ]] \
+  && ok "resolved: a tab in the note is normalised, keeping the record four fields" \
   || bad "resolved emitted a tabbed note as extra fields (out='$out' rc=$rc)"
 
 # --- earlier-round only (fable-rd1-r4 + codex-rd1-r1, raised independently by two vendors) ---
@@ -3101,7 +3122,7 @@ RR2="$(mkround rsv-earlier-round.md 2 \
   '> [agree:codex-rd1-a]' '> — via claude-opus-4-8' \
   '> [resolved:codex-rd1-a] fixed at deadbee' '> — via claude-opus-4-8')"
 out="$(bash "$SUT" resolved "$RR2" 2>/dev/null)"; rc=$?
-[[ $rc -eq 0 && "$out" == "codex-rd1-a"$'\t'"fixed at deadbee"$'\t'"claude-opus-4-8" ]] \
+[[ $rc -eq 0 && "$out" == "codex-rd1-a"$'\t'"fixed at deadbee"$'\t'"claude-opus-4-8"$'\t' ]] \
   && ok "resolved: an earlier-round record in a later round is accepted" \
   || bad "resolved refused a legitimate earlier-round record (out='$out' rc=$rc)"
 
@@ -3344,6 +3365,195 @@ bash "$SUT" verify "$VR" >/dev/null 2>&1 \
   && bad "verify missed a resolved naming an unknown finding" \
   || ok "verify: detects a resolved naming an unknown finding"
 cp "${VR}.bak" "$VR"; rm -f "${VR}.bak"
+
+# --- fix witness: the tenth column, attributed to the response (spec 2026-09-01 A1/A3) ---
+WA="$(mkstar wit-a.md \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: entry `x/y` goes red')"
+out="$(bash "$SUT" _table_for_test "$WA" 2>/dev/null | awk -F'\t' '{print $10}')"
+[[ "$out" == 'entry `x/y` goes red' ]] && ok "witness: the tenth column carries the agree's witness" || bad "witness column: '$out'"
+
+# a witness under a FINDING (no response yet) credits nothing and breaks nothing
+WF="$(mkstar wit-f.md \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — witness: `stray`' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
+out="$(bash "$SUT" _table_for_test "$WF" 2>/dev/null | awk -F'\t' '{print $10}')"
+[[ -z "$out" ]] && ok "witness: a witness under a finding credits no response" || bad "witness leaked from a finding: '$out'"
+bash "$SUT" _table_for_test "$WF" >/dev/null 2>&1; [[ $? -eq 0 ]] \
+  && ok "witness: a stray witness line does not fail the parse" || bad "stray witness broke the parse"
+
+# a witness after a [resolved:] block does not credit the agree above it — and lands on the record
+WR="$(mkcc wit-r.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body' '' '## Review' \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [resolved:codex-rd1-a] fixed at abc123' '> — via claude-opus-5' '> — witness: entry `only-on-the-record`')"
+out="$(bash "$SUT" _table_for_test "$WR" 2>/dev/null | awk -F'\t' '{print $10}')"
+[[ -z "$out" ]] && ok "witness: a witness after a resolved record does not credit the agree above it" \
+  || bad "witness crossed a [resolved:] boundary: '$out'"
+out="$(bash "$SUT" resolved "$WR" 2>/dev/null | awk -F'\t' '{print $4}')"
+[[ "$out" == 'entry `only-on-the-record`' ]] && ok "resolved: the fourth column carries the record's witness" \
+  || bad "resolved witness column: '$out'"
+
+# a witness after a LATER control line (an observation) does not credit the resolved record above it
+WR2="$(mkcc wit-r2.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body' '' '## Review' \
+  '> [finding:codex-rd1-a|med] thing' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: none — prose' \
+  '> [resolved:codex-rd1-a] fixed at abc123' '> — via claude-opus-5' \
+  '> [observation] unrelated note' '> — via claude-opus-5' '> — witness: entry `should-not-land`')"
+out="$(bash "$SUT" resolved "$WR2" 2>/dev/null | awk -F'\t' '{print $4}')"
+[[ -z "$out" ]] && ok "resolved: a witness after a later control line does not credit the record" \
+  || bad "resolved witness crossed an [observation] boundary: '$out'"
+
+# --- witness-gaps: kinds, and local-flavor resolution against the body outside ## Review ---
+WG="$(mkcc wit-g.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' \
+  'The body mentions `in-body-token` once.' '' '## Context' '- **PR:** https://github.com/o/r/pull/9' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-b|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-b]' '> — via claude-opus-5' '> — witness: assertion `nowhere-token`' \
+  '> [finding:codex-rd1-c|low] c' '> — via gpt-5.6-terra' '> — risk: r' \
+  '> [agree:codex-rd1-c]' '> — via claude-opus-5' '> — witness: none — renumbered a list' \
+  '> [finding:codex-rd1-d|med] d' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-d]' '> — via claude-opus-5' '> — witness: the body has `in-body-token`' \
+  '> [finding:codex-rd1-e|med] e' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [dispute:codex-rd1-e] not a defect' '> — via claude-opus-5' '> — witness: `in-body-token`' \
+  '> [finding:codex-rd1-f|med] f' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-f]' '> — via claude-opus-5' '> — witness: only the review mentions `review-only-token`' \
+  '> [finding:codex-rd1-g|med] g' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-g]' '> — via claude-opus-5' '> — witness: no token named here' \
+  '> [finding:codex-rd1-h|med] h' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-h]' '> — via claude-opus-5' '> — witness: an empty token `` names nothing')"
+out="$(bash "$SUT" witness-gaps "$WG" 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && ok "witness-gaps: exits 0 (report, not gate)" || bad "witness-gaps rc=$rc"
+grep -qx $'codex-rd1-a\t1\tmissing' <<<"$out" && ok "witness-gaps: an agree with no witness is missing" || bad "missing not reported: $out"
+grep -qx $'codex-rd1-b\t1\tunresolved:nowhere-token' <<<"$out" && ok "witness-gaps: a token found nowhere is unresolved:<token>" || bad "unresolved not reported: $out"
+! grep -q 'codex-rd1-c' <<<"$out" && ok "witness-gaps: a none witness is not a gap" || bad "none reported as a gap: $out"
+! grep -q 'codex-rd1-d' <<<"$out" && ok "witness-gaps: a token in the body resolves" || bad "resolving witness reported: $out"
+grep -qx $'codex-rd1-e\t1\ton-dispute' <<<"$out" && ok "witness-gaps: a witness on a dispute is on-dispute" || bad "on-dispute not reported: $out"
+grep -qx $'codex-rd1-f\t1\tunresolved:review-only-token' <<<"$out" \
+  && ok "witness-gaps: a token that occurs only inside ## Review does not resolve" || bad "review-only token resolved: $out"
+grep -qx $'codex-rd1-g\t1\tunresolved:(no-backticked-token)' <<<"$out" && ok "witness-gaps: a witness naming no backticked token is a gap, as one space-free verdict" || bad "token-less witness accepted or mangled: $out"
+grep -qx $'codex-rd1-h\t1\tunresolved:(empty-token)' <<<"$out" && ok "witness-gaps: an empty backticked token does not resolve" || bad "empty token resolved (codex-rd1-r1): $out"
+# The argument guard, not just some non-zero exit: without it the missing file reaches _table and
+# comes back as "contract violation", which reads as a malformed DOCUMENT rather than a bad path.
+wgerr="$(bash "$SUT" witness-gaps "${WORK}/nope-wg.md" 2>&1 >/dev/null)"; rc=$?
+if [[ $rc -ne 0 ]] && grep -qF "doc not found: ${WORK}/nope-wg.md" <<<"$wgerr" && ! grep -qF 'contract violation' <<<"$wgerr"; then
+  ok "witness-gaps: missing doc fails loud, at the argument"
+else
+  bad "witness-gaps accepted a missing doc, or blamed the document for it (rc=$rc): $wgerr"
+fi
+
+# --- PR flavor: tokens resolve only against ADDED lines of ## Diff ---
+WP="$(mkcc wit-pr.md '# PR' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' '- **PR:** https://github.com/o/r/pull/1' '' \
+  '## Description' 'body says `body-only-token`.' '' '## Diff' '```diff' '--- a/x.sh' '+++ b/x.sh' \
+  ' context has `ctx-token`' '-removed `gone-token`' '+added `added-token`' '```' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: `added-token`' \
+  '> [finding:codex-rd1-b|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-b]' '> — via claude-opus-5' '> — witness: `ctx-token`' \
+  '> [finding:codex-rd1-c|med] c' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-c]' '> — via claude-opus-5' '> — witness: `gone-token`' \
+  '> [finding:codex-rd1-d|med] d' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-d]' '> — via claude-opus-5' '> — witness: `body-only-token`' \
+  '> [finding:codex-rd1-e|med] e' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-e]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-f|med] f' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-f]' '> — via claude-opus-5' '> — witness: `b/x.sh`')"
+out="$(bash "$SUT" witness-gaps "$WP" 2>/dev/null)"
+! grep -q 'codex-rd1-a' <<<"$out" && ok "witness-gaps (PR): a token in an added diff line resolves" || bad "added-token unresolved: $out"
+grep -qx $'codex-rd1-b\t1\tunresolved:ctx-token' <<<"$out" && ok "witness-gaps (PR): a context line does not resolve" || bad "ctx-token: $out"
+grep -qx $'codex-rd1-c\t1\tunresolved:gone-token' <<<"$out" && ok "witness-gaps (PR): a removed line does not resolve" || bad "gone-token: $out"
+grep -qx $'codex-rd1-d\t1\tunresolved:body-only-token' <<<"$out" && ok "witness-gaps (PR): the description body does not resolve" || bad "body-only-token: $out"
+! grep -q 'codex-rd1-e' <<<"$out" && ok "witness-gaps (PR): an agree without a witness is not a gap — the fix is the author's future push" || bad "PR-flavor agree flagged (fable-rd1-r5): $out"
+grep -qx $'codex-rd1-f\t1\tunresolved:b/x.sh' <<<"$out" && ok "witness-gaps (PR): the +++ file header is not an added line" || bad "+++ file header resolved: $out"
+# --- flavor is the PR identity line, not a heading: a local doc with a REAL ## Diff section stays
+# local, so its witnesses resolve against the body (fable-rd2-r3) ---
+WFA="$(mkcc wit-flavor.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' \
+  'body has `body-token`' '' '## Diff' 'a local plan section that happens to be called Diff' '' '## Review' \
+  '> [finding:codex-rd1-b|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' \
+  '> [agree:codex-rd1-b]' '> — via claude-opus-5' '> — witness: `body-token`')"
+out="$(bash "$SUT" witness-gaps "$WFA" 2>/dev/null)"
+[[ -z "$out" ]] && ok "witness-gaps: a local doc with a real ## Diff section stays local" \
+  || bad "witness-gaps: a ## Diff heading flipped the flavor to PR: $out"
+
+# --- refan-check: current-round gaps refuse; earlier-round gaps do not; resolved records always count ---
+RC1="$(mkcc rc1.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body `tok`' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [finding:codex-rd2-a|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd2-a]' '> — via claude-opus-5')"
+bash "$SUT" refan-check "$RC1" >/dev/null 2>"${WORK}/rc1.err"; rc=$?
+[[ $rc -eq 1 ]] && ok "refan-check: a current-round agree without a witness refuses (exit 1)" || bad "refan-check rc=$rc"
+grep -q 'codex-rd2-a agree missing' "${WORK}/rc1.err" && ok "refan-check: names the gap" || bad "refan-check did not name codex-rd2-a: $(cat "${WORK}/rc1.err")"
+! grep -q 'codex-rd1-a' "${WORK}/rc1.err" && ok "refan-check: an earlier-round gap is not this round's to refuse on" || bad "refan-check named the round-1 gap"
+RC2="${WORK}/rc2.md"; sed 's/round 2\/5/round 3\/5/' "$RC1" > "$RC2"
+bash "$SUT" refan-check "$RC2" >/dev/null 2>&1; [[ $? -eq 0 ]] \
+  && ok "refan-check: after a bump the same gap passes — so it must run BEFORE the bump" || bad "refan-check still refused after the bump"
+RC3="$(mkcc rc3.md '# Doc' '<!-- multi-review: awaiting-primary · round 3/5 -->' '<!-- multi-review-mode: star -->' '' 'body' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: none — prose' \
+  '> [resolved:codex-rd1-a] fixed at abc' '> — via claude-opus-5')"
+bash "$SUT" refan-check "$RC3" >/dev/null 2>"${WORK}/rc3.err"; rc=$?
+[[ $rc -eq 1 ]] && grep -q 'codex-rd1-a resolved missing' "${WORK}/rc3.err" \
+  && ok "refan-check: a resolved record without a witness refuses in any round" \
+  || bad "refan-check: a witness-less resolved record passed (rc=$rc): $(cat "${WORK}/rc3.err")"
+RC4="$(mkcc rc4.md '# Doc' '<!-- multi-review: awaiting-primary · round 2/5 -->' '<!-- multi-review-mode: star -->' '' 'body `tok`' '' '## Review' \
+  '> [finding:codex-rd2-a|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd2-a]' '> — via claude-opus-5' '> — witness: `tok`')"
+bash "$SUT" refan-check "$RC4" >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "refan-check: a fully witnessed round passes" || bad "refan-check refused a witnessed round"
+RC5="$(mkstar rc5.md '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5')"
+bash "$SUT" refan-check "$RC5" >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "refan-check: no marker is a usage error, never a pass" || bad "refan-check without a marker rc=$?"
+# A missing doc is a usage error naming the PATH: without the argument guard it reaches the marker
+# read, which reports the same exit 2 as "no readable state marker" — a bad path blamed on the doc.
+bash "$SUT" refan-check "${WORK}/nope-rc.md" >/dev/null 2>"${WORK}/rcm.err"; rc=$?
+[[ $rc -eq 2 ]] && grep -qF "doc not found: ${WORK}/nope-rc.md" "${WORK}/rcm.err" \
+  && ok "refan-check: a missing doc exits 2 and names it" \
+  || bad "refan-check accepted a missing doc, or did not name it (rc=$rc): $(cat "${WORK}/rcm.err")"
+
+# a current-round DISPUTE carrying a witness is reported, but never holds a re-fan (codex-rd2-r1)
+RC6="$(mkcc rc6.md '# Doc' '<!-- multi-review: awaiting-primary · round 1/5 -->' '<!-- multi-review-mode: star -->' '' 'body `tok`' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' '> — witness: `tok`' \
+  '> [finding:codex-rd1-b|med] b' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [dispute:codex-rd1-b] not a defect' '> — via claude-opus-5' '> — witness: `tok`')"
+bash "$SUT" refan-check "$RC6" >/dev/null 2>&1; [[ $? -eq 0 ]] && ok "refan-check: a witness on a dispute does not hold the re-fan" \
+  || bad "refan-check refused on a disputed finding (codex-rd2-r1)"
+grep -qx $'codex-rd1-b\t1\ton-dispute' <<<"$(bash "$SUT" witness-gaps "$RC6" 2>/dev/null)" && ok "witness-gaps: the on-dispute slip is still reported at the gate" \
+  || bad "witness-gaps dropped the on-dispute row"
+
+# --- gate-summary: the two witness lines ---
+out="$(bash "$SUT" gate-summary "$WG" claude-opus-5 2>/dev/null)"
+grep -qF 'Fix witnesses: 1/7 agreed findings and resolved records carry a resolving witness — 6 gaps' <<<"$out" \
+  && ok "gate-summary: counts resolving witnesses, total, and gaps" || bad "gate-summary witness line: $(grep -F 'Fix witnesses' <<<"$out")"
+grep -qF 'Fix witnesses recorded as none: 1' <<<"$out" && ok "gate-summary: counts none witnesses separately" || bad "none count: $(grep -F 'none' <<<"$out")"
+grep -qF '  - codex-rd1-e (round 1: on-dispute)' <<<"$out" && ok "gate-summary: lists each gap" || bad "gap list: $out"
+out="$(bash "$SUT" gate-summary "$EVGAP" claude-opus-5 2>/dev/null)"
+! grep -qF 'Fix witnesses' <<<"$out" && ok "gate-summary: witness lines are dormant with no responses" || bad "gate-summary printed witness lines for a response-less doc"
+# PR flavor: a witness-less agree is not a gap, so on the default one-round PR review `wt` is empty
+# and both lines above stay dormant — N agreed-but-unverified fixes invisible at the gate
+# (fable-rd1-r1 on PR #113). The pending count is its own line, printed whether or not `wt` has rows.
+WPG="$(mkcc wit-pr-gate.md '# PR' '<!-- multi-review: converged · round 1/5 -->' '<!-- multi-review-mode: star -->' '' '- **PR:** https://github.com/o/r/pull/1' '' \
+  '## Diff' '```diff' '+added' '```' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-b|low] b' '> — via gpt-5.6-terra' '> — risk: r' '> [agree:codex-rd1-b]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-c|low] c' '> — via gpt-5.6-terra' '> — risk: r' '> [dispute:codex-rd1-c] no' '> — via claude-opus-5')"
+out="$(bash "$SUT" gate-summary "$WPG" claude-opus-5 2>/dev/null)"
+grep -qF 'Fix witnesses awaiting a resolved record (PR flavor): 2' <<<"$out" \
+  && ok "gate-summary (PR): counts witness-less agrees awaiting a resolved record" || bad "PR pending witnesses (fable-rd1-r1): $(grep -F 'Fix witnesses' <<<"$out")"
+out="$(bash "$SUT" gate-summary "$WG" claude-opus-5 2>/dev/null)"
+! grep -qF 'awaiting a resolved record' <<<"$out" && ok "gate-summary (local): a witness-less agree is a gap, never a pending record" || bad "local doc rendered the PR pending line"
+# An agree that already HAS a resolved record is no longer pending — the record is where its witness
+# lives. Found at the gate of the round-2 self-review of PR #113: all three agrees resolved, and the
+# line still said three were awaiting a record.
+WPR="$(mkcc wit-pr-resolved.md '# PR' '<!-- multi-review: converged · round 2/5 -->' '<!-- multi-review-mode: star -->' '' '- **PR:** https://github.com/o/r/pull/1' '' \
+  '## Diff' '```diff' '+added `tok`' '```' '' '## Review' \
+  '> [finding:codex-rd1-a|med] a' '> — via gpt-5.6-terra' '> — risk: r' '> — evidence: e' '> [agree:codex-rd1-a]' '> — via claude-opus-5' \
+  '> [finding:codex-rd1-b|low] b' '> — via gpt-5.6-terra' '> — risk: r' '> [agree:codex-rd1-b]' '> — via claude-opus-5' \
+  '> [resolved:codex-rd1-a] fixed at abc123' '> — via claude-opus-5' '> — witness: `tok`')"
+out="$(bash "$SUT" gate-summary "$WPR" claude-opus-5 2>/dev/null)"
+grep -qF 'Fix witnesses awaiting a resolved record (PR flavor): 1' <<<"$out" \
+  && ok "gate-summary (PR): an agree with a resolved record is no longer pending" || bad "resolved agree still pending: $(grep -F 'awaiting a resolved record' <<<"$out")"
+
+# --- gate-summary: plan lint coverage, and NO RECORD ---
+PL1="$(mkstar pl1.md '> [planlint-coverage: 3 entries checked]')"
+out="$(bash "$SUT" gate-summary "$PL1" claude-opus-5 2>/dev/null)"
+grep -qF 'Plan lint: 3 entries checked' <<<"$out" && ok "gate-summary: renders the plan lint coverage line" || bad "plan lint line: $out"
+PL2="$(mkstar pl2.md '> [planlint-coverage: not applicable]')"
+out="$(bash "$SUT" gate-summary "$PL2" claude-opus-5 2>/dev/null)"
+grep -qF 'Plan lint: not applicable' <<<"$out" && ok "gate-summary: renders not applicable" || bad "plan lint n/a: $out"
+PL3="$(mkcc pl3.md '# Doc' '<!-- multi-review-mode: star -->' '' '```bash' "mutate 'a/b' 'scripts/x.sh' delete 'lbl' 'x.test.sh' 'line'" '```' '' '## Review' '')"
+out="$(bash "$SUT" gate-summary "$PL3" claude-opus-5 2>/dev/null)"
+grep -qF 'Plan lint: NO RECORD' <<<"$out" && ok "gate-summary: an applicable doc with no record renders NO RECORD" || bad "NO RECORD missing: $out"
+out="$(bash "$SUT" gate-summary "$EVGAP" claude-opus-5 2>/dev/null)"
+! grep -qF 'Plan lint' <<<"$out" && ok "gate-summary: plan lint is dormant on a doc with no entries and no record" || bad "plan lint not dormant: $out"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
