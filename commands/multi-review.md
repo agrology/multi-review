@@ -354,7 +354,21 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
      `refresh` re-fetches the diff at the current head, records this round's head/merge-base,
      captures existing anchors' line text, and replaces `## Diff` while preserving `## Review`
-     and the manifest.
+     and the manifest. It also re-fetches the PR body and replaces `## PR description`, so the
+     description and the diff describe the same revision — from round 2 the two used to drift,
+     and secondaries spent findings on the disagreement (issue #85). The description is written
+     under the same digest guard as the diff, so one that was hand-edited since it was last
+     written no longer matches and is LEFT AS-IS: `refresh` still exits 0 and prints
+     `PR description not refreshed` on stderr. Relay that line, and reconcile the description
+     against the PR by hand before seeding the copies — do not fan out a description that
+     contradicts the diff.
+
+     **That hand reconcile is one-way.** Your edited body matches no recorded digest, nothing
+     re-arms the guard, and so
+     every later round skips it too — the description is then only as current as your last manual
+     pass, and keeping it aligned with the diff stays your job for the rest of the review. Say so
+     at the gate. Only `ingest --fresh` re-seeds a recorded description, and it discards every
+     accumulated finding and response, so it is rarely the right trade mid-review.
 
      **If `refresh` fails with a diff-window message** (`no '## Diff' section … matches a recorded
      digest`, or `… ambiguous diff window`), it wrote NOTHING — that is deliberate. The diff window

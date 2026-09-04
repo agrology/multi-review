@@ -650,10 +650,20 @@ mutations() {
 
   # Same swallow in the other writer: an unreadable description produced a document with the PR
   # description missing, and seed then recorded a digest for the truncation.
+  # Since #85 the description is read ONCE, at compose time, so that line is where an unreadable
+  # description now fails; the `cat "$dbodyf"` in the write group sits behind it and reads a temp
+  # this script just wrote (next entry).
   mutate 'pr/seed-desc-propagation' 'scripts/multi-review-pr.sh' replace \
     'seed: committed a document despite an unreadable description' 'multi-review-pr.test.sh' \
-    '    cat "$descf"                                   || exit 1' \
-    '    cat "$descf"'
+    '  _compose_desc_body "$descf" > "$dbodyf" || { rm -f "$bodyf" "$dbodyf"; die "cannot compose the description body" 1; }' \
+    '  _compose_desc_body "$descf" > "$dbodyf"'
+
+  # Deliberately redundant behind the compose guard above: no test can make a temp file this script
+  # just wrote unreadable. Recorded so that losing the compose guard surfaces here.
+  mutate 'pr/seed-desc-cat-propagation' 'scripts/multi-review-pr.sh' replace \
+    'SURVIVES-BY-DESIGN' 'multi-review-pr.test.sh' \
+    '    cat "$dbodyf"                                  || exit 1' \
+    '    cat "$dbodyf"'
 
   # found-but-EMPTY must not look like NOT-FOUND. A blank diff line captured as empty text was read
   # as "not in the diff", nothing was recorded, and the anchor later remapped to a STALE line that
@@ -2882,6 +2892,90 @@ mutations() {
   mutate 'pr/record-diff-empty-body' 'scripts/multi-review-pr.sh' delete \
     'recorded the digest of an empty body' 'multi-review-pr.test.sh' \
     '  [[ -s "$bodyf" ]] || die "diff body file is empty: $bodyf — refusing to record the digest of nothing" 1'
+
+  # Issue #85: `refresh` re-fetches the PR description under the diff's digest rule. The writer
+  # records the body it composed (seed and replace-desc), the reader accepts only a body that
+  # matches, and a hand-edited body is left alone with a reason — the description is the one
+  # section a primary may legitimately edit, so a clobber is real data loss.
+  mutate 'pr/desc-record-seeded' 'scripts/multi-review-pr.sh' delete \
+    'seed: no description digest in the sidecar' 'multi-review-pr.test.sh' \
+    '  _record_desc "$out" "$dbodyf"   || { rm -f "$bodyf" "$dbodyf"; die "cannot record the description digest" 1; }'
+
+  mutate 'pr/desc-digest-guard' 'scripts/multi-review-pr.sh' replace \
+    'replace-desc: hand-edited description clobbered or wrong status' 'multi-review-pr.test.sh' \
+    '  if ! grep -qxF "$d" <<<"$recs"; then' \
+    '  if false; then'
+
+  # The window opens at the FIRST heading. A PR body can carry a `## PR description` of its own;
+  # under "last wins" that decoy takes the window, the digest then never matches, and the
+  # description silently stops refreshing.
+  mutate 'pr/desc-first-heading' 'scripts/multi-review-pr.sh' replace \
+    'replace-desc: the decoy heading captured the window' 'multi-review-pr.test.sh' \
+    "  hstart=\"\$(awk -v lim=\"\$bstart\" '/^## PR description[[:space:]]*\$/ && NR < lim { print NR; exit }' \"\$scratch\")\"" \
+    "  hstart=\"\$(awk -v lim=\"\$bstart\" '/^## PR description[[:space:]]*\$/ && NR < lim { h = NR } END { if (h) print h }' \"\$scratch\")\""
+
+  mutate 'pr/desc-noop-unchanged' 'scripts/multi-review-pr.sh' replace \
+    'replace-desc: identical body rewrote or re-recorded' 'multi-review-pr.test.sh' \
+    '  if [[ "$(_diff_digest < "$bodyf")" == "$(awk -v s="$dstart" -v e="$dend" '"'"'NR >= s && NR <= e'"'"' "$scratch" | _diff_digest)" ]]; then' \
+    '  if false; then'
+
+  # Same swallow class as pr/splice-head-propagation, in the description writer.
+  mutate 'pr/desc-splice-head-propagation' 'scripts/multi-review-pr.sh' replace \
+    'desc splice: a failing head still exited 0' 'multi-review-pr.test.sh' \
+    '  ( head -n "$((dstart - 1))" "$scratch"    || exit 1' \
+    '  ( head -n "$((dstart - 1))" "$scratch"'
+
+  mutate 'pr/refresh-fetches-desc' 'scripts/multi-review-pr.sh' replace \
+    'refresh: description still describes the ingested design' 'multi-review-pr.test.sh' \
+    '  if ! ( cmd_replace_desc "$scratch" "${tmpd}/desc" ); then' \
+    '  if false; then'
+
+  # The subshell is the guard, not decoration: without it `die` exits refresh after the diff swap
+  # and before the head record, leaving the round retryable and its anchors poisonable on the
+  # re-run (fable-rd1-r3, PR #131). The mutation is exactly the pre-fix line.
+  mutate 'pr/refresh-desc-die-contained' 'scripts/multi-review-pr.sh' replace \
+    'refresh: a fatal description swap left the round retryable' 'multi-review-pr.test.sh' \
+    '  if ! ( cmd_replace_desc "$scratch" "${tmpd}/desc" ); then' \
+    '  if ! cmd_replace_desc "$scratch" "${tmpd}/desc"; then'
+
+  # The skip must be SAID: a silent skip is the "documented instead of closed" shape #84 measured.
+  mutate 'pr/refresh-desc-skip-said' 'scripts/multi-review-pr.sh' replace \
+    'refresh: hand-edited description handling wrong' 'multi-review-pr.test.sh' \
+    '    echo "multi-review-pr: PR description not refreshed for round ${round} — reconcile it against the PR by hand before seeding the copies" >&2' \
+    '    :'
+
+  # The confirmation window. Every content read — diff AND body — now happens before it, so losing
+  # this guard re-admits both the stale-diff pairing it was added for and the post-push description
+  # (codex-rd1-r1, PR #131). It had NO entry and no covering assertion: deleted, the whole suite
+  # stayed green, which is exactly the shape this table exists to catch.
+  mutate 'pr/refresh-head-moved-refused' 'scripts/multi-review-pr.sh' replace \
+    'refresh: a moved head was accepted or the scratch was mutated' 'multi-review-pr.test.sh' \
+    '  [[ "$head_after" == "$head" ]] \' \
+    '  [[ -n "$head" ]] \'
+
+  # The description window is bounded BELOW by the verified diff window, so an unverifiable diff
+  # must refuse here too. This was recorded SURVIVES-BY-DESIGN behind the "no heading" refusal, and
+  # that reason was FALSE twice over (fable-rd1-r1, PR #131): nothing drove `replace-desc` through a
+  # failing `_locate_diff` at all, and deleting the named outer layer as well still refuses at the
+  # record check — so no assertion could ever have surfaced its loss. What the fall-through really
+  # costs is the DIAGNOSIS: the reader is told the document lacks a '## PR description' heading it
+  # plainly has. The assertion pins that, so this is a real caught entry now, not a survivor.
+  mutate 'pr/desc-window-needs-diff' 'scripts/multi-review-pr.sh' replace \
+    'replace-desc: unverifiable diff window wrote, or misdiagnosed the cause' 'multi-review-pr.test.sh' \
+    '  span="$(_locate_diff "$scratch")" || return 3' \
+    '  span="$(_locate_diff "$scratch")" || span=""'
+
+  mutate 'command/refresh-desc-skip-relayed' 'commands/multi-review.md' replace \
+    'says nothing about a description that was not refreshed' 'multi-review-packaging.test.sh' \
+    '     `PR description not refreshed` on stderr. Relay that line, and reconcile the description' \
+    '     a line on stderr. Relay that line, and reconcile the description'
+  # The one-way reconcile: without it the primary believes a later round will pick the description
+  # back up, and #85's drift returns silently for the rest of the review (fable-rd1-r2, PR #131).
+  mutate 'command/refresh-desc-reconcile-one-way' 'commands/multi-review.md' replace \
+    'command: the PR refresh step does not say a hand reconcile turns the description refresh off for good' 'multi-review-packaging.test.sh' \
+    '     every later round skips it too — the description is then only as current as your last manual' \
+    '     every later round refreshes it again — the description stays current on its own after your'
+
   mutate 'command/gate-releases-via-helper' 'commands/multi-review.md' replace \
     'terminal cleanup still hand-rolls the deletion' 'multi-review-packaging.test.sh' \
     '      ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh release "<doc>"' \
