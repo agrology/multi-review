@@ -681,7 +681,16 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
   # unverifiable body is NOT fatal: it means someone edited the description on purpose, and the
   # round can proceed on the diff — but the skip is said, so the primary reconciles by hand rather
   # than fanning out a description that quietly contradicts the diff.
-  if ! cmd_replace_desc "$scratch" "${tmpd}/desc"; then
+  #
+  # SUBSHELL, deliberately: `die` calls `exit`, so its infra failures (mktemp, record write,
+  # splice, mv) would otherwise kill refresh AFTER the diff swap and BEFORE the head record. The
+  # same-round retry refusal keys on that record, so the round would stay retryable and a re-run's
+  # `record-anchors` would read the NEW diff under the old keys and poison them — anchored findings
+  # silently degrading to the summary (fable-rd1-r3, PR #131). The whole description swap is the
+  # optional half of this command; making only its exit 3 non-fatal left that window open. The
+  # subshell contains the exit; every write it completed is on disk either way, and the reason it
+  # printed is still on stderr above the skip notice.
+  if ! ( cmd_replace_desc "$scratch" "${tmpd}/desc" ); then
     echo "multi-review-pr: PR description not refreshed for round ${round} — reconcile it against the PR by hand before seeding the copies" >&2
   fi
   cmd_record_head "$scratch" "$round" "$head" "$mb"

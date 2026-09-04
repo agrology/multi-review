@@ -2927,8 +2927,16 @@ mutations() {
 
   mutate 'pr/refresh-fetches-desc' 'scripts/multi-review-pr.sh' replace \
     'refresh: description still describes the ingested design' 'multi-review-pr.test.sh' \
-    '  if ! cmd_replace_desc "$scratch" "${tmpd}/desc"; then' \
+    '  if ! ( cmd_replace_desc "$scratch" "${tmpd}/desc" ); then' \
     '  if false; then'
+
+  # The subshell is the guard, not decoration: without it `die` exits refresh after the diff swap
+  # and before the head record, leaving the round retryable and its anchors poisonable on the
+  # re-run (fable-rd1-r3, PR #131). The mutation is exactly the pre-fix line.
+  mutate 'pr/refresh-desc-die-contained' 'scripts/multi-review-pr.sh' replace \
+    'refresh: a fatal description swap left the round retryable' 'multi-review-pr.test.sh' \
+    '  if ! ( cmd_replace_desc "$scratch" "${tmpd}/desc" ); then' \
+    '  if ! cmd_replace_desc "$scratch" "${tmpd}/desc"; then'
 
   # The skip must be SAID: a silent skip is the "documented instead of closed" shape #84 measured.
   mutate 'pr/refresh-desc-skip-said' 'scripts/multi-review-pr.sh' replace \
@@ -2946,12 +2954,14 @@ mutations() {
     '  [[ -n "$head" ]] \'
 
   # The description window is bounded BELOW by the verified diff window, so an unverifiable diff
-  # must refuse here too. Deliberately redundant: with no diff span, `bstart` is empty, the heading
-  # scan's `NR < lim` is a string compare against "" that never holds, and the "no heading" refusal
-  # fires — covered by the no-record and hand-edited assertions above. Recorded so that losing that
-  # outer layer surfaces here rather than as a silent gap.
+  # must refuse here too. This was recorded SURVIVES-BY-DESIGN behind the "no heading" refusal, and
+  # that reason was FALSE twice over (fable-rd1-r1, PR #131): nothing drove `replace-desc` through a
+  # failing `_locate_diff` at all, and deleting the named outer layer as well still refuses at the
+  # record check — so no assertion could ever have surfaced its loss. What the fall-through really
+  # costs is the DIAGNOSIS: the reader is told the document lacks a '## PR description' heading it
+  # plainly has. The assertion pins that, so this is a real caught entry now, not a survivor.
   mutate 'pr/desc-window-needs-diff' 'scripts/multi-review-pr.sh' replace \
-    'SURVIVES-BY-DESIGN' 'multi-review-pr.test.sh' \
+    'replace-desc: unverifiable diff window wrote, or misdiagnosed the cause' 'multi-review-pr.test.sh' \
     '  span="$(_locate_diff "$scratch")" || return 3' \
     '  span="$(_locate_diff "$scratch")" || span=""'
 
@@ -2959,6 +2969,13 @@ mutations() {
     'says nothing about a description that was not refreshed' 'multi-review-packaging.test.sh' \
     '     `PR description not refreshed` on stderr. Relay that line, and reconcile the description' \
     '     a line on stderr. Relay that line, and reconcile the description'
+  # The one-way reconcile: without it the primary believes a later round will pick the description
+  # back up, and #85's drift returns silently for the rest of the review (fable-rd1-r2, PR #131).
+  mutate 'command/refresh-desc-reconcile-one-way' 'commands/multi-review.md' replace \
+    'command: the PR refresh step does not say a hand reconcile turns the description refresh off for good' 'multi-review-packaging.test.sh' \
+    '     every later round skips it too — the description is then only as current as your last manual' \
+    '     every later round refreshes it again — the description stays current on its own after your'
+
   mutate 'command/gate-releases-via-helper' 'commands/multi-review.md' replace \
     'terminal cleanup still hand-rolls the deletion' 'multi-review-packaging.test.sh' \
     '      ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh release "<doc>"' \

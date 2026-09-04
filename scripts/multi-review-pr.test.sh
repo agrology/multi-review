@@ -1532,6 +1532,23 @@ bash "$SUT" replace-desc "$D0" "${WORK}/d2.desc" >/dev/null 2>&1; rc=$?
   && ok "replace-desc: no recorded description digest -> exit 3, untouched" \
   || bad "replace-desc: wrote without a record to verify against (rc=$rc)"
 
+# --- fable-rd1-r1: an unverifiable DIFF window must refuse with the right diagnosis ---
+# The description window is bounded below by the verified diff window, so losing the diff record
+# must refuse here too. This pins the DIAGNOSIS, not just the status: without the `|| return 3`
+# the run falls through to the heading scan, whose `NR < ""` never holds, and the reader is told
+# the document is missing a '## PR description' heading it plainly has — sending them to the wrong
+# file while the real cause (no diff record) scrolls by above.
+DND="${WORK}/descnodiff.md"
+bash "$SUT" seed "$DND" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+grep -v 'multi-review-pr-diff' "${DND}.records" > "${DND}.records.new" && mv "${DND}.records.new" "${DND}.records"
+sum0="$(shasum "$DND" | cut -d' ' -f1)"
+err="$(bash "$SUT" replace-desc "$DND" "${WORK}/d2.desc" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 3 && "$sum0" == "$(shasum "$DND" | cut -d' ' -f1)" ]] \
+  && [[ "$err" == *"diff window cannot be verified"* ]] \
+  && [[ "$err" != *"no '## PR description' heading"* ]] \
+  && ok "replace-desc: an unverifiable diff window refuses without blaming the description heading" \
+  || bad "replace-desc: unverifiable diff window wrote, or misdiagnosed the cause (rc=$rc err='${err:0:90}')"
+
 # --- refresh: the description follows the PR, and a hand-edited one is kept with a warning ---
 RB="${WORK}/rbin"; mkdir -p "$RB"
 cat > "${RB}/gh" <<STUBEOF
@@ -1610,6 +1627,34 @@ err="$(PATH="${MB2}:$PATH" bash "$SUT" refresh "$RMV" 2 2>&1 >/dev/null)"; rc=$?
 [[ $rc -ne 0 && "$err" == *"PR moved during refresh"* ]] && cmp -s "$RMV" "${WORK}/headmoved.before" \
   && ok "refresh: a head that moved during the fetch refuses and leaves the scratch untouched" \
   || bad "refresh: a moved head was accepted or the scratch was mutated (rc=$rc err='${err:0:70}')"
+
+# --- fable-rd1-r3: a FATAL description swap must not leave the round retryable ---
+# `cmd_replace_desc` can `die` (mktemp, record write, splice, mv) AFTER the diff has been swapped
+# and BEFORE the head record is written. The same-round retry refusal keys on that head record, so
+# the round stays retryable and a re-run's `record-anchors` reads the NEW diff under the old keys,
+# poisoning them — anchored findings then degrade to the summary with no notice. The description
+# swap is already the optional half of refresh; its exit 3 was non-fatal but its `die` was not.
+# The stub fails the SECOND `head` — the description splice; the first is the diff splice, and the
+# "new diff present" assertion below is what proves the failure landed where it was aimed.
+HD3="${WORK}/hd3bin"; mkdir -p "$HD3"
+cat > "${HD3}/head" <<STUBEOF
+#!/usr/bin/env bash
+n=\$(cat "\$MR_HEADC" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "\$MR_HEADC"
+(( n == 2 )) && exit 1
+exec /usr/bin/head "\$@"
+STUBEOF
+chmod +x "${HD3}/head"
+RW="${WORK}/widewindow.md"
+bash "$SUT" seed "$RW" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+cp "${WORK}/d2.desc" "${WORK}/gh.body"
+MR_HEADC="${WORK}/hd3.count"; : > "$MR_HEADC"; export MR_HEADC
+err="$(PATH="${HD3}:${RB}:$PATH" bash "$SUT" refresh "$RW" 2 2>&1 >/dev/null)"; rc=$?
+unset MR_HEADC
+[[ $rc -eq 0 ]] && grep -qF '+b' "$RW" \
+  && bash "$SUT" head-record "$RW" 2 >/dev/null 2>&1 \
+  && [[ "$err" == *"not refreshed"* ]] \
+  && ok "refresh: a fatal description swap still completes the round (no retryable window)" \
+  || bad "refresh: a fatal description swap left the round retryable (rc=$rc err='${err:0:80}')"
 
 # --- the description splice propagates a failing component, like the diff splice does ---
 DSP="${WORK}/dsplice.md"

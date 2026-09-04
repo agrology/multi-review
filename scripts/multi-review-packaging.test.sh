@@ -1453,6 +1453,12 @@ else
   grep -q 'PR description not refreshed' <<<"$(sed -n "${n},$((n+14))p" "$CMD")" \
     && ok "command: the PR refresh step tells the primary to relay a skipped description refresh" \
     || bad "command: the PR refresh step says nothing about a description that was not refreshed (issue #85)"
+  # The reconcile is ONE-WAY: a hand-edited body matches no record, there is no `record-desc` to
+  # re-arm the guard, and only `ingest --fresh` re-seeds one — so every later round skips too and
+  # the description is only as current as the primary's last manual pass (fable-rd1-r1, PR #131).
+  grep -q 'every later round skips it too' <<<"$(sed -n "${n},$((n+22))p" "$CMD")" \
+    && ok "command: the PR refresh step says the hand reconcile is one-way" \
+    || bad "command: the PR refresh step does not say a hand reconcile turns the description refresh off for good"
 fi
 
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]
