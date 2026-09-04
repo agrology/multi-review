@@ -12,6 +12,7 @@
 #   diff-valid-lines <scratch>       -> "path\tline" for every added/context (RIGHT-side) line in ## Diff
 #   validate-anchor <scratch> <path> <start> [end] -> exit 0 iff path is changed and all lines are in the diff
 #   record-diff <scratch> <body-file> -> record the sha256 of a composed diff-section body (writers only)
+#   replace-desc <scratch> <desc-file> -> swap ## PR description under its digest guard; exit 3 = left alone
 #   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
 set -uo pipefail
 
@@ -64,6 +65,10 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
   local bodyf; bodyf="$(mktemp)" || die "mktemp failed" 1
   { printf '\n%s\n' "$fence"; cat "$difff"; printf '\n%s\n\n' "$fence"; } > "$bodyf" \
     || { rm -f "$bodyf"; die "cannot compose the diff body" 1; }
+  # The description body gets the same treatment, for the same reason: `refresh` rewrites it under
+  # a digest guard (issue #85), so the bytes recorded must be the bytes written.
+  local dbodyf; dbodyf="$(mktemp)" || { rm -f "$bodyf"; die "mktemp failed" 1; }
+  _compose_desc_body "$descf" > "$dbodyf" || { rm -f "$bodyf" "$dbodyf"; die "cannot compose the description body" 1; }
   # ORDER MATTERS, and it is the opposite of the obvious one. The sidecar describes the document at
   # this path, and seed replaces that document, so every record in it is stale by definition — a
   # surviving round-1 head record made `ingest --fresh` die on the immutability check (fable-rd1-r1)
@@ -75,7 +80,7 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
   # its old records, consistent and readable. A failure in the gap after it leaves a new document with
   # stale records, which refuses loudly and is fixed by retrying `--fresh`, since this reset is
   # unconditional.
-  local docf; docf="$(mktemp "${out}.new.XXXXXX")" || { rm -f "$bodyf"; die "mktemp failed" 1; }
+  local docf; docf="$(mktemp "${out}.new.XXXXXX")" || { rm -f "$bodyf" "$dbodyf"; die "mktemp failed" 1; }
   # Same explicit propagation as the splice, and for the same reason: a brace group's status is only
   # its LAST command's, so a failing `cat "$descf"` committed a document with the PR description
   # silently missing — and then recorded a digest for it, so every reader accepted the truncation as
@@ -85,19 +90,20 @@ cmd_seed() { # <out> <title> <url> <author> <branch> <desc-file> <diff-file>
     printf -- '- **PR:** %s\n'     "$url"          || exit 1
     printf -- '- **Author:** %s\n' "$author"       || exit 1
     printf -- '- **Branch:** %s\n\n' "$branch"     || exit 1
-    printf '## PR description\n\n'                 || exit 1
-    cat "$descf"                                   || exit 1
-    printf '\n\n## Diff\n'                         || exit 1
+    printf '## PR description\n'                   || exit 1
+    cat "$dbodyf"                                  || exit 1
+    printf '## Diff\n'                             || exit 1
     cat "$bodyf"                                   || exit 1
     printf '## Review\n'                           || exit 1 ) > "$docf"
   local seed_rc=$?
   if (( seed_rc != 0 )); then
-    rm -f "$bodyf" "$docf"; die "cannot write scratch file: $out" 1
+    rm -f "$bodyf" "$dbodyf" "$docf"; die "cannot write scratch file: $out" 1
   fi
-  mv "$docf" "$out" || { rm -f "$bodyf" "$docf"; die "cannot install scratch file: $out" 1; }
+  mv "$docf" "$out" || { rm -f "$bodyf" "$dbodyf" "$docf"; die "cannot install scratch file: $out" 1; }
   rm -f "$(_records_path "$out")"
-  cmd_record_diff "$out" "$bodyf" || { rm -f "$bodyf"; die "cannot record the diff digest" 1; }
-  rm -f "$bodyf"
+  cmd_record_diff "$out" "$bodyf" || { rm -f "$bodyf" "$dbodyf"; die "cannot record the diff digest" 1; }
+  _record_desc "$out" "$dbodyf"   || { rm -f "$bodyf" "$dbodyf"; die "cannot record the description digest" 1; }
+  rm -f "$bodyf" "$dbodyf"
 }
 
 cmd_publish() { # <scratch> <model> -> post ONE neutral review via gh (star-only)
@@ -360,6 +366,80 @@ cmd_diff_span() { # <scratch> -> "<body-start> <body-end>" for the verified wind
   _locate_diff "$scratch"
 }
 
+# ---- the description window rides on the diff window --------------------------------------
+# `refresh` re-fetched the diff every round but never the PR body, so from round 2 the scratch
+# described the design the PR had at INGEST beside a diff showing what it has NOW, and secondaries
+# spent findings on the disagreement (issue #85). The body is refreshed under the same digest rule:
+# the writer records the bytes it composed, and a body that no longer matches — the one section a
+# primary may legitimately hand-edit — is left alone with a reason, never clobbered.
+#
+# The window is NOT a "## PR description"-to-next-heading candidate the way the diff's is: a PR body
+# routinely contains column-0 `## ` headings of its own (hunk lines are prefixed; prose is not), so
+# such a candidate would end at the body's first heading and never verify. Instead the window is
+# bounded by two trusted lines: the FIRST `## PR description` heading — above it seed writes only
+# single-line header fields, and the title is single-line on GitHub, so nothing author-written can
+# forge one earlier — and the heading of the digest-VERIFIED diff window. The digest then decides
+# whether what lies between is still the body a writer composed.
+_compose_desc_body() { # <desc-file> -> the section body: blank line, body, blank line
+  printf '\n' && cat "$1" && printf '\n\n'
+}
+
+_record_desc() { # <scratch> <body-file> — append the digest of the body the CALLER composed
+  local scratch="${1:?scratch}" bodyf="${2:?body-file}" d rf
+  d="$(_diff_digest < "$bodyf")" || die "cannot digest the description body" 1
+  rf="$(_records_path "$scratch")"
+  printf '<!-- multi-review-pr-desc: %s -->\n' "$d" >> "$rf" || die "cannot write description record: $rf" 1
+}
+
+_locate_desc() { # <scratch> -> "<body-start> <body-end>"; exit 3 with the reason if it cannot be verified
+  local scratch="${1:?scratch}" span bstart hstart recs d
+  span="$(_locate_diff "$scratch")" || return 3
+  bstart="${span%% *}"
+  hstart="$(awk -v lim="$bstart" '/^## PR description[[:space:]]*$/ && NR < lim { print NR; exit }' "$scratch")"
+  if [[ -z "$hstart" ]]; then
+    echo "multi-review-pr: no '## PR description' heading above the diff window in ${scratch}" >&2
+    return 3
+  fi
+  recs="$(grep -oE 'multi-review-pr-desc: [0-9a-f]{64}' "$(_records_path "$scratch")" 2>/dev/null | awk '{print $2}')"
+  d="$(awk -v s="$((hstart + 1))" -v e="$((bstart - 2))" 'NR >= s && NR <= e' "$scratch" | _diff_digest)"
+  if ! grep -qxF "$d" <<<"$recs"; then
+    echo "multi-review-pr: the '## PR description' body in ${scratch} matches no recorded digest (hand-edited, or seeded before the record existed)" >&2
+    return 3
+  fi
+  printf '%s %s\n' "$((hstart + 1))" "$((bstart - 2))"
+}
+
+cmd_replace_desc() { # <scratch> <desc-file> — swap ## PR description; exit 3 = unverifiable, left alone
+  local scratch="${1:?scratch}" descf="${2:?desc-file}"
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  [[ -f "$descf"   ]] || die "description file not found: $descf" 1
+  local span
+  span="$(_locate_desc "$scratch")" || return 3
+  local dstart="${span%% *}" dend="${span##* }"
+  local bodyf; bodyf="$(mktemp)" || die "mktemp failed" 1
+  _compose_desc_body "$descf" > "$bodyf" || { rm -f "$bodyf"; die "cannot compose the description body" 1; }
+  # Most rounds the body has not changed. Writing it anyway would be harmless but would grow the
+  # sidecar by one record per round for nothing.
+  if [[ "$(_diff_digest < "$bodyf")" == "$(awk -v s="$dstart" -v e="$dend" 'NR >= s && NR <= e' "$scratch" | _diff_digest)" ]]; then
+    rm -f "$bodyf"; return 0
+  fi
+  # Same discipline as `replace-diff`, for the same reasons: record BEFORE the rename so no crash
+  # window leaves a body no record matches; temp BESIDE the scratch so `mv` is a same-fs rename;
+  # splice component-by-component with explicit propagation, status captured outside any tested
+  # context. The `head` always has lines to print here: the heading sits below the header fields.
+  _record_desc "$scratch" "$bodyf" || { rm -f "$bodyf"; die "cannot record the description digest" 1; }
+  local tmp; tmp="$(mktemp "${scratch}.tmp.XXXXXX")" || { rm -f "$bodyf"; die "mktemp failed" 1; }
+  ( head -n "$((dstart - 1))" "$scratch"    || exit 1
+    cat "$bodyf"                             || exit 1
+    tail -n +"$((dend + 1))" "$scratch"      || exit 1 ) > "$tmp"
+  local splice_rc=$?
+  if (( splice_rc != 0 )); then
+    rm -f "$tmp" "$bodyf"; die "cannot write replacement description (splice component failed)" 1
+  fi
+  mv "$tmp" "$scratch" || { rm -f "$tmp" "$bodyf"; die "cannot update: $scratch" 1; }
+  rm -f "$bodyf"
+}
+
 _diff_section() { # <scratch> -> ONLY the verified diff body; exit 3 if it cannot be verified
   local span
   span="$(_locate_diff "$1")" || return $?
@@ -583,6 +663,8 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
     || die "could not re-confirm the PR head after fetching the diff — re-run refresh for round ${round}" 1
   [[ "$head_after" == "$head" ]] \
     || die "the PR moved during refresh (${head} -> ${head_after}) — re-run refresh for round ${round}" 1
+  gh pr view "$n" --repo "${o}/${r}" --json body --jq '.body' > "${tmpd}/desc" \
+    || die "gh pr view (body) failed for ${o}/${r}#${n}" 1
   # Order matters (fable-rd1-r5). Anchors MUST be captured while the old diff is still present.
   # The head record is written LAST, after the swap succeeds: it is immutable, so writing it
   # first would wedge the round on any later failure — re-running refresh would die on the
@@ -591,6 +673,13 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
   # because after a diff swap re-running would poison shifted anchors rather than no-op.
   cmd_record_anchors "$scratch"
   cmd_replace_diff "$scratch" "${tmpd}/diff"
+  # The description follows the PR under its digest guard (issue #85). Unlike the diff, an
+  # unverifiable body is NOT fatal: it means someone edited the description on purpose, and the
+  # round can proceed on the diff — but the skip is said, so the primary reconciles by hand rather
+  # than fanning out a description that quietly contradicts the diff.
+  if ! cmd_replace_desc "$scratch" "${tmpd}/desc"; then
+    echo "multi-review-pr: PR description not refreshed for round ${round} — reconcile it against the PR by hand before seeding the copies" >&2
+  fi
   cmd_record_head "$scratch" "$round" "$head" "$mb"
   echo "$scratch"
 }
@@ -758,6 +847,7 @@ main() {
     record-diff)  cmd_record_diff "$@" ;;
     diff-span)    cmd_diff_span "$@" ;;
     replace-diff) cmd_replace_diff "$@" ;;
+    replace-desc) cmd_replace_desc "$@" ;;
     fence)        cmd_fence "$@" ;;
     seed)         cmd_seed "$@" ;;
     ingest)       cmd_ingest "$@" ;;

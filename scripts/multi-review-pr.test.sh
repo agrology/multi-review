@@ -1466,6 +1466,112 @@ bash "$SUT" record-diff "$f" "$b" >/dev/null 2>&1; rc=$?
   || bad "record-diff: recorded the digest of an empty body (issue #112, rc=$rc)"
 rm -rf "$rdE"
 
+# ================= issue #85: refresh re-fetches the PR description too =================
+# `refresh` replaced ## Diff every round but never ## PR description, so from round 2 the scratch
+# described the design the PR had at INGEST while the diff showed what it has NOW; secondaries read
+# both, noticed they disagree, and spent findings on it (2 of 18 on #84 — one per vendor, same round).
+# The description gets the same digest-guarded write the diff has: the writer records the body it
+# composed, and a body that no longer matches (the one section a primary may legitimately hand-edit)
+# is left alone with a reason, never clobbered.
+
+# --- seed records a digest for the description body it composed ---
+printf 'Round-one design.\n\n## Summary\n\nkeys off the exit code\n' > "${WORK}/d1.desc"
+printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1 @@\n+a\n' > "${WORK}/d1.diff"
+D1="${WORK}/desc1.md"
+bash "$SUT" seed "$D1" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+grep -qE 'multi-review-pr-desc: [0-9a-f]{64}' "${D1}.records" \
+  && ok "seed: records the description digest" || bad "seed: no description digest in the sidecar"
+
+# --- replace-desc swaps the description body and nothing else ---
+# Both bodies carry column-0 `## ` headings: a PR body routinely has a `## Summary`, so the window
+# cannot end at "the next heading" the way the diff's can (hunk lines are prefixed; prose is not).
+# The decoy `## PR description` planted INSIDE the new body must not become the window on the next
+# swap: the real heading is the first one, above which only single-line header fields exist.
+printf 'Round-two design.\n\n## PR description\n\n## Summary\n\nquarantines the copy\n' > "${WORK}/d2.desc"
+bash "$SUT" replace-desc "$D1" "${WORK}/d2.desc" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 0 ]] && grep -q 'Round-two design.' "$D1" && ! grep -q 'Round-one design.' "$D1" \
+  && ok "replace-desc: the description body is replaced" \
+  || bad "replace-desc: description not replaced (rc=$rc)"
+grep -qF '**Author:** a' "$D1" && grep -q '^# PR review: T' "$D1" && [[ "$(grep -c '^## Review$' "$D1")" == 1 ]] \
+  && bash "$SUT" diff-valid-lines "$D1" >/dev/null 2>&1 \
+  && ok "replace-desc: header, diff window and review channel survive the swap" \
+  || bad "replace-desc: something outside the description was damaged"
+[[ "$(grep -c 'multi-review-pr-desc' "${D1}.records")" == 2 ]] \
+  && ok "replace-desc: appends a new description record" || bad "replace-desc: record count wrong"
+
+# a third swap: the decoy heading planted by the second body must not have moved the window
+printf 'Round-three design.\n' > "${WORK}/d3.desc"
+bash "$SUT" replace-desc "$D1" "${WORK}/d3.desc" >/dev/null 2>&1
+[[ "$(grep -c '^## PR description' "$D1")" == 1 ]] && ! grep -q 'quarantines the copy' "$D1" \
+  && ! grep -q 'Round-two design.' "$D1" && grep -q 'Round-three design.' "$D1" \
+  && ok "replace-desc: a decoy '## PR description' inside the body does not move the window" \
+  || bad "replace-desc: the decoy heading captured the window"
+
+# --- an unchanged description is a no-op: no write, no new record ---
+sum0="$(shasum "$D1" | cut -d' ' -f1)"; n0="$(grep -c 'multi-review-pr-desc' "${D1}.records")"
+bash "$SUT" replace-desc "$D1" "${WORK}/d3.desc" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 0 && "$sum0" == "$(shasum "$D1" | cut -d' ' -f1)" && "$n0" == "$(grep -c 'multi-review-pr-desc' "${D1}.records")" ]] \
+  && ok "replace-desc: identical body is a no-op" || bad "replace-desc: identical body rewrote or re-recorded (rc=$rc)"
+
+# --- a hand-edited description is refused (exit 3), untouched, with a reason ---
+sed 's/^Round-three design\.$/Round-three design. (primary note)/' "$D1" > "${D1}.ed" && mv "${D1}.ed" "$D1"
+sum0="$(shasum "$D1" | cut -d' ' -f1)"
+err="$(bash "$SUT" replace-desc "$D1" "${WORK}/d2.desc" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 3 && "$sum0" == "$(shasum "$D1" | cut -d' ' -f1)" && "$err" == *"description"* ]] \
+  && bash "$SUT" diff-valid-lines "$D1" >/dev/null 2>&1 \
+  && ok "replace-desc: a hand-edited description is left alone with exit 3" \
+  || bad "replace-desc: hand-edited description clobbered or wrong status (rc=$rc err='${err:0:70}')"
+
+# --- a scratch seeded before the record existed is left alone too (migration) ---
+D0="${WORK}/desc0.md"
+bash "$SUT" seed "$D0" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+grep -v 'multi-review-pr-desc' "${D0}.records" > "${D0}.records.new" && mv "${D0}.records.new" "${D0}.records"
+sum0="$(shasum "$D0" | cut -d' ' -f1)"
+bash "$SUT" replace-desc "$D0" "${WORK}/d2.desc" >/dev/null 2>&1; rc=$?
+[[ $rc -eq 3 && "$sum0" == "$(shasum "$D0" | cut -d' ' -f1)" ]] \
+  && ok "replace-desc: no recorded description digest -> exit 3, untouched" \
+  || bad "replace-desc: wrote without a record to verify against (rc=$rc)"
+
+# --- refresh: the description follows the PR, and a hand-edited one is kept with a warning ---
+RB="${WORK}/rbin"; mkdir -p "$RB"
+cat > "${RB}/gh" <<STUBEOF
+#!/usr/bin/env bash
+case " \$* " in
+  *"pr diff"*)                 printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,2 @@\n+a\n+b\n'; exit 0 ;;
+  *"headRefOid,baseRefName"*)  printf 'HEAD2\tmain\n'; exit 0 ;;
+  *" headRefOid "*)            printf 'HEAD2\n'; exit 0 ;;
+  *" body "*)                  cat "${WORK}/gh.body"; exit 0 ;;
+esac
+exit 1
+STUBEOF
+chmod +x "${RB}/gh"
+R85="${WORK}/refresh85.md"
+bash "$SUT" seed "$R85" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+cp "${WORK}/d2.desc" "${WORK}/gh.body"
+err="$(PATH="${RB}:$PATH" bash "$SUT" refresh "$R85" 2 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 ]] && grep -q 'Round-two design.' "$R85" && ! grep -q 'Round-one design.' "$R85" && grep -qF '+b' "$R85" \
+  && ok "refresh: re-fetches the PR description alongside the diff (issue #85)" \
+  || bad "refresh: description still describes the ingested design (rc=$rc err='${err:0:70}')"
+# the primary annotates the description; the author changes it again upstream
+sed 's/^Round-two design\.$/Round-two design. (primary note)/' "$R85" > "${R85}.ed" && mv "${R85}.ed" "$R85"
+cp "${WORK}/d3.desc" "${WORK}/gh.body"
+nd0="$(grep -c 'multi-review-pr-diff' "${R85}.records")"
+err="$(PATH="${RB}:$PATH" bash "$SUT" refresh "$R85" 3 2>&1 >/dev/null)"; rc=$?
+[[ $rc -eq 0 && "$err" == *"description"*"not refreshed"* ]] && grep -q '(primary note)' "$R85" \
+  && ! grep -q 'Round-three design.' "$R85" && (( $(grep -c 'multi-review-pr-diff' "${R85}.records") == nd0 + 1 )) \
+  && ok "refresh: a hand-edited description is kept, the diff still refreshes, and the skip is said" \
+  || bad "refresh: hand-edited description handling wrong (rc=$rc err='${err:0:80}')"
+# --- the description splice propagates a failing component, like the diff splice does ---
+DSP="${WORK}/dsplice.md"
+bash "$SUT" seed "$DSP" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+cp "$DSP" "${WORK}/dsplice.before"
+PATH="${HB}:$PATH" bash "$SUT" replace-desc "$DSP" "${WORK}/d2.desc" >/dev/null 2>&1 \
+  && bad "desc splice: a failing head still exited 0 (truncated document committed)" \
+  || ok "desc splice: a failing component fails the whole write"
+cmp -s "$DSP" "${WORK}/dsplice.before" \
+  && ok "desc splice: the refused write left the document byte-identical" \
+  || bad "desc splice: the failed splice was committed anyway"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
