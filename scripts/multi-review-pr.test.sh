@@ -1561,6 +1561,56 @@ err="$(PATH="${RB}:$PATH" bash "$SUT" refresh "$R85" 3 2>&1 >/dev/null)"; rc=$?
   && ! grep -q 'Round-three design.' "$R85" && (( $(grep -c 'multi-review-pr-diff' "${R85}.records") == nd0 + 1 )) \
   && ok "refresh: a hand-edited description is kept, the diff still refreshes, and the skip is said" \
   || bad "refresh: hand-edited description handling wrong (rc=$rc err='${err:0:80}')"
+# --- codex-rd1-r1: the body must be fetched INSIDE the head confirmation window ---
+# `refresh` confirms the head after fetching the diff so the pair is consistent. The body was
+# fetched AFTER that confirmation, so a push landing in the gap paired a pre-push diff with a
+# post-push description — the very #85 drift this feature closes for the diff. This stub pushes
+# the moment the confirmation is served: before the fix the body request is served post-push.
+PB="${WORK}/pbin"; mkdir -p "$PB"
+printf 'Pre-push design.\n'  > "${WORK}/gh.bodyA"
+printf 'Post-push design.\n' > "${WORK}/gh.bodyB"
+: > "${WORK}/pushed"
+cat > "${PB}/gh" <<STUBEOF
+#!/usr/bin/env bash
+case " \$* " in
+  *"pr diff"*)                 printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,2 @@\n+a\n+b\n'; exit 0 ;;
+  *"headRefOid,baseRefName"*)  printf 'HEADA\tmain\n'; exit 0 ;;
+  *" headRefOid "*)            printf 'HEADA\n' && printf 'yes' > "${WORK}/pushed"; exit 0 ;;
+  *" body "*)                  if [[ -s "${WORK}/pushed" ]]; then cat "${WORK}/gh.bodyB"; else cat "${WORK}/gh.bodyA"; fi; exit 0 ;;
+esac
+exit 1
+STUBEOF
+chmod +x "${PB}/gh"
+RCW="${WORK}/confirmwindow.md"
+bash "$SUT" seed "$RCW" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+PATH="${PB}:$PATH" bash "$SUT" refresh "$RCW" 2 >/dev/null 2>&1; rc=$?
+[[ $rc -eq 0 ]] && grep -q 'Pre-push design\.' "$RCW" && ! grep -q 'Post-push design\.' "$RCW" \
+  && ok "refresh: the description is fetched inside the head confirmation window" \
+  || bad "refresh: a push between the confirm and the body fetch paired a stale diff with a fresh description (rc=$rc)"
+
+# The confirmation itself had no assertion: deleting the head-moved guard left the whole suite
+# green, which is the "reads correctly but cannot fail" shape the mutation table exists to catch.
+# The guard now covers the description read too, so it is pinned here.
+MB2="${WORK}/mbin"; mkdir -p "$MB2"
+cat > "${MB2}/gh" <<STUBEOF
+#!/usr/bin/env bash
+case " \$* " in
+  *"pr diff"*)                 printf 'diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,2 @@\n+a\n+b\n'; exit 0 ;;
+  *"headRefOid,baseRefName"*)  printf 'HEADA\tmain\n'; exit 0 ;;
+  *" headRefOid "*)            printf 'HEADB\n'; exit 0 ;;
+  *" body "*)                  cat "${WORK}/gh.bodyB"; exit 0 ;;
+esac
+exit 1
+STUBEOF
+chmod +x "${MB2}/gh"
+RMV="${WORK}/headmoved.md"
+bash "$SUT" seed "$RMV" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null
+cp "$RMV" "${WORK}/headmoved.before"
+err="$(PATH="${MB2}:$PATH" bash "$SUT" refresh "$RMV" 2 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 && "$err" == *"PR moved during refresh"* ]] && cmp -s "$RMV" "${WORK}/headmoved.before" \
+  && ok "refresh: a head that moved during the fetch refuses and leaves the scratch untouched" \
+  || bad "refresh: a moved head was accepted or the scratch was mutated (rc=$rc err='${err:0:70}')"
+
 # --- the description splice propagates a failing component, like the diff splice does ---
 DSP="${WORK}/dsplice.md"
 bash "$SUT" seed "$DSP" T 'https://github.com/o/r/pull/85' a b "${WORK}/d1.desc" "${WORK}/d1.diff" >/dev/null

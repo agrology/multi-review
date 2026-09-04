@@ -646,16 +646,22 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
   local tmpd; tmpd="$(mktemp -d)" || die "mktemp failed" 1
   # shellcheck disable=SC2064
   trap "rm -rf '$tmpd'" RETURN
-  # Resolve the head BEFORE and AFTER fetching the diff. `gh pr diff` and the head query are two
-  # separate GitHub reads; a push in between yields the old diff recorded against the new sha, so
+  # Resolve the head BEFORE and AFTER fetching the PR. The diff, the body and the head query are
+  # separate GitHub reads; a push in between yields old content recorded against the new sha, so
   # later anchors would be validated against a revision the diff never showed (codex-rd1-r1).
   # Refusing is correct here: the caller re-runs and gets a consistent pair.
+  # EVERY content read sits INSIDE the confirmation window. Confirming after the diff but before
+  # the body left the body outside it, so a push in that gap paired a pre-push diff with a
+  # post-push description — the #85 drift this command closes, reopened for the description half
+  # (codex-rd1-r1, PR #131). Fetch first, confirm last.
   local hb head mb head_after
   hb="$(_head_and_merge_base "${o}/${r}" "$n" "$n")"
   IFS='|' read -r head mb <<< "$hb"
   [[ -n "$head" ]] || die "could not resolve the PR head sha for ${o}/${r}#${n}" 1
   gh pr diff "$n" --repo "${o}/${r}" > "${tmpd}/diff" \
     || die "gh pr diff failed for ${o}/${r}#${n}" 1
+  gh pr view "$n" --repo "${o}/${r}" --json body --jq '.body' > "${tmpd}/desc" \
+    || die "gh pr view (body) failed for ${o}/${r}#${n}" 1
   head_after="$(gh pr view "$n" --repo "${o}/${r}" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
   # Fail CLOSED: an unreadable confirm cannot distinguish "unchanged" from "moved", and skipping
   # the check on error would silently drop the guard the comment claims (fable-rd2-r5).
@@ -663,8 +669,6 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
     || die "could not re-confirm the PR head after fetching the diff — re-run refresh for round ${round}" 1
   [[ "$head_after" == "$head" ]] \
     || die "the PR moved during refresh (${head} -> ${head_after}) — re-run refresh for round ${round}" 1
-  gh pr view "$n" --repo "${o}/${r}" --json body --jq '.body' > "${tmpd}/desc" \
-    || die "gh pr view (body) failed for ${o}/${r}#${n}" 1
   # Order matters (fable-rd1-r5). Anchors MUST be captured while the old diff is still present.
   # The head record is written LAST, after the swap succeeds: it is immutable, so writing it
   # first would wedge the round on any later failure — re-running refresh would die on the

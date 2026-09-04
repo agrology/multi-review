@@ -2936,6 +2936,15 @@ mutations() {
     '    echo "multi-review-pr: PR description not refreshed for round ${round} — reconcile it against the PR by hand before seeding the copies" >&2' \
     '    :'
 
+  # The confirmation window. Every content read — diff AND body — now happens before it, so losing
+  # this guard re-admits both the stale-diff pairing it was added for and the post-push description
+  # (codex-rd1-r1, PR #131). It had NO entry and no covering assertion: deleted, the whole suite
+  # stayed green, which is exactly the shape this table exists to catch.
+  mutate 'pr/refresh-head-moved-refused' 'scripts/multi-review-pr.sh' replace \
+    'refresh: a moved head was accepted or the scratch was mutated' 'multi-review-pr.test.sh' \
+    '  [[ "$head_after" == "$head" ]] \' \
+    '  [[ -n "$head" ]] \'
+
   # The description window is bounded BELOW by the verified diff window, so an unverifiable diff
   # must refuse here too. Deliberately redundant: with no diff span, `bstart` is empty, the heading
   # scan's `NR < lim` is a string compare against "" that never holds, and the "no heading" refusal
