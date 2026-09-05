@@ -1246,6 +1246,34 @@ mutations() {
     'floor exemption broke' 'multi-review-scope.test.sh' \
     '  if (( full_b >= LOCAL_GUARD_FLOOR_B )); then' \
     '  if true; then'
+
+  # ---- bounded context, not the whole enclosing unit (issue #86) ------------------------------
+  # Both entries mutate BACK to a rule that shipped and lost, so each asserts the specific
+  # regression rather than a hypothetical one.
+
+  # local-copy's context window. Collapsed to -U0 the copy is a bare hunk list: cheaper, and
+  # unreviewable — the reviewer cannot see what the changed line sits in. The window is the whole
+  # reason whole-region text could be dropped, so losing it silently guts the trade.
+  mutate 'scope/local-context-window' 'scripts/multi-review-scope.sh' replace \
+    'no surrounding context' 'multi-review-scope.test.sh' \
+    '  diff -U20 -L "round $((round - 1))" -L "round $round" "$tmp/prev" "$tmp/curr" > "$tmp/diff"' \
+    '  diff -U0 -L "round $((round - 1))" -L "round $round" "$tmp/prev" "$tmp/curr" > "$tmp/diff"'
+
+  # pr-copy's context window, mutated back to the -W rule this issue retired. Restored, a one-line
+  # push inside a long function costs the whole function again — 6.32x the whole-PR payload on the
+  # round that reported it — and the never-worse guard refuses the round.
+  mutate 'scope/pr-context-bounded' 'scripts/multi-review-scope.sh' replace \
+    'whole-function context is back' 'multi-review-scope.test.sh' \
+    '  git -C "$root" diff --no-ext-diff --no-textconv -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \' \
+    '  git -C "$root" diff --no-ext-diff --no-textconv -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \'
+
+  # The unchanged-region notice. It is the only thing telling the reviewer which regions did NOT
+  # change, now that their text is no longer emitted; a bounded window means the copy cannot show
+  # that by construction any more.
+  mutate 'scope/local-unchanged-notice' 'scripts/multi-review-scope.sh' replace \
+    'untouched not named' 'multi-review-scope.test.sh' \
+    "  [[ -n \"\$un\" ]] && printf '> Unchanged this round: %s.\\n' \"\$un\"" \
+    "  [[ -n \"\$un\" ]] && printf '> Unchanged: %s.\\n' \"\$un\""
   # ---- identity mapping must not discard a round over a spelling ------------------------------
   # Both entries mutate BACK to the pattern that shipped, so each asserts the specific miss.
 

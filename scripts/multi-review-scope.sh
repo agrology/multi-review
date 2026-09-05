@@ -3,12 +3,13 @@
 # Keeps the cost of a re-fan proportional to what CHANGED, not to the size of the artifact.
 # Subcommands:
 #   local-copy --round <N> --max <M> --prev <baseline.rd(N-1)> --curr <baseline.rdN>
-#       -> scoped copy of a local doc: the delta plus the full text of every region it touches
+#       -> scoped copy of a local doc: the delta as a `diff -U20` bounded context window, plus a
+#          notice naming the regions that did not change (whole-region text: see #86)
 #   pr-copy    --round <N> --max <M> --since <sha> --merge-base-prev <sha> \
 #              --head <sha> --merge-base <sha> <repo-root>
 #       -> scoped copy of a PR round: what the author pushed since the previous round, as a
-#          `git diff -W -U10` delta — hunks extended to their enclosing function, NO whole-file
-#          text (emitting each touched file in full cost 48-412% of the round it replaced)
+#          `git diff -U10` delta — a bounded context window, NO whole-file text and no
+#          whole-function text (both cost more than the round they replaced; see #86)
 #
 # Both print a complete copy on stdout, and both use:
 #       exit 3 = cannot scope; caller falls back to the full artifact and relays the reason
@@ -149,30 +150,26 @@ _emit_names() {
         !($1 in t) { printf "%s%s", sep, $3; sep = ", " }
       ' "$tmp/regions.curr")"
   rm="$(_removed "$tmp" | awk '{ printf "%s%s", sep, $0; sep = ", " }')"
-  [[ -n "$un" ]] && printf '> Unchanged this round, not shown: %s.\n' "$un"
+  [[ -n "$un" ]] && printf '> Unchanged this round: %s.\n' "$un"
   [[ -n "$rm" ]] && printf '> Removed this round, no longer present: %s.\n' "$rm"
   return 0
 }
 
 _emit_diff() {
   local tmp="$1" round="$2" fence
-  diff -U0 -L "round $((round - 1))" -L "round $round" "$tmp/prev" "$tmp/curr" > "$tmp/diff"
+  # -U20 is the context window. It replaces the whole-text emission of every touched region
+  # (issue #86): that made the copy cost the size of what the round TOUCHED rather than the size of
+  # what it CHANGED, and on four real transitions of a retained review it came out 1.03x-1.26x the
+  # artifact it replaced — the never-worse guard refused every one. Splitting regions finer does not
+  # rescue it: even at `###` the touched regions covered 60-91% of the document, because the primary
+  # genuinely edits across the whole doc between rounds. 20 lines measured 0.32x-0.73x on the same
+  # four; -U30 reached 0.82x on the worst of them, which is too thin a margin to spend.
+  diff -U20 -L "round $((round - 1))" -L "round $round" "$tmp/prev" "$tmp/curr" > "$tmp/diff"
   fence="$(_fence_for "$tmp/diff")"
   printf '%sdiff\n' "$fence"
   cat "$tmp/diff"
   printf '%s\n' "$fence"
   return 0
-}
-
-_emit_regions() {
-  local tmp="$1"
-  awk -F'\t' -v tf="$tmp/touched" '
-    BEGIN { while ((getline ln < tf) > 0) t[ln] = 1 }
-    ($1 in t) { print $1 "\t" $2 }
-  ' "$tmp/regions.curr" | while IFS=$'\t' read -r s e; do
-    sed -n "${s},${e}p" "$tmp/curr"
-    echo
-  done
 }
 
 # Never-worse guard. A scoped copy that costs at least as much as the artifact it replaces has no
@@ -252,20 +249,20 @@ cmd_local_copy() {
   # measure the finished copy and still emit NOTHING when it refuses. A caller redirecting stdout
   # (`... > "<doc>.<id>"`) must never receive a copy the guard rejected.
   #
-  # The whole composition stays inside ONE redirected block, which preserves the ordering coupling
-  # this sequence depends on: _emit_names builds regions.curr/touched as a side effect that
-  # _emit_regions later consumes (#41), so the calls cannot be reordered or split apart.
+  # The whole composition stays inside ONE redirected block. _emit_names builds regions.curr and
+  # touched as a side effect; nothing downstream consumes them any more (the whole-region emission
+  # they fed was retired in #86), but the notice still needs them, so _emit_names owns them.
   {
     printf '%s\n\n' "$h1"
     printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
     printf '<!-- multi-review-mode: star -->\n\n'
     printf '> SCOPED ROUND. You are reviewing what changed since round %s, not the whole document.\n' \
       "$((round - 1))"
+    printf '> Changed hunks are shown with surrounding context, not the full text of the document.\n'
     _emit_names "$tmp"
     printf '\n## Changes since round %s\n\n' "$((round - 1))"
     _emit_diff "$tmp" "$round"
     printf '\n'
-    _emit_regions "$tmp"
     printf '## Review\n\n'
   } > "$tmp/out"
 
@@ -352,11 +349,16 @@ cmd_pr_copy() {
   local tmp; tmp="$(mktemp -d)" || die "cannot create temp dir" 1
   SCOPE_TMP="$tmp"
 
-  # -W extends each hunk to its enclosing function; -U10 is the floor where git finds no funcname
-  # boundary, so this is never worse than fixed context. Whole-file text was the pre-amendment
-  # rule (spec §11 Q2) and cost 48-412% of the round it replaced: its cost scaled with the SIZE OF
-  # THE FILES TOUCHED rather than with the size of the change, which is the dependency §2 of the
-  # spec exists to remove.
+  # -U10 is a bounded context window. `-W` (extend each hunk to its enclosing function) was the
+  # previous rule and is RETIRED (issue #86): the claim that it "is never worse than fixed context"
+  # was false, because the floor it could not go below was the size of the FUNCTION, not of the
+  # change. Measured on the two rounds that reported it: PR #84 round 2 cost 112,914 B against a
+  # 17,860 B whole-PR payload (6.32x), and #113 round 2 cost 227,096 B against 151,697 B (1.50x) —
+  # the never-worse guard refused both and every round after the first ran on full copies. The same
+  # deltas under a bare -U10 come to 0.99x and 0.11x. This is the same failure whole-FILE text had
+  # (spec §11 Q2, 48-412%), one nesting level in: cost scaling with the size of the unit TOUCHED
+  # rather than with the size of the change, which is the dependency §2 of the spec exists to
+  # remove. -U20 was measured too and is worse (1.20x on #84), so the window stays at 10.
   # --no-ext-diff defeats `diff.external`; --no-textconv defeats a textconv filter.
   # `-a`/--text was added here for fable-rd2-r4 (an author-controlled .gitattributes `-diff`
   # hides a push behind "Binary files ... differ") and is REVERTED: it cost more than it bought.
@@ -368,7 +370,7 @@ cmd_pr_copy() {
   # `git diff` is porcelain and honours `diff.external`, so a difftastic/delta
   # user would otherwise have the driver's output shipped as "what the author pushed" — exit 0,
   # not a unified diff, and the size guard comparing driver output. Reproduced.
-  git -C "$root" diff --no-ext-diff --no-textconv -W -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
+  git -C "$root" diff --no-ext-diff --no-textconv -U10 "$since" "$head" > "$tmp/diff" 2>/dev/null \
     || cannot "git diff failed between $since and $head"
   [[ -s "$tmp/diff" ]] || cannot "empty delta — nothing was pushed since round $((round - 1))"
 
