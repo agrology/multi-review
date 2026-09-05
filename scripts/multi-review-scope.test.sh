@@ -287,7 +287,7 @@ bash "$SUT" pr-copy --round 2 --max 5 --since "$H2" --merge-base-prev "$BASE" \
   --head "$H2" --merge-base "$BASE" "$GR" >/dev/null 2>&1
 [[ $? -eq 3 ]] && ok "pr-copy: exit 3 on an empty delta" || bad "empty delta not exit 3"
 
-# --- Q2: the copy carries the DELTA WITH FUNCTION CONTEXT, and no whole-file text ---
+# --- Q2/#86: the copy carries the DELTA WITH A BOUNDED WINDOW, and no whole-file text ---
 # Fixture geometry is load-bearing and two obvious versions are vacuous:
 #   * git writes the enclosing funcname into the @@ header with OR without -W, so asserting on
 #     "target_fn" passes under a bare -U10 and pins nothing. Assert on a CONTEXT line at the top
@@ -308,10 +308,11 @@ BIG1="$(cd "$GR" && git rev-parse HEAD)"
   && git commit -qam changebig ) >/dev/null 2>&1
 BIG2="$(cd "$GR" && git rev-parse HEAD)"
 
-# Guard the fixture itself: if -U10 already reaches inner_pad_1, the -W assertion below is vacuous.
+# Guard the fixture itself: the shipped -U10 must NOT reach inner_pad_1, or the bounded-context
+# assertion below asserts an absence that was never in reach and cannot fail.
 u10=$(cd "$GR" && git diff -U10 "$BIG1" "$BIG2" | grep -c 'inner_pad_1$')
-[[ "$u10" -eq 0 ]] && ok "fixture: a bare -U10 cannot reach inner_pad_1 (so the -W test bites)" \
-  || bad "fixture does not distinguish -W from -U10 (inner_pad_1 already in -U10)"
+[[ "$u10" -eq 0 ]] && ok "fixture: the shipped -U10 cannot reach inner_pad_1 (so the bounds test bites)" \
+  || bad "fixture cannot distinguish bounded from whole-function context (inner_pad_1 already in -U10)"
 
 out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$BIG1" --merge-base-prev "$BASE" \
         --head "$BIG2" --merge-base "$BASE" "$GR" 2>/dev/null)"
@@ -326,8 +327,11 @@ grep -q '^### big\.sh$' <<<"$out" && bad "pr-copy still emits per-file text head
 # lines above the edit, so its ABSENCE is what proves the context window is bounded.
 grep -q 'inner_pad_1$' <<<"$out" && bad "whole-function context is back — the hunk reached inner_pad_1" \
   || ok "pr-copy: context is bounded, not extended to the enclosing function"
-grep -q 'head_pad_1$' <<<"$out" && bad "-W over-reached into the preceding function" \
-  || ok "pr-copy: function context stops at the enclosing function"
+# The former companion assertion on head_pad_1 (line 2) is GONE, not merely relabelled: the
+# fixture's delta is a single hunk, so context is one contiguous range, and reaching line 2 is
+# impossible without first covering inner_pad_1 (line 25). It was therefore strictly implied by the
+# assertion above — it could only fail in cases that one already fails — while its label went on
+# describing `-W` over-reach on a path that no longer has `-W`.
 
 # --- diff.external must NOT reach the copy: git diff is porcelain and honours it, so a
 # difftastic/delta user would otherwise be shipped driver output as "what the author pushed",

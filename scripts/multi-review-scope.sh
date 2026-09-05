@@ -4,7 +4,8 @@
 # Subcommands:
 #   local-copy --round <N> --max <M> --prev <baseline.rd(N-1)> --curr <baseline.rdN>
 #       -> scoped copy of a local doc: the delta as a `diff -U20` bounded context window, plus a
-#          notice naming the regions that did not change (whole-region text: see #86)
+#          notice naming the regions that did not change — NO whole-region text (emitting every
+#          touched region in full cost 1.03-1.26x the artifact it replaced; see #86)
 #   pr-copy    --round <N> --max <M> --since <sha> --merge-base-prev <sha> \
 #              --head <sha> --merge-base <sha> <repo-root>
 #       -> scoped copy of a PR round: what the author pushed since the previous round, as a
@@ -249,9 +250,14 @@ cmd_local_copy() {
   # measure the finished copy and still emit NOTHING when it refuses. A caller redirecting stdout
   # (`... > "<doc>.<id>"`) must never receive a copy the guard rejected.
   #
-  # The whole composition stays inside ONE redirected block. _emit_names builds regions.curr and
-  # touched as a side effect; nothing downstream consumes them any more (the whole-region emission
-  # they fed was retired in #86), but the notice still needs them, so _emit_names owns them.
+  # The whole composition stays inside ONE redirected block for the guard reason stated above: the
+  # copy is measured whole, and must reach stdout only if it clears.
+  #
+  # It is no longer held together by an ordering coupling. Until #86, _emit_names built
+  # regions.curr/touched as a side effect that a LATER _emit_regions call consumed, so the two
+  # could not be reordered or split apart (#41). With whole-region emission retired, _emit_names is
+  # the only consumer of what it builds, and that constraint is gone — the block is now merely
+  # convenient, not load-bearing in that second way.
   {
     printf '%s\n\n' "$h1"
     printf '<!-- multi-review: awaiting-reviewer · round %s/%s -->\n' "$round" "$max"
