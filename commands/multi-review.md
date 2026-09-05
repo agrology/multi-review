@@ -402,11 +402,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      Exit 3 here is common and expected — a rebase, a force-push, a forward merge of the base
      branch, or an unchanged head all trip it. Fall back exactly as below and relay the reason.
 
-     The copy carries the delta with **function context** (`git diff -W -U10`) and **no whole-file
-     text**: hunks extend to their enclosing function, which is where the invariant a fix depends
-     on actually lives. Emitting each touched file in full was the original rule and cost 48–412%
-     of the round it replaced, because that scales with the size of the files touched rather than
-     with the size of the change.
+     The copy carries the delta with a **bounded context window** (`git diff -U10`) and **no
+     whole-file text**. Two earlier rules both failed the same way and are retired: emitting each
+     touched file in full cost 48–412% of the round it replaced, and extending each hunk to its
+     enclosing function (`-W`) cost 6.32× on a doc-heavy round and 1.50× on a bash-heavy one. Both
+     scale with the size of the unit *touched* rather than with the size of the *change*, which is
+     the dependency scoping exists to remove. A fixed window does not.
 
      Either way, `local-copy`/`pr-copy` writes the whole copy, header and marker included — do
      NOT also rewrite the header on this path.

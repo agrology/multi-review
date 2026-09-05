@@ -29,8 +29,10 @@ grep -q '^<!-- multi-review-mode: star -->$' <<<"$out" && ok "bare mode hint" ||
 [[ "$(grep -c '<!-- multi-review:' <<<"$out")" == "1" ]] && ok "exactly one status marker" || bad "dup marker (D-a)"
 grep -q '^## Changes since round 1$' <<<"$out" && ok "diff heading" || bad "no diff heading"
 grep -q 'alpha CHANGED' <<<"$out" && ok "emits touched region" || bad "region text missing"
-grep -q '^> Unchanged this round, not shown: Beta\.$' <<<"$out" && ok "names untouched region" || bad "untouched not named"
-grep -q 'beta one' <<<"$out" && bad "untouched region leaked" || ok "untouched region omitted"
+grep -q '^> Unchanged this round: Beta\.$' <<<"$out" && ok "names untouched region" || bad "untouched not named"
+# RETIRED (#86): "the untouched region's text is absent" was true only while whole regions were
+# emitted. A bounded context window can spill across a heading into a region that did not change,
+# so the copy no longer promises absence — and the notice no longer claims it (asserted in Phase C).
 [[ "$(grep -v '^$' <<<"$out" | tail -1)" == "## Review" ]] && ok "ends with an empty ## Review" || bad "## Review not last"
 
 bash "$SUT" local-copy --round 2 --max 5 --prev "${WORK}/nope.md" --curr "$C" >/dev/null 2>&1
@@ -46,35 +48,35 @@ P="$(mkbase prev3.md '## Alpha' '' 'alpha one' '' '```' '## NotAHeading' '```' '
 C="$(mkbase curr3.md '## Alpha' '' 'alpha TWO' '' '```' '## NotAHeading' '```' '' '## Beta' '' 'b')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
 grep -q 'NotAHeading' <<<"$out" && ok "fenced heading stays in region" || bad "fenced content lost"
-grep -q 'Unchanged this round, not shown:.*NotAHeading' <<<"$out" && bad "phantom region (backticks)" || ok "no phantom (backticks)"
+grep -q 'Unchanged this round:.*NotAHeading' <<<"$out" && bad "phantom region (backticks)" || ok "no phantom (backticks)"
 
 P="$(mkbase prev4.md '## Alpha' '' 'alpha one' '' '~~~' '## TildeHeading' '~~~' '' '## Beta' '' 'b')"
 C="$(mkbase curr4.md '## Alpha' '' 'alpha TWO' '' '~~~' '## TildeHeading' '~~~' '' '## Beta' '' 'b')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-grep -q 'Unchanged this round, not shown:.*TildeHeading' <<<"$out" && bad "phantom region (tildes)" || ok "no phantom (tildes)"
+grep -q 'Unchanged this round:.*TildeHeading' <<<"$out" && bad "phantom region (tildes)" || ok "no phantom (tildes)"
 
 P="$(mkbase prev5.md 'Status: draft.' '' '## Alpha' '' 'a')"
 C="$(mkbase curr5.md 'Status: FINAL.' '' '## Alpha' '' 'a')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
 grep -q 'Status: FINAL\.' <<<"$out" && ok "preamble-only change emitted" || bad "preamble change vanished"
-grep -q '^> Unchanged this round, not shown: Alpha\.$' <<<"$out" && ok "sibling named unchanged" || bad "sibling not named"
+grep -q '^> Unchanged this round: Alpha\.$' <<<"$out" && ok "sibling named unchanged" || bad "sibling not named"
 
 P="$(mkbase prev6.md 'Status: draft.' '' '## Alpha' '' 'a one')"
 C="$(mkbase curr6.md 'Status: draft.' '' '## Alpha' '' 'a TWO')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-grep -q '^> Unchanged this round, not shown: preamble\.$' <<<"$out" && ok "untouched preamble named" || bad "untouched preamble not named"
+grep -q '^> Unchanged this round: preamble\.$' <<<"$out" && ok "untouched preamble named" || bad "untouched preamble not named"
 
 P="$(mkbase prev7.md '## Alpha' '' 'a one' '' '## Beta' '' 'b one' '' '## Gamma' '' 'g one')"
 C="$(mkbase curr7.md '## Alpha' '' 'a TWO' '' '## Beta' '' 'b one' '' '## Gamma' '' 'g TWO')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
 grep -q 'a TWO' <<<"$out" && grep -q 'g TWO' <<<"$out" && ok "both changed regions emitted" || bad "multi-region incomplete"
-grep -q '^> Unchanged this round, not shown: Beta\.$' <<<"$out" && ok "only untouched named" || bad "unchanged list wrong"
+grep -q '^> Unchanged this round: Beta\.$' <<<"$out" && ok "only untouched named" || bad "unchanged list wrong"
 
 P="$(mkbase prev8.md '## Alpha' '' 'a one' '' '## Doomed' '' 'gone soon')"
 C="$(mkbase curr8.md '## Alpha' '' 'a one')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
 grep -q '^> Removed this round, no longer present: Doomed\.$' <<<"$out" && ok "removed region named" || bad "removed not named"
-grep -q 'Unchanged this round, not shown:.*Doomed' <<<"$out" && bad "removed claimed unchanged" || ok "removed not claimed unchanged"
+grep -q 'Unchanged this round:.*Doomed' <<<"$out" && bad "removed claimed unchanged" || ok "removed not claimed unchanged"
 
 P9="$(mkbase prev9.md '## Alpha' '' 'a one')"
 C9="$(mkbase curr9.md '## Alpha' '' 'a TWO')"
@@ -103,25 +105,27 @@ grep -q 'Unchanged this round' <<<"$out" && bad "rewrite names unchanged" || ok 
 P="$(mkbase prevB.md '## Alpha' '' 'keep  double  spaces' '' '## Beta' '' 'b')"
 C="$(mkbase currB.md '## Alpha' '' 'keep  double  spaces' 'added line' '' '## Beta' '' 'b')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-grep -q '^keep  double  spaces$' <<<"$out" && ok "region text byte-identical" || bad "region text altered"
+# Emitted text is now diff lines, so it carries a one-character context/add marker. What the
+# assertion pins is unchanged: the text after that marker is byte-identical, doubled spaces and all.
+grep -q '^[ +]keep  double  spaces$' <<<"$out" && ok "region text byte-identical" || bad "region text altered"
 
 # --- an H1 inside a preamble fence survives (gemini-rd1-r1, fable-rd1-r2) ---
 P="$(mkbase prevC.md 'Intro prose.' '' '```bash' '# run the thing' 'do_it' '```' '' '## Alpha' '' 'a one')"
 C="$(mkbase currC.md 'Intro prose.' '' '```bash' '# run the thing' 'do_it' '```' '' '## Alpha' '' 'a TWO')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-grep -q '^> Unchanged this round, not shown: preamble\.$' <<<"$out" \
+grep -q '^> Unchanged this round: preamble\.$' <<<"$out" \
   && ok "header strip: bounded (fenced H1 kept in preamble region)" || bad "preamble mangled"
 P="$(mkbase prevD.md 'Intro.' '' '```bash' '# keep me' '```' '' '## Alpha' '' 'a')"
 C="$(mkbase currD.md 'Intro CHANGED.' '' '```bash' '# keep me' '```' '' '## Alpha' '' 'a')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-grep -q '^# keep me$' <<<"$out" \
+grep -q '^[ +]# keep me$' <<<"$out" \
   && ok "header strip: fenced H1 emitted verbatim" || bad "fenced H1 stripped (fable-rd1-r2)"
 
 # --- a body with NO "## " section keeps its content H1s (gemini-rd1-r1) ---
 P="$(mkbase prevE.md '# Content Heading' '' 'body one')"
 C="$(mkbase currE.md '# Content Heading' '' 'body TWO')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-[[ "$(grep -c '^# Content Heading$' <<<"$out")" == "1" ]] \
+[[ "$(grep -c '^[ +]# Content Heading$' <<<"$out")" == "1" ]] \
   && ok "header strip: content H1 kept when body has no H2" || bad "content H1 dropped (gemini-rd1-r1)"
 
 # --- duplicate heading names are distinct regions (codex-rd1-r1, fable-rd1-r3) ---
@@ -129,8 +133,9 @@ P="$(mkbase prevF.md '## Details' '' 'first one' '' '## Other' '' 'o' '' '## Det
 C="$(mkbase currF.md '## Details' '' 'first CHANGED' '' '## Other' '' 'o' '' '## Details' '' 'second one')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
 grep -q 'first CHANGED' <<<"$out" && ok "dup names: changed duplicate emitted" || bad "changed dup missing"
-grep -q 'second one' <<<"$out" \
-  && bad "untouched duplicate leaked (codex-rd1-r1)" || ok "dup names: untouched duplicate omitted"
+# RETIRED (#86), same reason as the Beta absence assertion above: bounded context may show an
+# untouched duplicate's text. What still matters — that duplicates are DISTINCT regions and only
+# the changed one counts as touched — is pinned by the unchanged-list and removed-list assertions.
 
 # --- deleting one of two same-named regions reports it removed (fable-rd1-r3) ---
 P="$(mkbase prevG.md '## Details' '' 'first' '' '## Details' '' 'second')"
@@ -165,7 +170,7 @@ after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'tmp.*' 2>/dev/null | 
 P="$(mkbase prevJ.md '## Alpha' '' 'a one' '' '   ## Indented' '' 'i one')"
 C="$(mkbase currJ.md '## Alpha' '' 'a TWO' '' '   ## Indented' '' 'i one')"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-grep -q 'Unchanged this round, not shown:.*Indented' <<<"$out" \
+grep -q 'Unchanged this round:.*Indented' <<<"$out" \
   && ok "indent: up to 3 spaces still opens a region (CommonMark)" || bad "indented heading not a region"
 
 # --- a FENCED "## Review" after the real one does not mis-truncate the body (fable-rd2-r7) ---
@@ -187,7 +192,7 @@ for f in "$PL" "$CL"; do
 done
 perl -pi -e 's/alpha PLACEHOLDER/alpha one/' "$PL"; perl -pi -e 's/alpha PLACEHOLDER/alpha TWO/' "$CL"
 out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$PL" --curr "$CL" 2>/dev/null)"
-grep -q 'Unchanged this round, not shown:.*Review' <<<"$out" \
+grep -q 'Unchanged this round:.*Review' <<<"$out" \
   && bad "indented ## Review became a region (gemini-rd2-r3)" || ok "truncation: indented ## Review truncates"
 
 # --- _h1 ignores a "# " line inside a fence (gemini-rd2-r1) ---
@@ -201,12 +206,15 @@ out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$PM2" --curr "$CM2" 2>/d
 [[ "$(head -1 <<<"$out")" == "# Real Title" ]] \
   && ok "_h1: fenced '# ' is not the title" || bad "_h1 took a fenced comment (gemini-rd2-r1)"
 
-# --- the emitted diff shows no line from a region declared "not shown" (fable-rd2-r3) ---
-P="$(mkbase prevN.md '## Alpha' '' 'a one' '' '## Beta' '' 'b one')"
-C="$(mkbase currN.md '## Alpha' '' 'a TWO' '' '## Beta' '' 'b one')"
-out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P" --curr "$C" 2>/dev/null)"
-grep -q '## Beta' <<<"$(awk '/^````diff$/,/^````$/' <<<"$out")" \
-  && bad "diff leaks an untouched region heading (fable-rd2-r3)" || ok "diff: no untouched-region context"
+# RETIRED (#86): fable-rd2-r3 asserted that the diff shows no line from a region declared "not
+# shown". The copy no longer makes that claim, so there is nothing left to violate.
+#
+# It was also DEAD on arrival and never could have failed: it scanned between four-backtick fences
+# (`^````diff$`), but `_fence_for` emits three backticks for a fixture containing none, so the awk
+# range matched nothing and the grep ran against an empty string. Verified against the unmodified
+# script before this change, not inferred. What it meant to protect — that context does not run
+# away from the hunk — is now pinned positively, and non-vacuously, by the bounded-context
+# assertions in Phase C (local-copy `pad50`) and Phase B (pr-copy `fn_pad_400`).
 
 # --- removed regions are listed in document order (gemini-rd2-r2, fable-rd2-r9) ---
 P="$(mkbase prevO.md '## Zeta' '' 'z' '' '## Alpha' '' 'a' '' '## Mid' '' 'm')"
@@ -279,7 +287,7 @@ bash "$SUT" pr-copy --round 2 --max 5 --since "$H2" --merge-base-prev "$BASE" \
   --head "$H2" --merge-base "$BASE" "$GR" >/dev/null 2>&1
 [[ $? -eq 3 ]] && ok "pr-copy: exit 3 on an empty delta" || bad "empty delta not exit 3"
 
-# --- Q2: the copy carries the DELTA WITH FUNCTION CONTEXT, and no whole-file text ---
+# --- Q2/#86: the copy carries the DELTA WITH A BOUNDED WINDOW, and no whole-file text ---
 # Fixture geometry is load-bearing and two obvious versions are vacuous:
 #   * git writes the enclosing funcname into the @@ header with OR without -W, so asserting on
 #     "target_fn" passes under a bare -U10 and pins nothing. Assert on a CONTEXT line at the top
@@ -300,10 +308,11 @@ BIG1="$(cd "$GR" && git rev-parse HEAD)"
   && git commit -qam changebig ) >/dev/null 2>&1
 BIG2="$(cd "$GR" && git rev-parse HEAD)"
 
-# Guard the fixture itself: if -U10 already reaches inner_pad_1, the -W assertion below is vacuous.
+# Guard the fixture itself: the shipped -U10 must NOT reach inner_pad_1, or the bounded-context
+# assertion below asserts an absence that was never in reach and cannot fail.
 u10=$(cd "$GR" && git diff -U10 "$BIG1" "$BIG2" | grep -c 'inner_pad_1$')
-[[ "$u10" -eq 0 ]] && ok "fixture: a bare -U10 cannot reach inner_pad_1 (so the -W test bites)" \
-  || bad "fixture does not distinguish -W from -U10 (inner_pad_1 already in -U10)"
+[[ "$u10" -eq 0 ]] && ok "fixture: the shipped -U10 cannot reach inner_pad_1 (so the bounds test bites)" \
+  || bad "fixture cannot distinguish bounded from whole-function context (inner_pad_1 already in -U10)"
 
 out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$BIG1" --merge-base-prev "$BASE" \
         --head "$BIG2" --merge-base "$BASE" "$GR" 2>/dev/null)"
@@ -312,10 +321,17 @@ grep -q 'trailing_filler_60' <<<"$out" && bad "pr-copy emitted untouched file te
   || ok "pr-copy: no whole-file text — the untouched tail is absent"
 grep -q '^### big\.sh$' <<<"$out" && bad "pr-copy still emits per-file text headings" \
   || ok "pr-copy: no ### <path> file-text heading"
-grep -q 'inner_pad_1$' <<<"$out" && ok "pr-copy: -W reaches the top of the enclosing function" \
-  || bad "no function context — -W not applied (a bare -U10 cannot reach inner_pad_1)"
-grep -q 'head_pad_1$' <<<"$out" && bad "-W over-reached into the preceding function" \
-  || ok "pr-copy: function context stops at the enclosing function"
+# RETIRED (#86): -W extended every hunk to its enclosing function, which cost the size of the
+# FUNCTION rather than the size of the change — 6.32x the whole-PR payload on a real doc-heavy
+# round and 1.50x on a bash-heavy one, so the never-worse guard refused both. inner_pad_1 sits 20
+# lines above the edit, so its ABSENCE is what proves the context window is bounded.
+grep -q 'inner_pad_1$' <<<"$out" && bad "whole-function context is back — the hunk reached inner_pad_1" \
+  || ok "pr-copy: context is bounded, not extended to the enclosing function"
+# The former companion assertion on head_pad_1 (line 2) is GONE, not merely relabelled: the
+# fixture's delta is a single hunk, so context is one contiguous range, and reaching line 2 is
+# impossible without first covering inner_pad_1 (line 25). It was therefore strictly implied by the
+# assertion above — it could only fail in cases that one already fails — while its label went on
+# describing `-W` over-reach on a path that no longer has `-W`.
 
 # --- diff.external must NOT reach the copy: git diff is porcelain and honours it, so a
 # difftastic/delta user would otherwise be shipped driver output as "what the author pushed",
@@ -328,6 +344,38 @@ grep -q 'EXTERNAL-DIFF-RAN' <<<"$out" && bad "pr-copy shipped external diff driv
 grep -q 'line added' <<<"$out" && ok "pr-copy: still a real unified diff under diff.external" \
   || bad "pr-copy produced no usable diff with diff.external set"
 ( cd "$GR" && git config --unset diff.external ) >/dev/null 2>&1
+
+# --- #86: a small edit inside a LARGE function must still scope ---------------------------
+# The shape that made every round after the first pay full price. The PR's whole payload is modest,
+# but the round delta lands inside a long function; extending the hunk to that function cost more
+# than the entire PR diff it was meant to replace, so the never-worse guard refused the round and
+# the fan-out fell back to full copies. Reproduced on PR #84 round 2 (112,914 B scoped against a
+# 17,860 B whole-PR payload) and on #113 round 2 (227,096 B against 151,697 B).
+( cd "$GR" && { echo 'huge_fn() {'; seq 1 800 | sed 's/^/  fn_pad_/'; echo '}'; } > huge.sh   && seq 1 200 | sed 's/^/bulk_/' > bulk.txt && git add huge.sh bulk.txt   && git commit -qm hugebase ) >/dev/null 2>&1
+HB0="$(cd "$GR" && git rev-parse HEAD)"
+# Round 1 pushed a wide change, so the whole-PR payload is genuinely large.
+( cd "$GR" && sed 's/^  fn_pad_5$/  fn_pad_5_R1/' huge.sh > t && mv t huge.sh   && seq 1 200 | sed 's/^/bulk_R1_/' > bulk.txt && git commit -qam hugerd1 ) >/dev/null 2>&1
+HB1="$(cd "$GR" && git rev-parse HEAD)"
+# Round 2 pushed one line, deep inside the function.
+( cd "$GR" && sed 's/^  fn_pad_700$/  fn_pad_700_R2/' huge.sh > t && mv t huge.sh   && git commit -qam hugerd2 ) >/dev/null 2>&1
+HB2="$(cd "$GR" && git rev-parse HEAD)"
+
+# Prove the fixture actually exhibits the bug before asserting the fix, or the assertion below
+# cannot fail: whole-function context must LOSE here, and a bounded window must WIN.
+hb_full=$(cd "$GR" && git diff --no-ext-diff --no-textconv "$HB0" "$HB2" | wc -c | tr -d ' ')
+hb_w=$(cd "$GR" && git diff --no-ext-diff --no-textconv -W -U10 "$HB1" "$HB2" | wc -c | tr -d ' ')
+(( hb_w >= hb_full ))   && ok "fixture: whole-function context really does lose here (${hb_w} B vs ${hb_full} B)"   || bad "fixture does not reproduce #86 (${hb_w} B vs ${hb_full} B) — the assertion below is vacuous"
+
+hb_out="$(bash "$SUT" pr-copy --round 2 --max 5 --since "$HB1" --merge-base-prev "$HB0" \
+           --head "$HB2" --merge-base "$HB0" "$GR" 2>/dev/null)"; hb_rc=$?
+{ [[ $hb_rc -eq 0 ]] && (( ${#hb_out} < hb_full )); } \
+  && ok "pr-copy: a small edit inside a large function still scopes (${#hb_out} B vs ${hb_full} B)" \
+  || bad "pr-copy cannot scope an edit inside a large function (rc=$hb_rc, ${#hb_out} B vs ${hb_full} B) — issue #86"
+grep -q '^+  fn_pad_700_R2$' <<<"$hb_out" && ok "pr-copy: the pushed line is in the copy" \
+  || bad "the pushed line is missing from the scoped copy"
+{ [[ -n "$hb_out" ]] && ! grep -q 'fn_pad_400$' <<<"$hb_out"; } \
+  && ok "pr-copy: context stops well short of the function's bounds" \
+  || bad "context reached 300 lines from the edit (or the copy is empty)"
 
 # ===================== A2: the never-worse guard (both subcommands) =====================
 # A revert-shaped round 2: the author backs out most of what round 1 did, so the whole-PR diff
@@ -344,7 +392,7 @@ WIDE1="$(cd "$GR" && git rev-parse HEAD)"
 WIDE2="$(cd "$GR" && git rev-parse HEAD)"
 
 # Prove the fixture LOSES before asserting on the guard, or the guard test passes vacuously.
-sp=$(cd "$GR" && git diff -W -U10 "$WIDE1" "$WIDE2" | wc -c | tr -d ' ')
+sp=$(cd "$GR" && git diff -U10 "$WIDE1" "$WIDE2" | wc -c | tr -d ' ')
 fp=$(cd "$GR" && git diff "$WBASE" "$WIDE2" | wc -c | tr -d ' ')
 (( sp >= fp )) && ok "guard fixture: the scoped payload really is not smaller ($sp vs $fp)" \
   || bad "guard fixture does not lose ($sp vs $fp) — the guard test would pass vacuously"
@@ -432,15 +480,68 @@ sm_rc=$?
   || bad "floor exemption broke (size=${sm_full} B, rc=$sm_rc) — the composition fixtures above are now unreachable"
 
 # (3) does not over-fire: a >=1 KiB artifact with a genuinely small edit must still scope.
+# The bulk sits more than 20 lines from the edit, so the context window cannot reach it. Under
+# whole-region emission the distance was irrelevant (the bulk was simply in an untouched region);
+# under a bounded window it is the whole point, so the fixture states it explicitly.
 BULK="$(seq 1 400 | tr '\n' ' ')"
-P7="$(mkbase prevg.md '## A' '' 'alpha one' '' '## B' '' "$BULK")"
-C7="$(mkbase currg.md '## A' '' 'alpha CHANGED' '' '## B' '' "$BULK")"
+FILL86="$(seq 1 25 | sed 's/^/fill/')"
+# shellcheck disable=SC2086  # deliberate word splitting: 25 bare filler lines
+P7="$(mkbase prevg.md '## A' '' 'alpha one' $FILL86 '' '## B' '' "$BULK")"
+# shellcheck disable=SC2086
+C7="$(mkbase currg.md '## A' '' 'alpha CHANGED' $FILL86 '' '## B' '' "$BULK")"
 win_out="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P7" --curr "$C7" 2>/dev/null)"
 win_rc=$?
 win_full=$(wc -c < "$C7" | tr -d ' '); win_scoped=${#win_out}
 { [[ $win_rc -eq 0 ]] && (( win_scoped < win_full )); } \
   && ok "local-copy: a real win still scopes (${win_scoped} B vs ${win_full} B)" \
   || bad "guard over-fires on a genuine win (rc=$win_rc, ${win_scoped} B vs ${win_full} B)"
+
+# ====================== Phase C: bounded context (issue #86) ======================
+# The scoped copy carries changed hunks plus a bounded context window — NOT the whole enclosing
+# unit. Emitting whole units made the copy cost the size of what it TOUCHED rather than the size of
+# what CHANGED, which is the dependency this feature exists to remove: measured on four real round
+# transitions of a retained review, every one came out LARGER than the artifact it replaced
+# (1.03x-1.26x), and the never-worse guard refused all four. Region granularity is not the
+# mechanism — at `###` the touched regions still covered 60-91% of the document.
+
+BULK86=$(seq 1 400 | sed 's/^/pad/')
+# shellcheck disable=SC2086  # deliberate word splitting: 400 bare words, one per line
+P86="$(mkbase prev86.md '## Big' '' $BULK86 '' '## Small' '' 'small one')"
+# shellcheck disable=SC2086
+# shellcheck disable=SC2046  # deliberate word splitting: same 400 bare words, one line changed
+C86="$(mkbase curr86.md '## Big' '' $(sed 's/^pad200$/pad200CHANGED/' <<<"$BULK86") '' '## Small' '' 'small one')"
+
+art86=$(wc -c < "$C86" | tr -d ' ')
+(( art86 >= 1024 )) && ok "fixture: the #86 doc is above the guard floor (${art86} B)" \
+  || bad "#86 fixture is only ${art86} B — below the floor, so it cannot exercise the economics"
+
+out86="$(bash "$SUT" local-copy --round 2 --max 5 --prev "$P86" --curr "$C86" 2>/dev/null)"
+rc86=$?
+scoped86=${#out86}
+{ [[ $rc86 -eq 0 ]] && (( scoped86 < art86 )); } \
+  && ok "local-copy: a small edit inside a large region still scopes (${scoped86} B vs ${art86} B)" \
+  || bad "local-copy cannot scope a large touched region (rc=$rc86, ${scoped86} B vs ${art86} B) — issue #86"
+
+grep -q '^+pad200CHANGED$' <<<"$out86" && ok "local-copy: the changed line is in the copy" \
+  || bad "changed line missing from the scoped copy"
+grep -q '^ pad185$' <<<"$out86" && ok "local-copy: context reaches 15 lines from the change" \
+  || bad "no surrounding context — a bare hunk is not reviewable"
+# Absence assertions are gated on a NON-EMPTY copy: exit 3 emits nothing, and an absence checked
+# against an empty string passes without being able to fail.
+{ [[ -n "$out86" ]] && ! grep -q '^ pad50$' <<<"$out86"; } \
+  && ok "local-copy: context is bounded, not the whole enclosing region" \
+  || bad "context is unbounded (or the copy is empty) — it reached 150 lines from the change"
+
+# The notice must not promise what a bounded window cannot deliver. Whole-region emission made
+# "not shown" true by construction; a context window can spill across a heading into a region that
+# did not change, so the copy would claim a region is absent while showing its text. The claim
+# narrows to what stays true: the region did not change this round.
+grep -q '^> Unchanged this round: Small\.$' <<<"$out86" \
+  && ok "local-copy: names the unchanged region without claiming it is absent" \
+  || bad "unchanged notice missing or still claims 'not shown' (a bounded window cannot promise that)"
+{ [[ -n "$out86" ]] && ! grep -q 'not shown' <<<"$out86"; } \
+  && ok "local-copy: no 'not shown' claim anywhere in the copy" \
+  || bad "copy still claims unchanged regions are 'not shown' (or the copy is empty)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
