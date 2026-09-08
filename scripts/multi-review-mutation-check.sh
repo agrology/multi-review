@@ -2714,6 +2714,12 @@ mutations() {
     '    END { }'
   # Redundant behind the numeric-span check for the EXIT CODE alone; the assertion pins the
   # message, which is what makes this line load-bearing rather than SURVIVES-BY-DESIGN.
+  # The default end counts LINES, not newlines: a `wc -l` default drops the last line of a doc
+  # with no trailing newline, so a closing fence ON that line reads as unterminated (#122).
+  mutate 'core/blocks-default-end-counts-lines' 'scripts/multi-review-core.sh' replace \
+    'no-trailing-newline doc gave' 'multi-review-core.test.sh' \
+    '  [[ -n "$end" ]] || end="$(awk '"'"'END{print NR}'"'"' "$doc")"' \
+    '  [[ -n "$end" ]] || end="$(wc -l < "$doc" | tr -d '"'"' '"'"')"'
   mutate 'core/blocks-missing-doc' 'scripts/multi-review-core.sh' delete \
     'missing doc rc=' 'multi-review-core.test.sh' \
     '  [[ -f "$1" ]] || die "blocks: doc not found: $1" 2'
