@@ -368,6 +368,14 @@ mutations() {
     '    case "${p}/" in "${root%/}/"*) return 0 ;; esac' \
     '    case "${p}/" in "${root}/"*) return 0 ;; esac'
 
+  # The resolver's containment filter. Neutered, resolve-doc hands back a doc from an out-of-tree
+  # symlinked dir that the egress guard then refuses — the contradiction in issue #37 item 6, where
+  # the denial message names a dir the doc legitimately came from.
+  mutate 'core/resolve-doc-containment' 'scripts/multi-review-core.sh' replace \
+    'which the egress guard denies' 'multi-review-packaging.test.sh' \
+    '  local dirs; dirs="$(_usable_dirs "$configured" | tr '"'"'\n'"'"' '"'"' '"'"')"' \
+    '  local dirs="$configured"'
+
   # #24: vendor lookup folds case before matching, or a capitalised model id maps to no vendor and
   # verify-vendor escalates unmappable to a hard failure — quarantining a correct reviewer over the
   # capitalisation of its own name.

@@ -1461,4 +1461,58 @@ else
     || bad "command: the PR refresh step does not say a hand reconcile turns the description refresh off for good"
 fi
 
+# ---- resolver/guard agreement (issue #37 item 6) -----------------------------------------
+# cmd_resolve_doc enumerates the same configured dirs as the egress guard. If it does not apply the
+# same containment rule it can hand back a doc the guard then denies, with a message contradicting
+# where the doc came from. The property is one-directional and deliberately so: the resolver picks
+# the NEWEST doc, so it need not return everything the guard would allow — but it must never return
+# one the guard refuses.
+AGREE="$(mktemp -d)"; AGREE_OUT="$(mktemp -d)"
+mkdir -p "${AGREE}/docs/specs"
+printf '# in\n'  > "${AGREE}/docs/specs/2026-01-01-inside.md"
+printf '# out\n' > "${AGREE_OUT}/2026-06-01-external.md"   # NEWER, so the resolver prefers it
+ln -s "$AGREE_OUT" "${AGREE}/docs/plans"                   # the out-of-tree symlinked dir
+
+picked="$( cd "$AGREE" && MULTI_REVIEW_DOC_DIRS='docs/specs docs/plans' \
+           bash "${ROOT}/scripts/multi-review-core.sh" resolve-doc 2>/dev/null )"
+if [[ -z "$picked" ]]; then
+  bad "resolver returned nothing for a tree that contains a legitimate doc"
+else
+  guard_rc="$( cd "$AGREE" && MULTI_REVIEW_DOC_DIRS='docs/specs docs/plans' \
+               bash "${ROOT}/scripts/multi-review-egress-guard.sh" "$picked" >/dev/null 2>&1; echo $? )"
+  [[ "$guard_rc" == "0" ]] \
+    && ok "resolver/guard agree: resolve-doc never returns a doc the guard denies" \
+    || bad "resolver returned '$picked', which the egress guard denies (exit $guard_rc) — issue #37 item 6"
+fi
+rm -rf "$AGREE" "$AGREE_OUT"
+
+# The same agreement must hold across the ALLOWLIST interface — the one configuration where an
+# out-of-tree dir is legitimate, and the one a bare agreement check never visits.
+AG2="$(mktemp -d)"; AG2_OUT="$(mktemp -d)"
+mkdir -p "${AG2}/docs/specs"
+printf '# in\n'  > "${AG2}/docs/specs/2026-01-01-inside.md"
+printf '# out\n' > "${AG2_OUT}/2026-06-01-external.md"   # NEWER, so the resolver must prefer it
+ln -s "$AG2_OUT" "${AG2}/docs/plans"
+
+picked2="$( cd "$AG2" && MULTI_REVIEW_ALLOW_ROOTS="$AG2_OUT" MULTI_REVIEW_DOC_DIRS='docs/specs docs/plans' \
+            bash "${ROOT}/scripts/multi-review-core.sh" resolve-doc 2>/dev/null )"
+if [[ -z "$picked2" ]]; then
+  bad "resolver returned nothing under an allowlisted root"
+else
+  # Assert WHICH doc was picked, not merely that the guard accepts it. Accepting the pick is
+  # satisfied by EVERY possible resolver behaviour here — honouring the allowlist, ignoring it, and
+  # the containment filter removed entirely all yield a doc inside some root — so a bare agreement
+  # check is vacuous and would record this coverage as closed while the allowlist path stayed
+  # untested. The external doc is NEWER, so a resolver that honours the allowlist must return it.
+  [[ "$picked2" == *docs/plans/2026-06-01-external.md ]] \
+    && ok "resolver honours MULTI_REVIEW_ALLOW_ROOTS (picked the allowlisted newer doc)" \
+    || bad "resolver ignored the allowlist: picked '$picked2', expected the allowlisted newer doc"
+  g2="$( cd "$AG2" && MULTI_REVIEW_ALLOW_ROOTS="$AG2_OUT" MULTI_REVIEW_DOC_DIRS='docs/specs docs/plans' \
+         bash "${ROOT}/scripts/multi-review-egress-guard.sh" "$picked2" >/dev/null 2>&1; echo $? )"
+  [[ "$g2" == "0" ]] \
+    && ok "resolver/guard agree under MULTI_REVIEW_ALLOW_ROOTS" \
+    || bad "under an allowlisted root the resolver returned '$picked2', which the guard denies (exit $g2)"
+fi
+rm -rf "$AG2" "$AG2_OUT"
+
 echo "packaging: $fails failure(s)"; [[ $fails -eq 0 ]]

@@ -138,15 +138,45 @@ _dated_docs() {
 # inside the configured dirs, so the egress guard can never catch a wrong-doc resolution. Naming
 # what was searched — and any UNSEARCHED sibling that holds dated docs — is what turns a silent
 # wrong answer into an obvious misconfiguration.
+# _usable_dirs <dirs> : the subset of <dirs> that resolve inside the invocation tree or an
+# allowlisted root, one per line. DUPLICATED from multi-review-egress-guard.sh for module
+# isolation, the same way star.sh duplicates core's awk — core.sh is vendored into reviewer
+# bundles, so it must not depend on another script at runtime. The two implementations are pinned
+# in agreement by a behavioural assertion in multi-review-packaging.test.sh; if you change one,
+# that assertion fails until you change the other.
+_usable_dirs() {
+  local anchor roots r r_real d dir_real
+  anchor="$(pwd -P)" || return 0
+  roots=("$anchor")
+  for r in ${MULTI_REVIEW_ALLOW_ROOTS:-}; do
+    r_real="$(cd "$r" 2>/dev/null && pwd -P)" || continue
+    roots+=("$r_real")
+  done
+  for d in $1; do
+    dir_real="$(cd "$d" 2>/dev/null && pwd -P)" || continue
+    for r in "${roots[@]}"; do
+      case "${dir_real}/" in
+        "${r%/}/"*) printf '%s\n' "$d"; break ;;
+      esac
+    done
+  done
+}
+
 cmd_resolve_doc() {
-  local dirs="${MULTI_REVIEW_DOC_DIRS:-$DOC_DIRS_DEFAULT}" d
+  local configured="${MULTI_REVIEW_DOC_DIRS:-$DOC_DIRS_DEFAULT}" d
+  # Search only dirs the egress guard would accept, or this can return a doc the guard denies —
+  # with a message contradicting where the doc came from (issue #37 item 6).
+  local dirs; dirs="$(_usable_dirs "$configured" | tr '\n' ' ')"
   local all; all="$(mktemp)" || die "mktemp failed" 2
   for d in $dirs; do _dated_docs "$d"; done | LC_ALL=C sort -r > "$all"
 
   local n; n="$(grep -c . "$all" || true)"
   if (( n == 0 )); then
     rm -f "$all"
-    die "no dated (YYYY-MM-DD-*.md) docs under MULTI_REVIEW_DOC_DIRS ($dirs)$(_sibling_hint "$dirs") — pass an explicit path" 1
+    # Name what was CONFIGURED, not the filtered subset: a dir dropped for being unresolvable or
+    # out-of-tree is exactly the misconfiguration this message exists to surface (#35), and
+    # printing only the survivors would hide it. The skip itself is announced by the guard.
+    die "no dated (YYYY-MM-DD-*.md) docs under MULTI_REVIEW_DOC_DIRS ($configured)$(_sibling_hint "$dirs") — pass an explicit path" 1
   fi
 
   local first second fb sb
