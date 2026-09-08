@@ -1506,6 +1506,28 @@ sed 's/identity-fail/tampered-reason/' "${QV}.bak" > "$QV"
 bash "$SUT" verify "$QV" >/dev/null 2>&1 && bad "verify missed a tampered quarantine record" || ok "verify: detects a tampered quarantine record"
 rm -f "${QV}.bak"
 
+# (#123) the REVERSE direction. Guard (d) proves every manifest entry has a record and says
+# nothing about a record no entry covers, so an ORPHANED quarantine record — a durable in-doc
+# claim that a provider was quarantined, bound by nothing — verified clean. Both the gate-summary
+# readability list and the independence scan read these lines, so it changes what the human sees
+# at the gate.
+QO="${WORK}/qo.md"; mkbase "$QO"
+mkcopy "${QO}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QO" "${QO}.codex" >/dev/null 2>&1
+cp "$QO" "${QO}.bak"
+printf '<!-- star-quarantined: codex · fabricated · round 1 -->\n' >> "$QO"
+bash "$SUT" verify "$QO" >/dev/null 2>&1 \
+  && bad "verify missed an orphaned quarantine record the manifest does not bind (#123)" \
+  || ok "verify: detects a quarantine record the manifest does not bind (#123)"
+# ...and the new direction must be fence-scoped exactly like (d): a QUOTED example inside the
+# review section is documentation, not a live record, and must not fail an otherwise clean doc.
+cp "${QO}.bak" "$QO"
+printf '\n```\n<!-- star-quarantined: codex · QUOTED-EXAMPLE · round 1 -->\n```\n' >> "$QO"
+bash "$SUT" verify "$QO" >/dev/null 2>&1 \
+  && ok "verify: a fenced quarantine example is not an unbound record (#123)" \
+  || bad "the doc->manifest quarantine check is fence-blind: a quoted example failed a clean doc (#123)"
+rm -f "${QO}.bak"
+
 # (#17 fable-r3, LOW) a deleted/truncated footer is caught by the count, not the (now-gone) tail grep
 FD="${WORK}/fd.md"; mkbase "$FD"
 mkcopy "${FD}.codex" '> [finding:r1|med] x' '> — via gpt-5.5' '> — risk: r'

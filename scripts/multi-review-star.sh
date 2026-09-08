@@ -1275,6 +1275,21 @@ _structural_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
     done < <(printf '%s\n' "$review" | grep -E '^<!-- star-quarantined: ')
     [[ "$qok" == "1" ]] || { echo "multi-review-star: verify: quarantine record missing or tampered for ${qkey}" >&2; return 1; }
   done < <(awk '$1=="quarantine"{print $2}' "${doc}.manifest")
+  # (e) the REVERSE of (d) — doc→manifest. (d) is one-directional: it proves every manifest entry
+  # still has its record and says NOTHING about a record no entry covers. An ORPHANED record is a
+  # durable in-doc claim that a provider was quarantined, bound by nothing — and merge's own
+  # pre-check was the only thing standing between that and a green `verify` (#123). It is not
+  # cosmetic: the gate-summary readability list and the independence scan both read these lines,
+  # so an unbound record changes what the human sees at the gate. Fence-scoped through the same
+  # $review as (d), so a QUOTED example stays documentation.
+  local qhashes qgot
+  qhashes="$(awk '$1=="quarantine"{sub(/^[^=]*=/,"",$2); print $2}' "${doc}.manifest")"
+  while IFS= read -r qline; do
+    [[ -z "$qline" ]] && continue
+    qgot="$(printf '%s' "$qline" | sha)"
+    grep -qFx -- "$qgot" <<<"$qhashes" \
+      || { echo "multi-review-star: verify: quarantine record in the doc that no manifest entry binds: ${qline}" >&2; return 1; }
+  done < <(printf '%s\n' "$review" | grep -E '^<!-- star-quarantined: ')
   return 0
 }
 

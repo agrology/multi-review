@@ -2550,6 +2550,14 @@ mutations() {
     '  cmd_resolved "$doc" >/dev/null || { echo "multi-review-star: verify: undisclosed or contradictory [resolved:] record" >&2; return 1; }' \
     '  true'
 
+  # Guard (d) is one-directional — manifest→doc. Without its reverse, a durable in-doc quarantine
+  # record that NO manifest entry binds verifies clean, and the gate-summary readability list and
+  # the independence scan both read those lines (#123).
+  mutate 'star/verify-quarantine-doc-to-manifest' 'scripts/multi-review-star.sh' replace \
+    'verify missed an orphaned quarantine record' 'multi-review-star.test.sh' \
+    '    grep -qFx -- "$qgot" <<<"$qhashes" \' \
+    '    true \'
+
   # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
   # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent
   # gate summary means the human approves a claim they were never shown.
