@@ -522,11 +522,18 @@ bash "$SUT" merge --round 1 --quarantined gemini:dispatch-timeout "$BASE57Q" "${
 rm -f "${BASE57Q}.manifest"                     # what the gate cleanup did
 before="$(shasum "$BASE57Q" | cut -d' ' -f1)"
 mkcopy "${BASE57Q}.codex" '> [finding:r2|low] beta' '> — via gpt-5.5' '> — risk: rb'
-bash "$SUT" merge --round 2 "$BASE57Q" "${BASE57Q}.codex" >/dev/null 2>&1; rc=$?
+q57out="$(bash "$SUT" merge --round 2 "$BASE57Q" "${BASE57Q}.codex" 2>&1)"; rc=$?
 after="$(shasum "$BASE57Q" | cut -d' ' -f1)"
 [[ $rc -ne 0 && "$before" == "$after" ]] \
   && ok "merge: missing manifest over a quarantine-only round -> refuse, doc untouched" \
   || bad "merge missing-manifest mutated a quarantine-only doc (partial merge)"
+# ...and the PRE-CHECK is what must refuse it. Since #123 the staged self-check catches this same
+# corruption as an unbound quarantine record, so "refused, doc untouched" no longer tells the two
+# apart — without naming the pre-check's own wording it has no coverage at all. The wording is the
+# point: it is the operator's recovery instruction, which the structural error does not carry.
+grep -qF 'already-merged round(s)' <<<"$q57out" \
+  && ok "merge: the missing-manifest pre-check is what refuses, with the restore-the-manifest recovery" \
+  || bad "merge missing-manifest refusal did not come from the pre-check: $q57out"
 
 # The guard must key off LIVE footers only: a doc that documents this protocol legitimately shows
 # a star-findings footer inside a code block, and that must not make round 1 unmergeable.

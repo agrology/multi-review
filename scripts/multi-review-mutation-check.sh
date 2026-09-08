@@ -915,12 +915,16 @@ mutations() {
   # rounds: it appends and rebuilds the manifest from THAT ROUND ALONE. Since #107 (1da040f) the
   # self-check runs on the STAGED merge, so on the BASE57 doc the finding-id cross-check refuses the
   # write and leaves the doc untouched — every BASE57 assertion passes with this line deleted, and
-  # this entry credited BASE57 until it did. What the cross-check cannot see is a dropped round that
-  # left no FINDING: the quarantine-only round in BASE57Q rebuilds the manifest, matches the id sets
-  # trivially, passes the footer count, and COMMITS — orphaning round 1's quarantine record from its
-  # manifest, a doc `verify` then calls consistent. That is the assertion this entry names.
+  # this entry credited BASE57 until it did. What the cross-check could not see is a dropped round
+  # that left no FINDING: the quarantine-only round in BASE57Q rebuilds the manifest, matches the id
+  # sets trivially, passes the footer count, and COMMITS — orphaning round 1's quarantine record.
+  # Since #123 the staged self-check DOES see that (guard (e), doc->manifest), so "refused, doc
+  # untouched" is now true with this line deleted too and no longer distinguishes the two. What
+  # remains uniquely this guard's is WHICH refusal the operator gets: the pre-check names the
+  # missing manifest and how to rebuild it, and the structural error does not. That message is the
+  # assertion this entry now names.
   mutate 'star/merge-missing-manifest' 'scripts/multi-review-star.sh' replace \
-    'merge missing-manifest mutated a quarantine-only doc (partial merge)' 'multi-review-star.test.sh' \
+    'merge missing-manifest refusal did not come from the pre-check' 'multi-review-star.test.sh' \
     "    nfoot=\"\$(review_section \"\$doc\" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->\$')\"" \
     '    nfoot=0'
 
