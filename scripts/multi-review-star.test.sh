@@ -534,6 +534,12 @@ after="$(shasum "$BASE57Q" | cut -d' ' -f1)"
 grep -qF 'already-merged round(s)' <<<"$q57out" \
   && ok "merge: the missing-manifest pre-check is what refuses, with the restore-the-manifest recovery" \
   || bad "merge missing-manifest refusal did not come from the pre-check: $q57out"
+# ...and that instruction must actually RECOVER. Guard (e) refuses a doc whose quarantine record
+# no manifest entry binds, so a manifest rebuilt from the message's `finding` lines ALONE is now
+# un-verifiable — the recovery this guard is kept for would leave the operator stuck (fable-rd2-r1).
+grep -qF "quarantine <provider>=<hash>" <<<"$q57out" \
+  && ok "merge: the recovery instruction names the quarantine line, not findings only (fable-rd2-r1)" \
+  || bad "the missing-manifest recovery instruction omits the quarantine line: $q57out"
 
 # The guard must key off LIVE footers only: a doc that documents this protocol legitimately shows
 # a star-findings footer inside a code block, and that must not make round 1 unmergeable.
@@ -1547,9 +1553,35 @@ bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QD" "${QD}.code
 qdrec="$(awk '/^<!-- star-quarantined: /{print; exit}' "$QD")"
 printf '%s\n' "$qdrec" >> "$QD"                             # the SAME record, byte-identical
 qd_err="$(bash "$SUT" verify "$QD" 2>&1 >/dev/null)"; rc=$?
-[[ $rc -ne 0 ]] && grep -qF 'quarantine record(s) in the doc but' <<<"$qd_err" \
+[[ $rc -ne 0 ]] && grep -qF 'do not bind one-to-one' <<<"$qd_err" \
   && ok "verify: a duplicated quarantine record is not bound one-to-one (codex-rd1-r1)" \
   || bad "verify accepted a duplicated quarantine record: rc=$rc $qd_err"
+
+# (codex-rd2-r1) MEMBERSHIP is not MULTIPLICITY, and neither is a total. A duplicated
+# `--quarantined` flag makes merge write two identical manifest entries, so a doc that swaps one
+# provider's record for a second copy of another's satisfies (d) and (e) in both directions AND
+# matches on count — while the gate renders one provider three times and the other once.
+QM="${WORK}/qm.md"; mkbase "$QM"
+mkcopy "${QM}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:xx --quarantined gemini:xx \
+  --quarantined fable:yy --quarantined fable:yy "$QM" "${QM}.codex" >/dev/null 2>&1
+awk '/^<!-- star-quarantined: gemini/ && !d { print "<!-- star-quarantined: fable · yy · round 1 -->"; d=1; next } { print }' \
+  "$QM" > "${QM}.t" && mv "${QM}.t" "$QM"
+qm_err="$(bash "$SUT" verify "$QM" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && grep -qF 'do not bind one-to-one' <<<"$qm_err" \
+  && ok "verify: skewed quarantine multiplicity is caught though the totals match (codex-rd2-r1)" \
+  || bad "verify accepted skewed quarantine multiplicity: rc=$rc $qm_err"
+
+# (fable-rd2-r1) Follow the pre-check's recovery instruction literally — findings AND quarantines,
+# keyed the way the footer spells them — and the rebuilt manifest must verify.
+QR="${WORK}/qr.md"; mkbase "$QR"
+mkcopy "${QR}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QR" "${QR}.codex" >/dev/null 2>&1
+awk '$1=="finding" { print; next } $1=="quarantine" { sub(/-rd[0-9]+=/, "=", $2); print $1, $2 }' \
+  "${QR}.manifest" > "${QR}.manifest.t" && mv "${QR}.manifest.t" "${QR}.manifest"
+bash "$SUT" verify "$QR" >/dev/null 2>&1 \
+  && ok "verify: a manifest rebuilt per the recovery instruction verifies (fable-rd2-r1)" \
+  || bad "the missing-manifest recovery instruction does not produce a verifiable manifest (fable-rd2-r1)"
 
 # (#17 fable-r3, LOW) a deleted/truncated footer is caught by the count, not the (now-gone) tail grep
 FD="${WORK}/fd.md"; mkbase "$FD"

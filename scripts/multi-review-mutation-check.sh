@@ -2562,14 +2562,24 @@ mutations() {
     '    grep -qFx -- "$qgot" <<<"$qhashes" \' \
     '    true \'
 
-  # ...and membership is not a BINDING. A record duplicated verbatim hashes to the one manifest
-  # entry, so both copies match and the doc verifies while the gate renders the provider twice
-  # (codex-rd1-r1 on PR #134). Distinct from the entry above and neither masks it: the membership
-  # check alone passes a duplicate, the count alone passes a swap.
+  # ...and membership is not a BINDING. A duplicated record hashes to the one manifest entry so both
+  # copies match, and — at an equal total — one provider's record can stand in for another's
+  # (codex-rd1-r1 / codex-rd2-r1 on PR #134). Comparing the sorted hash MULTISETS is the binding.
+  # It does not mask the entry above: that one's assertion pins the membership MESSAGE, which this
+  # check does not produce.
   mutate 'star/verify-quarantine-bound-one-to-one' 'scripts/multi-review-star.sh' replace \
-    'verify accepted a duplicated quarantine record' 'multi-review-star.test.sh' \
-    '  if [[ "$nqdoc" -ne "$nqman" ]]; then' \
+    'verify accepted skewed quarantine multiplicity' 'multi-review-star.test.sh' \
+    '  if [[ "$qdocsum" != "$qmansum" ]]; then' \
     '  if false; then'
+
+  # The pre-check's recovery instruction must actually recover: guard (e) refuses a doc whose
+  # quarantine record no manifest entry binds, so a manifest rebuilt from `finding` lines alone is
+  # un-verifiable and the operator is stuck with an error that never says what was omitted
+  # (fable-rd2-r1 on PR #134).
+  mutate 'star/merge-missing-manifest-recovery-names-quarantine' 'scripts/multi-review-star.sh' replace \
+    'recovery instruction omits the quarantine line' 'multi-review-star.test.sh' \
+    "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order, PLUS one 'quarantine <provider>=<hash>' line for each entry in a footer's 'quarantined:' list — verify binds these by hash, so the key needs no round suffix) and re-run\" 1" \
+    "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run\" 1"
 
   # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
   # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent
