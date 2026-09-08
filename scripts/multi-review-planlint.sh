@@ -208,6 +208,10 @@ cmd_check() {
     elif ! _line_present "$old" "${TMPD}/corpus" \
          && ! { [[ -f "${repo}/${rel}" ]] && _line_present "$old" "${repo}/${rel}"; }; then
       v=target-missing; detail="old-line occurs neither in the document's fenced code (outside the entries) nor in ${rel}"
+    # `grep -qF -- ""` matches any non-empty file, so an empty expect would satisfy the label
+    # check below vacuously — an entry naming no assertion at all would read as covered (#120).
+    elif [[ -z "$expect" ]]; then
+      v=label-missing; detail="expect-substring is empty — the entry names no assertion"
     elif [[ "$expect" != "SURVIVES-BY-DESIGN" ]] \
          && ! grep -qF -- "$expect" "${TMPD}/corpus" \
          && ! { [[ -f "${repo}/scripts/${suite}" ]] && grep -qF -- "$expect" "${repo}/scripts/${suite}"; }; then

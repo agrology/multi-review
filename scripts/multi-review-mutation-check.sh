@@ -2758,6 +2758,12 @@ mutations() {
     'repo-only target' 'multi-review-planlint.test.sh' \
     '         && ! { [[ -f "${repo}/${rel}" ]] && _line_present "$old" "${repo}/${rel}"; }; then' \
     '         ; then'
+  # An empty expect must not pass vacuously: `grep -qF -- ""` matches any non-empty file, so
+  # without this guard an entry that names NO assertion reads as covered (#120).
+  mutate 'planlint/empty-label-not-vacuous' 'scripts/multi-review-planlint.sh' replace \
+    'empty label verdict' 'multi-review-planlint.test.sh' \
+    '    elif [[ -z "$expect" ]]; then' \
+    '    elif false; then'
   mutate 'planlint/defect-exits-1' 'scripts/multi-review-planlint.sh' replace \
     'with a label-missing row' 'multi-review-planlint.test.sh' \
     '  (( bad == 0 ))' \
