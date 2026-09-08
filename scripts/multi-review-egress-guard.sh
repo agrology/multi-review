@@ -34,7 +34,22 @@ doc_dir_real="$(cd "$(dirname "$doc")" 2>/dev/null && pwd -P)" || die "cannot re
 # itself. `roots` always holds at least the anchor, so "${roots[@]}" is safe under `set -u` on
 # bash 3.2, where expanding an EMPTY array is a fatal unbound-variable error.
 anchor="$(pwd -P)" || die "cannot resolve the invocation directory" 2
+
+# Roots the operator vouches for, beyond the invocation tree. A relative entry resolves against the
+# invocation directory exactly as a doc dir does — there is no second spelling rule, because
+# trust-by-spelling is precisely what made an earlier attempt deny a symlink spelled relatively and
+# arm the same symlink spelled absolutely.
+# Space-separated and word-split by design, matching MULTI_REVIEW_DOC_DIRS: an individual root
+# cannot contain spaces. An entry that does not resolve is dropped with a note rather than being
+# fatal — a stale entry in a shell profile must not break every review in every repo.
 roots=("$anchor")
+for r in ${MULTI_REVIEW_ALLOW_ROOTS:-}; do
+  r_real="$(cd "$r" 2>/dev/null && pwd -P)" || {
+    echo "multi-review-egress-guard: note — allowed root '$r' does not resolve; ignoring it" >&2
+    continue
+  }
+  roots+=("$r_real")
+done
 
 # _inside <path> : true when <path> resolves inside any root.
 # `${root%/}` normalises the trailing slash so a root of "/" yields the prefix "/" and matches

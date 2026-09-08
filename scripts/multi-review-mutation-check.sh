@@ -351,6 +351,23 @@ mutations() {
     '    "${dir_real%/}/"*) contained=1; break ;;' \
     '    "${dir_real}/"*) contained=1; break ;;'
 
+  # The allowlist canonicalisation. Mutated to trust the RAW string, a root given by a symlinked
+  # spelling no longer matches the canonical dir it names, so the re-admission this feature exists
+  # to provide silently stops working. The entry deliberately names the RE-ADMISSION assertion: the
+  # sibling case denies for an unrelated reason (a different tree) and cannot go red here — naming
+  # it WOULD report SURVIVED on Linux and MISCREDITED on macOS.
+  mutate 'egress/allow-roots-canonical' 'scripts/multi-review-egress-guard.sh' replace \
+    'allowlisted root did not re-admit' 'multi-review-egress-guard.test.sh' \
+    '  r_real="$(cd "$r" 2>/dev/null && pwd -P)" || {' \
+    '  r_real="$r" || {'
+
+  # The trailing-slash normalisation in `_inside`. Without it a root of "/" builds the pattern
+  # "//*", which matches nothing, so an allow-root of "/" admits nothing at all.
+  mutate 'egress/root-slash-normalised' 'scripts/multi-review-egress-guard.sh' replace \
+    'allow-root / did not admit' 'multi-review-egress-guard.test.sh' \
+    '    case "${p}/" in "${root%/}/"*) return 0 ;; esac' \
+    '    case "${p}/" in "${root}/"*) return 0 ;; esac'
+
   # #24: vendor lookup folds case before matching, or a capitalised model id maps to no vendor and
   # verify-vendor escalates unmappable to a hard failure — quarantining a correct reviewer over the
   # capitalisation of its own name.

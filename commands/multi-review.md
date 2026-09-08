@@ -211,6 +211,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
 - Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-egress-guard.sh "<doc>"`. Non-zero → report the
   message and STOP — do not arm.
+
+  A configured doc dir is usable only where it **resolves**: one that leaves the invocation tree —
+  a symlinked `docs/specs`, say — is **skipped with a note on stderr, not fatal**, so a single bad
+  dir never vetoes a review that does not use it. Relay any such note. When the out-of-tree dir is
+  legitimate (the linked-worktree case: a gitignored plans dir symlinked into the main checkout),
+  the operator vouches for its target with `MULTI_REVIEW_ALLOW_ROOTS`; the guard never infers it.
 - Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-core.sh marker "<doc>"`.
   - **Succeeds** (a marker already exists) → RESUMING an armed review. Do not re-arm. Go to
     "Branch on the marker" with the CURRENT state.

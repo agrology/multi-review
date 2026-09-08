@@ -121,6 +121,44 @@ got="$( cd / && MULTI_REVIEW_DOC_DIRS='/' bash "$SUT" "${SPECS}/a.md" >/dev/null
 [[ "$got" == "0" ]] && ok "anchored at /, a doc dir of / still contains an absolute doc" \
   || bad "doc-dir comparison mishandles / — the second comparison is not normalised (exit $got)"
 
+# ---- MULTI_REVIEW_ALLOW_ROOTS: trust is DECLARED, never inferred -------------------------
+# The worktree case (issue #37 item 2): in a linked worktree, docs/superpowers/plans is gitignored
+# and therefore absent, and symlinking it to the main checkout is the natural fix. The rule above
+# denies it; an operator re-admits it by vouching for the target root.
+ar() { ( cd "$WORK" && MULTI_REVIEW_ALLOW_ROOTS="$1" MULTI_REVIEW_DOC_DIRS="$2" bash "$SUT" "$3" ) >/dev/null 2>&1; echo $?; }
+
+# The root is given by a SYMLINKED spelling on purpose. A raw-string allowlist (no
+# canonicalisation) would not match the canonical dir, so this assertion is the one that goes red
+# when the canonicalisation is removed — which is what makes the mutation entry creditable.
+# Spelling it as "$OUT" instead would still pass under the raw mutant on Linux, where mktemp -d is
+# already canonical, and would fail a DIFFERENT assertion on macOS, where /var/folders resolves to
+# /private/var/folders — SURVIVED on one platform, MISCREDITED on the other.
+ln -s "$OUT" "${WORK}/alias-root"
+got="$(ar "${WORK}/alias-root" 'linked/specs' 'linked/specs/2026-01-01-external.md')"
+[[ "$got" == "0" ]] && ok "allow-roots: a symlinked spelling of a root still admits (canonicalised)" \
+  || bad "allowlisted root did not re-admit via a symlinked spelling (exit $got)"
+
+# An entry that does not resolve is noted and dropped — never fatal, or a stale entry in a shell
+# profile would break every review in every repo.
+got="$(ar "${WORK}/no-such-root" "$SPECS" "${SPECS}/a.md")"
+[[ "$got" == "0" ]] && ok "allow-roots: an unresolvable entry is dropped, not fatal" \
+  || bad "an unresolvable allow-root was fatal (exit $got)"
+
+# No quotes in either message: the FAIL text is a mutation-entry expect substring, and a
+# backslash-escaped quote is not the byte sequence a static table check looks for.
+got="$(ar '/' 'linked/specs' 'linked/specs/2026-01-01-external.md')"
+[[ "$got" == "0" ]] && ok "allow-roots: root / admits everything (slash normalised)" \
+  || bad "allow-root / did not admit an out-of-tree dir (exit $got)"
+
+# Containment stays CANONICAL under an allowlist: vouching for a root admits what resolves inside
+# it, not a path that merely looks like it.
+sibling="$(mktemp -d)"; printf '# other\n' > "${sibling}/2026-01-03-other.md"
+mkdir -p "${WORK}/sib"; ln -s "$sibling" "${WORK}/sib/specs"
+got="$(ar "$OUT" 'sib/specs' 'sib/specs/2026-01-03-other.md')"
+rm -rf "$sibling"
+[[ "$got" == "3" ]] && ok "allow-roots: vouching for one root does not admit a different one" \
+  || bad "an allowlisted root admitted an unrelated tree (exit $got)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
