@@ -376,6 +376,16 @@ mutations() {
     '  local dirs; dirs="$(_usable_dirs "$configured" | tr '"'"'\n'"'"' '"'"' '"'"')"' \
     '  local dirs="$configured"'
 
+  # The drop NOTICE. Silenced, a configured doc dir that resolves out of the tree is discarded with
+  # empty stderr: a stale in-tree doc is armed as though nothing were wrong, and the linked-worktree
+  # case reports only "no dated docs" while the one dir holding them was discarded. Deferring the
+  # announcement to the egress guard does not work — it breaks on the first containing dir and does
+  # not run at all when nothing resolves (codex-rd1-r1, fable-rd1-r1).
+  mutate 'core/resolve-doc-drop-notice' 'scripts/multi-review-core.sh' replace \
+    'was discarded silently' 'multi-review-core.test.sh' \
+    '      echo "multi-review-core: note — doc dir '"'"'$d'"'"' resolves outside the invocation tree ($dir_real); not searched. Set MULTI_REVIEW_ALLOW_ROOTS to vouch for it." >&2' \
+    '      :'
+
   # #24: vendor lookup folds case before matching, or a capitalised model id maps to no vendor and
   # verify-vendor escalates unmappable to a hard failure — quarantining a correct reviewer over the
   # capitalisation of its own name.
