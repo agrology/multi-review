@@ -330,12 +330,26 @@ mutations() {
     '    (( 10#$av < 10#$bv )) && return 1' \
     '    (( $av < $bv )) && return 1'
 
-  # The egress guard's symlinked-FILE rejection. (A symlinked DIRECTORY is issue #37 and is NOT
-  # guarded — deliberately absent from this table rather than asserted as caught, since a table
-  # entry is a claim that coverage exists.)
+  # The egress guard's symlinked-FILE rejection. (A symlinked DIRECTORY was issue #37, unguarded
+  # when this entry was written; it is now covered by egress/dir-containment below.)
   mutate 'egress/symlink-file' 'scripts/multi-review-egress-guard.sh' delete \
     'rejects a symlink inside a dir' 'multi-review-egress-guard.test.sh' \
     '[[ -L "$doc" ]] && die "doc must not be a symlink: $doc" 3'
+
+  # ---- egress containment: trust is where a path resolves (issue #37) -------------------------
+  # Neutered, a symlinked doc DIRECTORY arms a file outside the repository and the guard reports
+  # success — the defect this closed, reproduced on main at 9c5eeea.
+  mutate 'egress/dir-containment' 'scripts/multi-review-egress-guard.sh' replace \
+    'symlinked doc dir armed a file outside the tree' 'multi-review-egress-guard.test.sh' \
+    '  if ! _inside "$dir_real"; then' \
+    '  if false; then'
+
+  # The trailing-slash normalisation in the DOC-DIR comparison. It is a second comparison that must
+  # normalise identically to `_inside`, or the two disagree at "/".
+  mutate 'egress/doc-dir-slash-normalised' 'scripts/multi-review-egress-guard.sh' replace \
+    'doc-dir comparison mishandles /' 'multi-review-egress-guard.test.sh' \
+    '    "${dir_real%/}/"*) contained=1; break ;;' \
+    '    "${dir_real}/"*) contained=1; break ;;'
 
   # #24: vendor lookup folds case before matching, or a capitalised model id maps to no vendor and
   # verify-vendor escalates unmappable to a hard failure — quarantining a correct reviewer over the

@@ -214,7 +214,10 @@ run. Reset it with a "forget the reviewers" request.
 - `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2: `local-copy` (docs — a `diff -U20` window plus a notice naming the regions that did not change) and `pr-copy` (PRs — what the author pushed since the last round as a `git diff -U10` delta, guarded against rebases and forward merges). Both carry a **bounded context window** rather than the whole enclosing unit: emitting whole files, whole functions, or whole regions each cost more than the round it replaced, because that scales with the size of what was touched rather than with the size of the change. Both refuse to emit a scoped copy that comes out no smaller than the artifact it replaces; `local-copy` applies that guard only once the artifact is ≥1 KiB, below which scoping cannot win by construction and the waste is bounded by ~1 KiB. Every path that cannot scope exits 3 with its reason and the round falls back to the full artifact, announced.
 - `scripts/multi-review-planlint.sh` — the plan lint: `check <doc> [--repo <root>]`, run before every fan-out
 - `scripts/multi-review-core.sh` — marker state, `sections`, `blocks`; `-wait.sh` — bounded per-copy wait;
-  `-egress-guard.sh` — path validation; `-build-reviewer-bundle.sh` — regenerate the skill bundle;
+  `-egress-guard.sh` — path validation: a configured doc dir is usable only where it **resolves**
+  (a symlinked dir that leaves the invocation tree is skipped with a note, never fatal), and git is
+  not consulted, so `GIT_DIR`/`GIT_WORK_TREE` cannot move the boundary implicitly;
+  `-build-reviewer-bundle.sh` — regenerate the skill bundle;
   `-history-check.sh` — pre-publish sensitive-term gate (see `PUBLISHING.md`)
 - `scripts/*.test.sh` — one suite per script (the gate below)
 - `CLAUDE.md` / `AGENTS.md` — this repo's engineering agreement (§11 = multi-review specifics)

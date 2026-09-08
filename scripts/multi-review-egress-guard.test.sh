@@ -18,7 +18,18 @@ mkdir -p "$SCRATCH"
 echo "# pr review" > "${SCRATCH}/pr-1.md"
 
 DD="${SPECS} ${PLANS}"
-g() { MULTI_REVIEW_DOC_DIRS="$DD" bash "$SUT" "$1" >/dev/null 2>&1; echo $?; }
+# The invocation directory IS the trust anchor (issue #37), so a fixture must be invoked from
+# inside the tree it models. Before this, `g` ran from the repo root while the fixture lived in
+# $WORK, so the anchor was never the fixture's tree and could not be exercised at all.
+g() { ( cd "$WORK" && MULTI_REVIEW_DOC_DIRS="$DD" bash "$SUT" "$1" ) >/dev/null 2>&1; echo $?; }
+
+# This suite is the ONLY one of the 18 that defines no ok()/bad() helpers — it reports inline from
+# check(). Every assertion added below is written in the idiom the other 17 use, so define them
+# here. Without this, `ok "…"` is an UNDEFINED COMMAND: it returns 127 and the `||` FAIL branch
+# fires on the SUCCESS path of every new assertion, no suite can reach `all passed`, and
+# mutation-check refuses every probe on a red baseline.
+ok()  { echo "  ok: $1"; }
+bad() { echo "  FAIL: $1"; fails=$((fails+1)); }
 
 check() { # check <expected-exit> <desc> <path>
   local got; got="$(g "$3")"
@@ -38,6 +49,77 @@ gw() { ( cd "$WORK" && MULTI_REVIEW_DOC_DIRS="$DD" bash "$SUT" "$1" >/dev/null 2
 got="$(gw '.multi-review/reviews/o/r/pr-1.md')"
 [[ "$got" == "0" ]] && echo "  ok: accepts a scratch file under .multi-review/reviews" \
   || { echo "  FAIL: scratch file should arm — got exit $got"; fails=$((fails+1)); }
+
+# ---- issue #37: a doc DIRECTORY that is a symlink must not arm ----------------------------
+# The guard rejects a symlinked doc FILE; nothing looked at the directory, so both sides
+# canonicalised to the out-of-tree target and containment succeeded legitimately.
+OUT="$(mktemp -d)"; trap 'rm -rf "$WORK" "$OUT"' EXIT
+printf '# exfil\n' > "${OUT}/2026-01-01-external.md"
+mkdir -p "${WORK}/linked"
+ln -s "$OUT" "${WORK}/linked/specs"
+
+lg() { ( cd "$WORK" && MULTI_REVIEW_DOC_DIRS="$1" bash "$SUT" "$2" ) >/dev/null 2>&1; echo $?; }
+
+got="$(lg 'linked/specs' 'linked/specs/2026-01-01-external.md')"
+[[ "$got" == "3" ]] && ok "#37: a symlinked doc DIRECTORY is refused" \
+  || bad "symlinked doc dir armed a file outside the tree (exit $got) — issue #37"
+
+# Trust must not be a property of SPELLING. Attempt 2 denied the relative spelling and armed the
+# absolute one, for the same symlink. Both spellings must reach the same verdict.
+rel="$(lg 'linked/specs' 'linked/specs/2026-01-01-external.md')"
+abs="$(lg "${WORK}/linked/specs" "${WORK}/linked/specs/2026-01-01-external.md")"
+[[ "$rel" == "$abs" ]] && ok "spelling: relative and absolute agree on the same symlink ($rel)" \
+  || bad "verdict depends on spelling — relative=$rel absolute=$abs (attempt 2)"
+
+# git must NOT be the trust anchor. Attempt 3 used `git rev-parse --show-toplevel`, which
+# GIT_WORK_TREE redefines, so an environment variable could move the boundary.
+ext="$(mktemp -d)"; mkdir -p "${ext}/docs/specs"
+poisoned="$( cd "$WORK" && GIT_WORK_TREE="$ext" GIT_DIR="${ext}/.git" \
+             MULTI_REVIEW_DOC_DIRS='linked/specs' bash "$SUT" 'linked/specs/2026-01-01-external.md' \
+             >/dev/null 2>&1; echo $? )"
+rm -rf "$ext"
+[[ "$poisoned" == "3" ]] && ok "anchor: GIT_WORK_TREE/GIT_DIR cannot move the boundary" \
+  || bad "GIT_WORK_TREE moved the trust anchor (exit $poisoned) — attempt 3's vector"
+
+# The fix must not OVER-deny: a dir symlinked WITHIN the tree is legitimate and must still arm.
+mkdir -p "${WORK}/real-specs"
+printf '# in-tree\n' > "${WORK}/real-specs/2026-01-02-inside.md"
+ln -s "${WORK}/real-specs" "${WORK}/aliased-specs"
+got="$(lg 'aliased-specs' 'aliased-specs/2026-01-02-inside.md')"
+[[ "$got" == "0" ]] && ok "in-tree symlinked dir still arms (no over-denial)" \
+  || bad "over-denied an in-tree symlinked dir (exit $got)"
+
+# A dir that resolves out of the tree is SKIPPED, not fatal: one bad dir must not veto the rest.
+got="$(lg "linked/specs ${SPECS}" "${SPECS}/a.md")"
+[[ "$got" == "0" ]] && ok "skip-not-veto: a good dir still arms alongside a bad one" \
+  || bad "one out-of-tree dir vetoed a legitimate doc (exit $got)"
+
+# The anchor is `pwd`, which is NOT ours to constrain: a checkout under a path containing a space
+# must still contain its own doc dirs. A space-separated `roots` word-splits into two bogus roots
+# and the repo refuses every review of itself (codex-rd1-r1).
+SPACED="${WORK}/My Repo"; mkdir -p "${SPACED}/docs/specs"
+printf '# spaced\n' > "${SPACED}/docs/specs/2026-01-04-spaced.md"
+got="$( cd "$SPACED" && MULTI_REVIEW_DOC_DIRS='docs/specs' bash "$SUT" 'docs/specs/2026-01-04-spaced.md' >/dev/null 2>&1; echo $? )"
+[[ "$got" == "0" ]] && ok "anchor: a path containing a space still contains its own doc dirs" \
+  || bad "an anchor containing a space cannot contain its own doc dirs (exit $got)"
+
+# An ANCESTOR of the invocation tree is not usable as a configured doc dir, and "/" is the extreme
+# case. codex-rd1-r2 asked for `MULTI_REVIEW_DOC_DIRS=/` to contain an absolute doc; implementing
+# the rule showed that would be a containment hole rather than a fix — "/" contains every path on
+# the machine, so accepting it as a doc dir re-opens exactly what #37 closes. The skip is the rule
+# working. "/" remains usable as an explicit ALLOW-ROOT, where the operator has vouched for it.
+got="$( cd "$WORK" && MULTI_REVIEW_DOC_DIRS='/' bash "$SUT" "${SPECS}/a.md" >/dev/null 2>&1; echo $? )"
+[[ "$got" == "3" ]] && ok "an ancestor doc dir (/) is skipped, not silently trusted" \
+  || bad "configured doc dir / was trusted — every path on the machine is armable (exit $got)"
+
+# The doc-dir comparison needs the SAME trailing-slash normalisation as `_inside`, and this is the
+# one reachable case: invoked FROM "/" with "/" configured, the dir survives `_inside` (it is the
+# anchor), so the second comparison decides. Un-normalised it builds "//*", matches nothing, and a
+# legitimate absolute doc is denied. Contrived, but it is what makes the normalisation testable
+# rather than a line asserted to matter and never exercised.
+got="$( cd / && MULTI_REVIEW_DOC_DIRS='/' bash "$SUT" "${SPECS}/a.md" >/dev/null 2>&1; echo $? )"
+[[ "$got" == "0" ]] && ok "anchored at /, a doc dir of / still contains an absolute doc" \
+  || bad "doc-dir comparison mishandles / — the second comparison is not normalised (exit $got)"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
