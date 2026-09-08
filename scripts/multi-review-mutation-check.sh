@@ -2562,6 +2562,15 @@ mutations() {
     '    grep -qFx -- "$qgot" <<<"$qhashes" \' \
     '    true \'
 
+  # ...and membership is not a BINDING. A record duplicated verbatim hashes to the one manifest
+  # entry, so both copies match and the doc verifies while the gate renders the provider twice
+  # (codex-rd1-r1 on PR #134). Distinct from the entry above and neither masks it: the membership
+  # check alone passes a duplicate, the count alone passes a swap.
+  mutate 'star/verify-quarantine-bound-one-to-one' 'scripts/multi-review-star.sh' replace \
+    'verify accepted a duplicated quarantine record' 'multi-review-star.test.sh' \
+    '  if [[ "$nqdoc" -ne "$nqman" ]]; then' \
+    '  if false; then'
+
   # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
   # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent
   # gate summary means the human approves a claim they were never shown.
@@ -2724,14 +2733,14 @@ mutations() {
     'unterminated row' 'multi-review-core.test.sh' \
     '    END { if (infence) print bstart "\t" (base + NR - 1) "\t" btag }' \
     '    END { }'
-  # Redundant behind the numeric-span check for the EXIT CODE alone; the assertion pins the
-  # message, which is what makes this line load-bearing rather than SURVIVES-BY-DESIGN.
   # The default end counts LINES, not newlines: a `wc -l` default drops the last line of a doc
   # with no trailing newline, so a closing fence ON that line reads as unterminated (#122).
   mutate 'core/blocks-default-end-counts-lines' 'scripts/multi-review-core.sh' replace \
     'no-trailing-newline doc gave' 'multi-review-core.test.sh' \
     '  [[ -n "$end" ]] || end="$(awk '"'"'END{print NR}'"'"' "$doc")"' \
     '  [[ -n "$end" ]] || end="$(wc -l < "$doc" | tr -d '"'"' '"'"')"'
+  # Redundant behind the numeric-span check for the EXIT CODE alone; the assertion pins the
+  # message, which is what makes this line load-bearing rather than SURVIVES-BY-DESIGN.
   mutate 'core/blocks-missing-doc' 'scripts/multi-review-core.sh' delete \
     'missing doc rc=' 'multi-review-core.test.sh' \
     '  [[ -f "$1" ]] || die "blocks: doc not found: $1" 2'

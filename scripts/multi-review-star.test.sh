@@ -1523,9 +1523,12 @@ mkcopy "${QO}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
 bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QO" "${QO}.codex" >/dev/null 2>&1
 cp "$QO" "${QO}.bak"
 printf '<!-- star-quarantined: codex · fabricated · round 1 -->\n' >> "$QO"
-bash "$SUT" verify "$QO" >/dev/null 2>&1 \
-  && bad "verify missed an orphaned quarantine record the manifest does not bind (#123)" \
-  || ok "verify: detects a quarantine record the manifest does not bind (#123)"
+qo_err="$(bash "$SUT" verify "$QO" 2>&1 >/dev/null)"; rc=$?
+# The MESSAGE, not merely a nonzero exit: the one-to-one count guard below also refuses this doc
+# (2 records, 1 entry), so rc alone would credit the membership check for the count guard's work.
+[[ $rc -ne 0 ]] && grep -qF 'no manifest entry binds' <<<"$qo_err" \
+  && ok "verify: detects a quarantine record the manifest does not bind (#123)" \
+  || bad "verify missed an orphaned quarantine record the manifest does not bind (#123): rc=$rc $qo_err"
 # ...and the new direction must be fence-scoped exactly like (d): a QUOTED example inside the
 # review section is documentation, not a live record, and must not fail an otherwise clean doc.
 cp "${QO}.bak" "$QO"
@@ -1534,6 +1537,19 @@ bash "$SUT" verify "$QO" >/dev/null 2>&1 \
   && ok "verify: a fenced quarantine example is not an unbound record (#123)" \
   || bad "the doc->manifest quarantine check is fence-blind: a quoted example failed a clean doc (#123)"
 rm -f "${QO}.bak"
+
+# (codex-rd1-r1) hash MEMBERSHIP is not a binding: a record duplicated verbatim hashes to the same
+# single manifest entry, so both copies "match" and the doc verifies — while the gate renders the
+# provider twice and a human reads two quarantine events where one happened.
+QD="${WORK}/qd.md"; mkbase "$QD"
+mkcopy "${QD}.codex" '> [finding:r1|high] a' '> — via gpt-5.5' '> — risk: r'
+bash "$SUT" merge --round 1 --quarantined gemini:identity-fail "$QD" "${QD}.codex" >/dev/null 2>&1
+qdrec="$(awk '/^<!-- star-quarantined: /{print; exit}' "$QD")"
+printf '%s\n' "$qdrec" >> "$QD"                             # the SAME record, byte-identical
+qd_err="$(bash "$SUT" verify "$QD" 2>&1 >/dev/null)"; rc=$?
+[[ $rc -ne 0 ]] && grep -qF 'quarantine record(s) in the doc but' <<<"$qd_err" \
+  && ok "verify: a duplicated quarantine record is not bound one-to-one (codex-rd1-r1)" \
+  || bad "verify accepted a duplicated quarantine record: rc=$rc $qd_err"
 
 # (#17 fable-r3, LOW) a deleted/truncated footer is caught by the count, not the (now-gone) tail grep
 FD="${WORK}/fd.md"; mkbase "$FD"

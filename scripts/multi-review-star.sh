@@ -1290,6 +1290,18 @@ _structural_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
     grep -qFx -- "$qgot" <<<"$qhashes" \
       || { echo "multi-review-star: verify: quarantine record in the doc that no manifest entry binds: ${qline}" >&2; return 1; }
   done < <(printf '%s\n' "$review" | grep -E '^<!-- star-quarantined: ')
+  # ...and BIND one-to-one, not merely by membership. Hash-membership accepts a DUPLICATED record:
+  # both copies hash to the one manifest entry, so each "matches" and the doc verifies — while
+  # `_quarantines` renders the provider twice and the human reads two quarantine events where one
+  # happened (codex-rd1-r1). Guard (d) already forces every manifest entry to be matched, so equal
+  # counts across the two directions is exactly a one-to-one binding.
+  local nqdoc nqman
+  nqdoc="$(printf '%s\n' "$review" | grep -cE '^<!-- star-quarantined: ')"
+  nqman="$(awk '$1=="quarantine"{c++} END{print c+0}' "${doc}.manifest")"
+  if [[ "$nqdoc" -ne "$nqman" ]]; then
+    echo "multi-review-star: verify: ${nqdoc} quarantine record(s) in the doc but ${nqman} in the manifest — a record is duplicated" >&2
+    return 1
+  fi
   return 0
 }
 
