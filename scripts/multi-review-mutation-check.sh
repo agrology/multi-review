@@ -330,12 +330,61 @@ mutations() {
     '    (( 10#$av < 10#$bv )) && return 1' \
     '    (( $av < $bv )) && return 1'
 
-  # The egress guard's symlinked-FILE rejection. (A symlinked DIRECTORY is issue #37 and is NOT
-  # guarded — deliberately absent from this table rather than asserted as caught, since a table
-  # entry is a claim that coverage exists.)
+  # The egress guard's symlinked-FILE rejection. (A symlinked DIRECTORY was issue #37, unguarded
+  # when this entry was written; it is now covered by egress/dir-containment below.)
   mutate 'egress/symlink-file' 'scripts/multi-review-egress-guard.sh' delete \
     'rejects a symlink inside a dir' 'multi-review-egress-guard.test.sh' \
     '[[ -L "$doc" ]] && die "doc must not be a symlink: $doc" 3'
+
+  # ---- egress containment: trust is where a path resolves (issue #37) -------------------------
+  # Neutered, a symlinked doc DIRECTORY arms a file outside the repository and the guard reports
+  # success — the defect this closed, reproduced on main at 9c5eeea.
+  mutate 'egress/dir-containment' 'scripts/multi-review-egress-guard.sh' replace \
+    'symlinked doc dir armed a file outside the tree' 'multi-review-egress-guard.test.sh' \
+    '  if ! _inside "$dir_real"; then' \
+    '  if false; then'
+
+  # The trailing-slash normalisation in the DOC-DIR comparison. It is a second comparison that must
+  # normalise identically to `_inside`, or the two disagree at "/".
+  mutate 'egress/doc-dir-slash-normalised' 'scripts/multi-review-egress-guard.sh' replace \
+    'doc-dir comparison mishandles /' 'multi-review-egress-guard.test.sh' \
+    '    "${dir_real%/}/"*) contained=1; break ;;' \
+    '    "${dir_real}/"*) contained=1; break ;;'
+
+  # The allowlist canonicalisation. Mutated to trust the RAW string, a root given by a symlinked
+  # spelling no longer matches the canonical dir it names, so the re-admission this feature exists
+  # to provide silently stops working. The entry deliberately names the RE-ADMISSION assertion: the
+  # sibling case denies for an unrelated reason (a different tree) and cannot go red here — naming
+  # it WOULD report SURVIVED on Linux and MISCREDITED on macOS.
+  mutate 'egress/allow-roots-canonical' 'scripts/multi-review-egress-guard.sh' replace \
+    'allowlisted root did not re-admit' 'multi-review-egress-guard.test.sh' \
+    '  r_real="$(cd "$r" 2>/dev/null && pwd -P)" || {' \
+    '  r_real="$r" || {'
+
+  # The trailing-slash normalisation in `_inside`. Without it a root of "/" builds the pattern
+  # "//*", which matches nothing, so an allow-root of "/" admits nothing at all.
+  mutate 'egress/root-slash-normalised' 'scripts/multi-review-egress-guard.sh' replace \
+    'allow-root / did not admit' 'multi-review-egress-guard.test.sh' \
+    '    case "${p}/" in "${root%/}/"*) return 0 ;; esac' \
+    '    case "${p}/" in "${root}/"*) return 0 ;; esac'
+
+  # The resolver's containment filter. Neutered, resolve-doc hands back a doc from an out-of-tree
+  # symlinked dir that the egress guard then refuses — the contradiction in issue #37 item 6, where
+  # the denial message names a dir the doc legitimately came from.
+  mutate 'core/resolve-doc-containment' 'scripts/multi-review-core.sh' replace \
+    'which the egress guard denies' 'multi-review-packaging.test.sh' \
+    '  local dirs; dirs="$(_usable_dirs "$configured" | tr '"'"'\n'"'"' '"'"' '"'"')"' \
+    '  local dirs="$configured"'
+
+  # The drop NOTICE. Silenced, a configured doc dir that resolves out of the tree is discarded with
+  # empty stderr: a stale in-tree doc is armed as though nothing were wrong, and the linked-worktree
+  # case reports only "no dated docs" while the one dir holding them was discarded. Deferring the
+  # announcement to the egress guard does not work — it breaks on the first containing dir and does
+  # not run at all when nothing resolves (codex-rd1-r1, fable-rd1-r1).
+  mutate 'core/resolve-doc-drop-notice' 'scripts/multi-review-core.sh' replace \
+    'was discarded silently' 'multi-review-core.test.sh' \
+    '      echo "multi-review-core: note — doc dir '"'"'$d'"'"' resolves outside the invocation tree ($dir_real); not searched. Set MULTI_REVIEW_ALLOW_ROOTS to vouch for it." >&2' \
+    '      :'
 
   # #24: vendor lookup folds case before matching, or a capitalised model id maps to no vendor and
   # verify-vendor escalates unmappable to a hard failure — quarantining a correct reviewer over the

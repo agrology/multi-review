@@ -142,6 +142,34 @@ msg="$(cd "$RD2" && MULTI_REVIEW_DOC_DIRS="docs/specs" bash "$SUT" resolve-doc 2
   && ok "resolve-doc: older sibling notes without warning" || bad "wrong branch for an older sibling ('$msg')"
 rm -f "${RD2}/docs/specs/2026-12-01-newest-here.md"
 
+# --- a dir dropped for resolving out of the tree ANNOUNCES itself (codex-rd1-r1, fable-rd1-r1) ---
+# The drop cannot defer to the egress guard: the guard breaks on the first dir that contains the
+# pick, so a dropped dir listed after it is never visited, and on the zero-candidates path the
+# guard never runs. Both shapes are asserted here.
+RDX="${WORK}/rdx"; RDX_OUT="${WORK}/rdx-out"
+mkdir -p "$RDX/docs/specs" "$RDX_OUT"
+echo "# old" > "$RDX/docs/specs/2026-01-01-inside.md"
+echo "# new" > "$RDX_OUT/2026-06-01-external.md"
+ln -s "$RDX_OUT" "$RDX/docs/plans"
+msg="$(cd "$RDX" && MULTI_REVIEW_DOC_DIRS='docs/specs docs/plans' bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" == *"docs/plans"* && "$msg" == *"outside the invocation tree"* ]] \
+  && ok "resolve-doc: a dropped out-of-tree dir is named on stderr" \
+  || bad "an out-of-tree doc dir was discarded silently ('$msg')"
+[[ "$msg" == *"MULTI_REVIEW_ALLOW_ROOTS"* ]] \
+  && ok "resolve-doc: the drop note points at the way to re-admit it" \
+  || bad "the drop note does not name MULTI_REVIEW_ALLOW_ROOTS ('$msg')"
+
+# The same note must appear on the ZERO-CANDIDATES path, where the guard never runs at all — the
+# linked-worktree case this feature exists for.
+RDY="${WORK}/rdy"; RDY_OUT="${WORK}/rdy-out"
+mkdir -p "$RDY/docs/superpowers" "$RDY_OUT"
+echo "# plan" > "$RDY_OUT/2026-06-01-plan.md"
+ln -s "$RDY_OUT" "$RDY/docs/superpowers/plans"
+msg="$(cd "$RDY" && bash "$SUT" resolve-doc 2>&1 >/dev/null)"
+[[ "$msg" == *"docs/superpowers/plans"* && "$msg" == *"outside the invocation tree"* ]] \
+  && ok "resolve-doc: the drop is named even when nothing resolves at all" \
+  || bad "zero-candidates path discarded a dir silently ('$msg')"
+
 # --- zero candidates names what was searched, not just "none found" ---
 RD3="${WORK}/rd3"; mkdir -p "$RD3/docs/specs"
 msg="$(cd "$RD3" && bash "$SUT" resolve-doc 2>&1 >/dev/null)"

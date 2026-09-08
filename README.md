@@ -165,6 +165,7 @@ Run **`/multi-review --check-reviewers`** to verify every reviewer's setup at a 
 | `MULTI_REVIEW_MAX_ROUNDS` | `5` | round **ceiling** (each round costs N dispatches; convergence is adaptive) |
 | `MULTI_REVIEW_REVIEWER_MODEL` | *(provider default)* | pin a provider's model (`codex`→`gpt-5.6-terra`, `fable`→`fable`, `gemini`→`gemini-pro-latest`) |
 | `MULTI_REVIEW_DOC_DIRS` | `docs/specs docs/plans docs/superpowers/specs docs/superpowers/plans` | where bare-name local docs are resolved. Covers the plain and `superpowers` layouts out of the box. Bare-name resolution **warns** when a newer dated doc sits in a directory it did not search — the egress guard cannot catch that, since the doc it picked is legitimately inside the configured dirs. |
+| `MULTI_REVIEW_ALLOW_ROOTS` | *(unset)* | extra roots the operator vouches for, beyond the invocation tree, space-separated. A configured doc dir that resolves outside the tree is skipped; naming its target root here re-admits it — the linked-worktree case, where a gitignored `docs/superpowers/plans` is symlinked into the main checkout. **Security:** an entry is a *root*, and containment stays canonical — allowlisting a checkout permits dirs that **resolve** under it, never paths that merely look like it. Widening the boundary is always explicit: nothing infers a root. |
 | `MULTI_REVIEW_GEMINI_AUTOTRUST` | *(off)* | `=1` scopes `GEMINI_CLI_TRUST_WORKSPACE=true` to the gemini dispatch **and to `doctor`'s live probe, which runs the same argv** (no profile edit needed). **Security:** trusting a workspace lets gemini honor its `.env`/settings and auto-edit — enable only for repos you trust, never a freshly-cloned one. |
 
 The last explicitly-named reviewer combo is remembered per repo in **`.multi-review/reviewers.pref`**
@@ -214,7 +215,10 @@ run. Reset it with a "forget the reviewers" request.
 - `scripts/multi-review-scope.sh` — diff-scoped copies for round N≥2: `local-copy` (docs — a `diff -U20` window plus a notice naming the regions that did not change) and `pr-copy` (PRs — what the author pushed since the last round as a `git diff -U10` delta, guarded against rebases and forward merges). Both carry a **bounded context window** rather than the whole enclosing unit: emitting whole files, whole functions, or whole regions each cost more than the round it replaced, because that scales with the size of what was touched rather than with the size of the change. Both refuse to emit a scoped copy that comes out no smaller than the artifact it replaces; `local-copy` applies that guard only once the artifact is ≥1 KiB, below which scoping cannot win by construction and the waste is bounded by ~1 KiB. Every path that cannot scope exits 3 with its reason and the round falls back to the full artifact, announced.
 - `scripts/multi-review-planlint.sh` — the plan lint: `check <doc> [--repo <root>]`, run before every fan-out
 - `scripts/multi-review-core.sh` — marker state, `sections`, `blocks`; `-wait.sh` — bounded per-copy wait;
-  `-egress-guard.sh` — path validation; `-build-reviewer-bundle.sh` — regenerate the skill bundle;
+  `-egress-guard.sh` — path validation: a configured doc dir is usable only where it **resolves**
+  (a symlinked dir that leaves the invocation tree is skipped with a note, never fatal), and git is
+  not consulted, so `GIT_DIR`/`GIT_WORK_TREE` cannot move the boundary implicitly;
+  `-build-reviewer-bundle.sh` — regenerate the skill bundle;
   `-history-check.sh` — pre-publish sensitive-term gate (see `PUBLISHING.md`)
 - `scripts/*.test.sh` — one suite per script (the gate below)
 - `CLAUDE.md` / `AGENTS.md` — this repo's engineering agreement (§11 = multi-review specifics)

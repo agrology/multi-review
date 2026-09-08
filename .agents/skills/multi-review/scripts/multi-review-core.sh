@@ -138,15 +138,58 @@ _dated_docs() {
 # inside the configured dirs, so the egress guard can never catch a wrong-doc resolution. Naming
 # what was searched — and any UNSEARCHED sibling that holds dated docs — is what turns a silent
 # wrong answer into an obvious misconfiguration.
+# _usable_dirs <dirs> : the subset of <dirs> that resolve inside the invocation tree or an
+# allowlisted root, one per line. DUPLICATED from multi-review-egress-guard.sh for module
+# isolation, the same way star.sh duplicates core's awk — core.sh is vendored into reviewer
+# bundles, so it must not depend on another script at runtime. The two implementations are pinned
+# in agreement by a behavioural assertion in multi-review-packaging.test.sh; if you change one,
+# that assertion fails until you change the other.
+_usable_dirs() {
+  local anchor roots r r_real d dir_real
+  anchor="$(pwd -P)" || return 0
+  roots=("$anchor")
+  for r in ${MULTI_REVIEW_ALLOW_ROOTS:-}; do
+    r_real="$(cd "$r" 2>/dev/null && pwd -P)" || continue
+    roots+=("$r_real")
+  done
+  for d in $1; do
+    dir_real="$(cd "$d" 2>/dev/null && pwd -P)" || continue
+    usable=0
+    for r in "${roots[@]}"; do
+      case "${dir_real}/" in
+        "${r%/}/"*) usable=1; break ;;
+      esac
+    done
+    if (( usable )); then
+      printf '%s\n' "$d"
+    else
+      # ANNOUNCE THE DROP HERE. This function is the only place that knows a configured dir was
+      # discarded, and deferring to the egress guard does not work: the guard `break`s on the first
+      # dir that contains the pick, so a dropped dir listed after it is never visited, and on the
+      # zero-candidates path the guard never runs at all. Both were reproduced — a stale doc armed
+      # with empty stderr, and the linked-worktree case reporting only "no dated docs" while the
+      # one dir holding them had been discarded (codex-rd1-r1, fable-rd1-r1).
+      echo "multi-review-core: note — doc dir '$d' resolves outside the invocation tree ($dir_real); not searched. Set MULTI_REVIEW_ALLOW_ROOTS to vouch for it." >&2
+    fi
+  done
+}
+
 cmd_resolve_doc() {
-  local dirs="${MULTI_REVIEW_DOC_DIRS:-$DOC_DIRS_DEFAULT}" d
+  local configured="${MULTI_REVIEW_DOC_DIRS:-$DOC_DIRS_DEFAULT}" d
+  # Search only dirs the egress guard would accept, or this can return a doc the guard denies —
+  # with a message contradicting where the doc came from (issue #37 item 6).
+  local dirs; dirs="$(_usable_dirs "$configured" | tr '\n' ' ')"
   local all; all="$(mktemp)" || die "mktemp failed" 2
   for d in $dirs; do _dated_docs "$d"; done | LC_ALL=C sort -r > "$all"
 
   local n; n="$(grep -c . "$all" || true)"
   if (( n == 0 )); then
     rm -f "$all"
-    die "no dated (YYYY-MM-DD-*.md) docs under MULTI_REVIEW_DOC_DIRS ($dirs)$(_sibling_hint "$dirs") — pass an explicit path" 1
+    # Name what was CONFIGURED, not the filtered subset: a dir dropped for being unresolvable or
+    # out-of-tree is exactly the misconfiguration this message exists to surface (#35), and
+    # printing only the survivors would hide it. The drop itself is announced by `_usable_dirs`,
+    # which runs on every path including this one — the egress guard cannot be relied on for it.
+    die "no dated (YYYY-MM-DD-*.md) docs under MULTI_REVIEW_DOC_DIRS ($configured)$(_sibling_hint "$dirs") — pass an explicit path" 1
   fi
 
   local first second fb sb
@@ -185,7 +228,14 @@ cmd_resolve_doc() {
 # or a nested `docs/specs/archive/` read as "NOT searched" and fire a false alarm on every run
 # (fable-rd1-r1, fable-rd1-r6) — and the command prose tells the primary to relay that as a
 # misconfiguration.
-# _in_tree <dir> : 0 when <dir> RESOLVES inside the working tree. This is a REPORTING guard —
+# _in_tree <dir> : 0 when <dir> RESOLVES inside the working tree. NOTE: this is the THIRD
+# containment rule in play and it is deliberately NOT `_usable_dirs`: it takes the anchor alone,
+# ignoring MULTI_REVIEW_ALLOW_ROOTS, and does not normalise a trailing slash. That is sound for
+# what it does — keeping an advisory hint from naming out-of-tree paths — but it means an
+# allowlisted sibling holding a newer doc raises no WARNING (fable-rd1-r2). Widening it would put
+# an arming-relevant rule behind a reporting path; it is recorded here instead so the difference is
+# deliberate rather than drift.
+# This is a REPORTING guard —
 # it keeps an advisory hint from naming out-of-tree paths — NOT an arming decision, so it
 # deliberately uses `pwd -P` and never `git rev-parse`: an inherited GIT_WORK_TREE can redefine
 # what git calls the root (codex-rd3-r1), and no hint is worth that dependency.

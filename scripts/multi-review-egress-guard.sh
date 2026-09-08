@@ -22,13 +22,65 @@ doc_dirs="${MULTI_REVIEW_DOC_DIRS:-docs/specs docs/plans docs/superpowers/specs 
 
 doc_dir_real="$(cd "$(dirname "$doc")" 2>/dev/null && pwd -P)" || die "cannot resolve doc path: $doc" 3
 
-# --- canonical containment in ANY configured dir ---
+# --- trust anchor: where a path RESOLVES, never how it was spelled (issue #37) ---
+# The anchor is the invocation directory, canonical. git is deliberately NOT consulted: an earlier
+# attempt anchored on `git rev-parse --show-toplevel`, which GIT_WORK_TREE and GIT_DIR redefine, so
+# an environment variable could move the containment boundary (verified exit 0). Nothing can
+# redefine `pwd -P`.
+#
+# An ARRAY, not a space-separated string. The no-spaces convention covers values the OPERATOR
+# configures; it cannot cover `pwd`. A checkout under "/Users/me/My Repo" would word-split into
+# two bogus roots and fail to contain its own doc dirs — the repo would refuse every review of
+# itself. `roots` always holds at least the anchor, so "${roots[@]}" is safe under `set -u` on
+# bash 3.2, where expanding an EMPTY array is a fatal unbound-variable error.
+anchor="$(pwd -P)" || die "cannot resolve the invocation directory" 2
+
+# Roots the operator vouches for, beyond the invocation tree. A relative entry resolves against the
+# invocation directory exactly as a doc dir does — there is no second spelling rule, because
+# trust-by-spelling is precisely what made an earlier attempt deny a symlink spelled relatively and
+# arm the same symlink spelled absolutely.
+# Space-separated and word-split by design, matching MULTI_REVIEW_DOC_DIRS: an individual root
+# cannot contain spaces. An entry that does not resolve is dropped with a note rather than being
+# fatal — a stale entry in a shell profile must not break every review in every repo.
+roots=("$anchor")
+for r in ${MULTI_REVIEW_ALLOW_ROOTS:-}; do
+  r_real="$(cd "$r" 2>/dev/null && pwd -P)" || {
+    echo "multi-review-egress-guard: note — allowed root '$r' does not resolve; ignoring it" >&2
+    continue
+  }
+  roots+=("$r_real")
+done
+
+# _inside <path> : true when <path> resolves inside any root.
+# `${root%/}` normalises the trailing slash so a root of "/" yields the prefix "/" and matches
+# everything — the correct answer at "/", where everything IS inside the tree. Without it the
+# pattern is "//*", which matches nothing, and no dir could ever arm.
+_inside() {
+  local p="$1" root
+  for root in "${roots[@]}"; do
+    case "${p}/" in "${root%/}/"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# --- canonical containment in ANY USABLE configured dir ---
+# A dir that resolves outside every root is SKIPPED with a note, never fatal: one bad dir must not
+# veto every review in the repo, including PR-mode reviews that use no doc dirs at all.
+# The doc needs no separate check — it is contained in a dir that is itself inside a root, so its
+# own containment follows transitively.
 contained=0
 # .multi-review/reviews is always an allowed arming root (PR-mode scratch files live there).
 for d in $doc_dirs .multi-review/reviews; do
   dir_real="$(cd "$d" 2>/dev/null && pwd -P)" || continue
+  if ! _inside "$dir_real"; then
+    echo "multi-review-egress-guard: note — doc dir '$d' resolves outside the invocation tree ($dir_real); skipping it" >&2
+    continue
+  fi
+  # `${dir_real%/}` for the SAME reason as in `_inside`, and it is a separate comparison that must
+  # normalise identically or the two disagree at "/": a configured doc dir of "/" would otherwise
+  # build the pattern "//*", match nothing, and contain no doc anywhere.
   case "${doc_dir_real}/" in
-    "${dir_real}/"*) contained=1; break ;;
+    "${dir_real%/}/"*) contained=1; break ;;
   esac
 done
 (( contained == 1 )) || die "doc is outside MULTI_REVIEW_DOC_DIRS ($doc_dirs): resolves to $doc_dir_real" 3
