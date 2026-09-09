@@ -230,6 +230,15 @@ _symcheck_added() { # <doc> -> "<K>"
     | tail -1
 }
 
+# _symcheck_added_count <doc> -> how many rounds recorded one. The record carries no round of its
+# own and the reader above is `tail -1`, so a later round that FORGOT to record would render an
+# earlier round's count as current — #99's own gap, moved one round down (fable-rd2-r2). Exactly one
+# record per round is mandated, so a count below the marker's round is a derivable "nobody looked".
+_symcheck_added_count() { # <doc> -> "<N>"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -cE '^> \[symcheck-added: [0-9]+\]'
+}
+
 # _planlint_coverage <doc> — the plan lint's durable line (spec B5), read the way the two pass
 # readers above read theirs. Records that the lint RAN this round; passing is what the blocking
 # fan-out step guarantees.
@@ -1812,15 +1821,27 @@ cmd_gate_summary() {
     # turn, so EVERY round has one to record — round 1 included, whose fixes are unchecked for
     # exactly the same reason. Gating the NO RECORD on round > 1 hid the commonest case of the gap:
     # a review that converges at round 1 and never records anything rendered as if all was checked.
-    local sadd; sadd="$(_symcheck_added "$doc")"
-    if [[ -n "$sadd" ]]; then
-      if [[ "$sadd" == "0" ]]; then
+    #
+    # DORMANT ON A PR SCRATCH (fable-rd2-r1). `rows` is not applicable to one by construction — no
+    # `**Files:**` sections — so the round records `not applicable`, which is NON-EMPTY and reaches
+    # here: the coverage enclosure above does NOT keep PR scratches out, only this does. The primary
+    # never edits a PR diff, so no block can be added to it and the warning could never be true.
+    # The plan-lint block below branches on the same flavor, for the same kind of reason (#118).
+    if [[ "$(_doc_flavor "$doc")" != pr ]]; then
+      local sadd sn srd
+      sadd="$(_symcheck_added "$doc")"
+      sn="$(_symcheck_added_count "$doc")"
+      srd="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')"
+      if [[ -z "$sadd" ]]; then
+        echo "  — round 1 only: NO RECORD of whether blocks were added since"
+      elif [[ "$srd" =~ ^[0-9]+$ ]] && (( sn < srd )); then
+        # A count that is not current is worse than none: it reads as an all-clear.
+        echo "  — round 1 only: the block count is STALE — ${sn} of ${srd} round(s) recorded one"
+      elif [[ "$sadd" == "0" ]]; then
         echo "  — round 1 only: no net change in block count since (a one-for-one swap would not show here)"
       else
         echo "  — round 1 only: ${sadd} more block(s) now than were checked, so at least ${sadd} are unchecked"
       fi
-    else
-      echo "  — round 1 only: NO RECORD of whether blocks were added since"
     fi
     echo
   fi

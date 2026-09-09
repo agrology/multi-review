@@ -1063,7 +1063,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
        > [symcheck-added: <K>]
 
    Record it when `<K>` is `0` too — "I checked and nothing was added" and "nobody looked" are
-   different facts, and the gate renders them differently.
+   different facts, and the gate renders them differently. **Exactly one record per round**: the
+   record carries no round of its own, so the gate reads a count below the marker's round as a
+   round that never looked, and renders the number STALE rather than as an all-clear.
+
+   **Skip this entirely on a PR-flavor doc.** You never edit a PR diff, so no block can be added to
+   it, and `rows` is not applicable to a scratch by construction. The gate is dormant there too;
+   recording a ritual `0` every round would be noise that looks like a check.
 
    **`<K>` is a COUNT, not an identity diff, and the gate says so.** Rows are positional (`B<n>`)
    and carry line ranges that shift on any edit above them, so a round that REPLACES one block with

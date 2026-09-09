@@ -1192,6 +1192,17 @@ else
   grep -qF 'COUNT, not an identity diff' <<<"$ptblk" \
     && ok "command: the added-count's blind spot (a swapped block) is stated (#99)" \
     || bad "command: <K> is presented as if it detected any change, which it does not"
+  # The gate reads "fewer records than rounds" as a round that never looked, so the instruction has
+  # to promise exactly one per round — otherwise a conscientious primary that records twice in one
+  # round, or once every other round, trips a warning it was never told how to avoid.
+  grep -qF 'Exactly one record per round' <<<"$ptblk" \
+    && ok "command: exactly one record per round is stated, which is what STALE keys off (fable-rd2-r2)" \
+    || bad "command: nothing states the one-per-round rule the gate's staleness check depends on"
+  # And a PR scratch must be told to skip, or the primary records a ritual zero every round that
+  # looks like a check and can never mean anything.
+  grep -qF 'Skip this entirely on a PR-flavor doc' <<<"$ptblk" \
+    && ok "command: the record is skipped on a PR scratch, matching the gate (fable-rd2-r1)" \
+    || bad "command: a PR-flavor primary is told to record a count that cannot mean anything"
 fi
 
 # --- the symcheck pass must be derived, dispatched, merged, checked and announced ---

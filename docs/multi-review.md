@@ -289,7 +289,10 @@ unrelated to those rows. Its findings still merge normally
 way a provider's findings are), so a `defect` still reaches the human gate even from an
 otherwise-incomplete turn.
 
-Each round records a durable coverage line alongside the round's quarantine records:
+**Round 1 records a durable coverage line** alongside the round's quarantine records — round 1,
+not every round: like the symbol-check pass below, this one is derived and dispatched once per
+review, because the pairs it compares mostly live in unedited text that a diff-scoped round-N copy
+does not carry.
 
     > [crossref-coverage: not applicable]
     > [crossref-coverage: <M>/<M> rows verdicted]

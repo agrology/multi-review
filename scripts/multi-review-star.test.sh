@@ -3054,17 +3054,42 @@ grep -qF 'NO RECORD of whether blocks were added' <<<"$out" \
   && ok "gate-summary: a round-1 review with no added-count is NO RECORD too (fable-rd1-r1)" \
   || bad "gate-summary: a single-round review hid the gap — its own fixes are unchecked: $out"
 
-# A doc with NO symcheck coverage line at all (a PR scratch, where the pass never applies) stays
-# fully dormant: nothing to render, and no NO RECORD for a pass that was never expected.
-SA0="${WORK}/sym-added-none.md"
-{ echo "# Doc"; echo '<!-- multi-review: converged · round 2/5 -->'
-  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
-  printf '%s\n' '> [finding:codex-rd1-r1|low] x' '> — via codex-model' '> — risk: r' \
-    '> [agree:codex-rd1-r1]' '> — via claude-opus-5'; } > "$SA0"
+# A PR scratch renders NONE of this (fable-rd2-r1). `symcheck.sh rows` exits 3 on a PR scratch by
+# construction — pr.sh writes no `**Files:**` sections — so the round records
+# `[symcheck-coverage: not applicable]`, which is NON-EMPTY and therefore reaches the block below.
+# The coverage enclosure alone does NOT keep PR scratches out; only the flavor does. The primary
+# never edits a PR diff, so no block can be added to it and the warning could never be true.
+SA0="${WORK}/sym-added-pr.md"
+{ echo "# PR review: something"; echo '<!-- multi-review: converged · round 2/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo
+  echo '- **PR:** https://github.com/o/r/pull/1'; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: not applicable]'; } > "$SA0"
 out="$(bash "$SUT" gate-summary "$SA0" claude-opus-5 2>/dev/null)"
 grep -qF 'round 1 only:' <<<"$out" \
-  && bad "gate-summary: a doc where symcheck never applied was given an added-count line: $out" \
-  || ok "gate-summary: no symcheck coverage line means no added-count line either (#99)"
+  && bad "gate-summary: a PR scratch was warned about unchecked blocks it cannot have: $out" \
+  || ok "gate-summary: the added-count line is dormant on a PR scratch (fable-rd2-r1)"
+
+# A record carries no round and the reader is `tail -1`, so a later round that FORGOT to record
+# would render an earlier round's count as current — the #99 gap moved one round down. Exactly one
+# record per round is mandated, so fewer records than the marker's round is a derivable gap.
+SA3="${WORK}/sym-added-stale.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 3/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]' '> [symcheck-added: 0]'; } > "$SA3"
+out="$(bash "$SUT" gate-summary "$SA3" claude-opus-5 2>/dev/null)"
+grep -qF 'STALE' <<<"$out" \
+  && ok "gate-summary: fewer records than rounds renders STALE, not the old count (fable-rd2-r2)" \
+  || bad "gate-summary: a round-1 record rendered as current on a round-3 review: $out"
+
+# ...and a review whose every round DID record renders the value, not STALE.
+SA4="${WORK}/sym-added-current.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 2/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]' '> [symcheck-added: 0]' '> [symcheck-added: 3]'; } > "$SA4"
+out="$(bash "$SUT" gate-summary "$SA4" claude-opus-5 2>/dev/null)"
+grep -qF '3 more block(s)' <<<"$out" && ! grep -qF 'STALE' <<<"$out" \
+  && ok "gate-summary: one record per round renders the latest count (fable-rd2-r2)" \
+  || bad "gate-summary: a complete record set was reported stale or lost its count: $out"
 
 # --- round-stats is the OTHER STAR_PASSES consumer, and the one #90 shipped without ---
 # gate-summary and round-stats read the same string but in different code; in the #90 build the
