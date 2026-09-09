@@ -1807,16 +1807,19 @@ cmd_gate_summary() {
     # findings, which are the least-reviewed code in the change by construction. Say which.
     # Rendered for the not-applicable case too: a round-1 doc with no blocks that GAINS one is
     # exactly this gap, and the coverage line alone would read as "nothing to check".
-    local sadd sround
-    sadd="$(_symcheck_added "$doc")"
-    sround="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')"
+    #
+    # NOT conditioned on the round (fable-rd1-r1). The primary records this at the END of its own
+    # turn, so EVERY round has one to record — round 1 included, whose fixes are unchecked for
+    # exactly the same reason. Gating the NO RECORD on round > 1 hid the commonest case of the gap:
+    # a review that converges at round 1 and never records anything rendered as if all was checked.
+    local sadd; sadd="$(_symcheck_added "$doc")"
     if [[ -n "$sadd" ]]; then
       if [[ "$sadd" == "0" ]]; then
         echo "  — round 1 only: no net change in block count since (a one-for-one swap would not show here)"
       else
         echo "  — round 1 only: ${sadd} more block(s) now than were checked, so at least ${sadd} are unchecked"
       fi
-    elif [[ "$sround" =~ ^[0-9]+$ ]] && (( sround > 1 )); then
+    else
       echo "  — round 1 only: NO RECORD of whether blocks were added since"
     fi
     echo

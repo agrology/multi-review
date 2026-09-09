@@ -3042,15 +3042,29 @@ grep -qF 'NO RECORD of whether blocks were added' <<<"$out" \
   && ok "gate-summary: a round-2 review with no added-count is reported NO RECORD (#99)" \
   || bad "gate-summary: an unrecorded later round is silent: $out"
 
-# ...and stays DORMANT on a single-round review, which has no later round to report on.
+# ...including a review that converged at ROUND 1 (fable-rd1-r1). The pass runs at round 1's
+# fan-out, so the primary's own fixes are unchecked in every round — round 1 included. Treating a
+# one-round review as "nothing to report" would hide the most common case of the gap entirely.
 SA1="${WORK}/sym-added-rd1.md"
 { echo "# Doc"; echo '<!-- multi-review: converged · round 1/5 -->'
   echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
   printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]'; } > "$SA1"
 out="$(bash "$SUT" gate-summary "$SA1" claude-opus-5 2>/dev/null)"
 grep -qF 'NO RECORD of whether blocks were added' <<<"$out" \
-  && bad "gate-summary: a single-round review was told blocks might be unchecked: $out" \
-  || ok "gate-summary: the added-count line stays dormant on a round-1 review (#99)"
+  && ok "gate-summary: a round-1 review with no added-count is NO RECORD too (fable-rd1-r1)" \
+  || bad "gate-summary: a single-round review hid the gap — its own fixes are unchecked: $out"
+
+# A doc with NO symcheck coverage line at all (a PR scratch, where the pass never applies) stays
+# fully dormant: nothing to render, and no NO RECORD for a pass that was never expected.
+SA0="${WORK}/sym-added-none.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 2/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [finding:codex-rd1-r1|low] x' '> — via codex-model' '> — risk: r' \
+    '> [agree:codex-rd1-r1]' '> — via claude-opus-5'; } > "$SA0"
+out="$(bash "$SUT" gate-summary "$SA0" claude-opus-5 2>/dev/null)"
+grep -qF 'round 1 only:' <<<"$out" \
+  && bad "gate-summary: a doc where symcheck never applied was given an added-count line: $out" \
+  || ok "gate-summary: no symcheck coverage line means no added-count line either (#99)"
 
 # --- round-stats is the OTHER STAR_PASSES consumer, and the one #90 shipped without ---
 # gate-summary and round-stats read the same string but in different code; in the #90 build the

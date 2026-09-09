@@ -2150,8 +2150,17 @@ mutations() {
     '       > [symcheck-noted]'
   mutate 'command/symcheck-added-derivation' 'commands/multi-review.md' replace \
     'nothing says how <K> is derived' 'multi-review-packaging.test.sh' \
-    '   Let `<K>` be that count minus the `<M>` recorded in round 1'"'"'s `symcheck-coverage` line (`0` if' \
-    '   Let `<K>` be that count minus what round 1 recorded (`0` if'
+    '   the count above minus `<M>`, floored at `0`. An exit 3 from `rows` means the current count is' \
+    '   the count above minus `<M>`. An exit 3 from `rows` means the current count is'
+
+  # (fable-rd1-r1/r4) The paragraph must stay IN THE PRIMARY TURN and say EVERY round. Recorded in
+  # the fan-out it runs before the body edits, so the count predates this round's own fixes — and
+  # on the final round those are exactly the blocks nobody checks. The packaging window is scoped
+  # to the Primary turn section, so weakening this phrase is what the assertion sees.
+  mutate 'command/symcheck-added-in-primary-turn' 'commands/multi-review.md' replace \
+    'nothing pins the record to the primary turn' 'multi-review-packaging.test.sh' \
+    '   **Record what the symbol-check pass did not see — EVERY round, and here, not in the fan-out' \
+    '   **Record what the symbol-check pass did not see'
 
   # The blind spot must stay stated. A reader who believes `<K>` detects any change will read a
   # zero as "nothing happened", when a one-for-one block swap produces exactly that zero.
@@ -2602,10 +2611,10 @@ mutations() {
     "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order, PLUS one 'quarantine <provider>=<hash>' line for each entry in a footer's 'quarantined:' list — verify binds these by hash, so the key needs no round suffix) and re-run\" 1" \
     "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run\" 1"
 
-  # (#99) ...and the gate must RENDER it. Three branches, three assertions: a positive count says
-  # blocks are unchecked, a zero says so without implying it saw a swap, and a later round that
-  # recorded nothing is NO RECORD rather than silence. The dormancy branch is guarded too — firing
-  # this on a round-1 review would tell the human code is unchecked when the pass covered all of it.
+  # (#99) ...and the gate must RENDER it. FOUR outcomes, four entries: a positive count, a zero
+  # that does not overclaim, a NO RECORD when nothing was written, and silence on a doc where the
+  # pass never applied. The first cut of this comment said "three branches, three assertions" and
+  # was wrong by one — fable-rd1-r3 caught the zero branch having no entry at all.
   mutate 'star/gate-symcheck-added-rendered' 'scripts/multi-review-star.sh' replace \
     'round-1-only gap is silent' 'multi-review-star.test.sh' \
     '        echo "  — round 1 only: ${sadd} more block(s) now than were checked, so at least ${sadd} are unchecked"' \
@@ -2614,10 +2623,22 @@ mutations() {
     'an unrecorded later round is silent' 'multi-review-star.test.sh' \
     '      echo "  — round 1 only: NO RECORD of whether blocks were added since"' \
     '      :'
-  mutate 'star/gate-symcheck-added-dormant-rd1' 'scripts/multi-review-star.sh' replace \
-    'a single-round review was told blocks might be unchecked' 'multi-review-star.test.sh' \
-    '    elif [[ "$sround" =~ ^[0-9]+$ ]] && (( sround > 1 )); then' \
-    '    else'
+  # (fable-rd1-r3) The ZERO branch needed its own entry. The rendering has four outcomes, not the
+  # three the first cut of this comment claimed, and the one it left uncovered is the anti-overclaim
+  # wording the whole design leans on: a COUNT cannot see a one-for-one swap, so a bare "no change"
+  # here would assert more than the number knows.
+  mutate 'star/gate-symcheck-added-zero' 'scripts/multi-review-star.sh' replace \
+    'zero added-count rendered nothing or overclaimed' 'multi-review-star.test.sh' \
+    '        echo "  — round 1 only: no net change in block count since (a one-for-one swap would not show here)"' \
+    '        :'
+
+  # A doc where the pass never applied at all must stay silent — the whole added-count block is
+  # inside the coverage-line enclosure, and hoisting it out would put a NO RECORD on every PR
+  # scratch, where symcheck is not applicable by construction.
+  mutate 'star/gate-symcheck-added-scoped-to-coverage' 'scripts/multi-review-star.sh' replace \
+    'was given an added-count line' 'multi-review-star.test.sh' \
+    '  local sx; sx="$(_symcheck_coverage "$doc")"' \
+    '  local sx; sx="${sx:-4/4 rows verdicted}"'
 
   # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
   # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent

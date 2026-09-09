@@ -1167,6 +1167,33 @@ else
 fi
 
 
+# --- symcheck's round-1-only gap must be RECORDED, and recorded in the primary turn (#99) ---
+# The window is the assertion. In the fan-out this paragraph would run BEFORE the body edits, so
+# the count would predate the round's own fixes — and on the final round those are exactly the
+# blocks nobody checks (fable-rd1-r1). It would also sit under step 8's "skip entirely on round
+# N >= 2" header, which the paragraph itself contradicts (fable-rd1-r4).
+pt="$(grep -n '^#### Primary turn' "$CMD" | head -1 | cut -d: -f1)"
+pte="$(awk -v s="$pt" 'NR>s && /^### /{print NR; exit}' "$CMD")"
+if [[ -z "$pt" || -z "$pte" ]]; then
+  bad "command: the Primary turn section could not be located, so #99's record cannot be scoped"
+else
+  ptblk="$(sed -n "${pt},$((pte-1))p" "$CMD")"
+  grep -qF 'symcheck-added: <K>]' <<<"$ptblk" \
+    && ok "command: the primary records the count of blocks the symcheck pass never saw (#99)" \
+    || bad "command: no round records blocks added after round 1 — the gate cannot show the gap"
+  grep -qF 'EVERY round, and here, not in the fan-out' <<<"$ptblk" \
+    && ok "command: the record is pinned to every round and to the primary turn (fable-rd1-r1)" \
+    || bad "command: nothing pins the record to the primary turn, so a fan-out count predates the round's own fixes"
+  grep -qF 'floored at `0`' <<<"$ptblk" \
+    && ok "command: <K>'s derivation names <M> and the floor unambiguously (fable-rd1-r2)" \
+    || bad "command: nothing says how <K> is derived, so the count is left to invention"
+  # The wording must not overclaim: a COUNT cannot see a one-for-one swap, and a reader who thinks
+  # it can will trust a zero that means nothing.
+  grep -qF 'COUNT, not an identity diff' <<<"$ptblk" \
+    && ok "command: the added-count's blind spot (a swapped block) is stated (#99)" \
+    || bad "command: <K> is presented as if it detected any change, which it does not"
+fi
+
 # --- the symcheck pass must be derived, dispatched, merged, checked and announced ---
 # Patterns are the SYMCHECK-prefixed forms, never the bare `<M>/<M> rows verdicted]` the plan
 # sketched: that one now has two matches in this file (crossref writes the same shape), so it is
@@ -1199,20 +1226,6 @@ else
   grep -qF 'symcheck-coverage: <N>/<M> rows verdicted]' <<<"$blk" \
     && ok "command: the incomplete symcheck state is recorded" \
     || bad "command: the incomplete symcheck coverage state is never recorded"
-  # (#99) The pass is round 1 only, so a block added while fixing a finding is never checked. The
-  # later rounds must RECORD that, or the gate renders round 1's clean count alone and a review
-  # that added unchecked code is byte-identical to one that added none.
-  grep -qF 'symcheck-added: <K>]' <<<"$blk" \
-    && ok "command: later rounds record the count of blocks added since the pass ran (#99)" \
-    || bad "command: no round records blocks added after round 1 — the gate cannot show the gap"
-  grep -qF 'minus the `<M>` recorded in round 1' <<<"$blk" \
-    && ok "command: the added-count is derived against round 1's recorded <M> (#99)" \
-    || bad "command: nothing says how <K> is derived, so the count is left to invention"
-  # The wording must not overclaim: a COUNT cannot see a one-for-one swap, and a reader who thinks
-  # it can will trust a zero that means nothing.
-  grep -qF 'COUNT, not an identity diff' <<<"$blk" \
-    && ok "command: the added-count's blind spot (a swapped block) is stated (#99)" \
-    || bad "command: <K> is presented as if it detected any change, which it does not"
   grep -qF 'Wait on the symcheck pass here too' <<<"$blk" \
     && ok "command: the symcheck copy is waited on with the secondaries" \
     || bad "command: nothing waits on <doc>.symcheck — merge could run before the pass writes anything"

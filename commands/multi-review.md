@@ -896,32 +896,6 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
         is byte-identical at the gate to a review where this pass was never wired up.
       - **Exit 2** → a usage/infra error on YOUR side. Fix the invocation; nothing is recorded.
 
-   **Blocks added since the pass ran — ROUND N ≥ 2 ONLY, and never skipped (#99).** The pass above
-   is round 1 only, so it covers the document as the secondaries FIRST read it. Every
-   ready-to-paste block you add afterwards — typically while fixing a finding this review raised —
-   is never checked against the repository, and that is the least-reviewed code in the change by
-   construction. Left unrecorded, round 1's clean `<M>/<M>` is what the gate renders, and a review
-   that added unchecked code reads exactly like one that added none.
-
-   So on every round N ≥ 2, before you flip the marker, re-derive the count and record it:
-
-       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-symcheck.sh rows "<doc>" | wc -l
-
-   Let `<K>` be that count minus the `<M>` recorded in round 1's `symcheck-coverage` line (`0` if
-   that line said `not applicable`, and `0` if the subtraction goes negative). Append, alongside
-   this round's quarantine records:
-
-       > [symcheck-added: <K>]
-
-   Record it when `<K>` is `0` too — "I checked and nothing was added" and "nobody looked" are
-   different facts, and the gate renders them differently. An exit 3 from `rows` counts as `0`
-   blocks, not as a skip.
-
-   **`<K>` is a COUNT, not an identity diff, and the gate says so.** Rows are positional (`B<n>`)
-   and carry line ranges that shift on any edit above them, so a round that REPLACES one block with
-   another nets zero here and reports no change. Closing that needs a stable per-block identity —
-   option 2 in #99 — and neither this instruction nor the gate wording may imply it exists.
-
    **Plan-lint coverage, in this same step — EVERY round, not round 1 only.** The fan-out's lint ran
    this round (it blocks the fan-out until it exits 0 or 3), so record which. If it exited 3,
    append `> [planlint-coverage: not applicable]` under `<doc>`'s `## Review` heading, alongside
@@ -1065,6 +1039,36 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    outside `## Review`. `refan-check` refuses a re-fan
    while any resolved record lacks one, in every round: a record names an earlier-round finding by
    rule, so its own round cannot be read from the id, and it is your claim regardless.
+
+   **Record what the symbol-check pass did not see — EVERY round, and here, not in the fan-out
+   (#99).** That pass is derived and dispatched in ROUND 1 ONLY, so it covers the document as the
+   secondaries first read it. Every ready-to-paste block you have just added while addressing this
+   round's findings is unchecked against the repository, and that is the least-reviewed code in the
+   change by construction. Left unrecorded, round 1's clean `<M>/<M>` is all the gate renders, and a
+   review that added unchecked code reads exactly like one that added none.
+
+   **This belongs at the END of your turn, not in the fan-out.** The fan-out runs BEFORE you edit
+   the body, so a count taken there predates this round's own fixes — and on the final round those
+   are precisely the blocks nobody will ever check. Take it after your last edit and before you
+   touch the marker, every round including round 1: round 1's fixes are unchecked too, and a review
+   that converges at round 1 would otherwise record nothing at all.
+
+       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-symcheck.sh rows "<doc>" | wc -l
+
+   Let `<M>` be the total from round 1's `symcheck-coverage` line — `<M>` is `0` when that line said
+   `not applicable`, which is the doc that shipped no blocks and has since gained some. Let `<K>` be
+   the count above minus `<M>`, floored at `0`. An exit 3 from `rows` means the current count is
+   `0`, not that the step is skipped. Append, under `<doc>`'s `## Review` heading:
+
+       > [symcheck-added: <K>]
+
+   Record it when `<K>` is `0` too — "I checked and nothing was added" and "nobody looked" are
+   different facts, and the gate renders them differently.
+
+   **`<K>` is a COUNT, not an identity diff, and the gate says so.** Rows are positional (`B<n>`)
+   and carry line ranges that shift on any edit above them, so a round that REPLACES one block with
+   another nets zero here and reports no change. Closing that needs a stable per-block identity —
+   option 2 in #99 — and neither this instruction nor the gate wording may imply it exists.
 
 5. Decide: **converge**, or re-enter `awaiting-secondaries` for another round.
 
