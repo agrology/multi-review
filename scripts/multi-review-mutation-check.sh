@@ -2139,6 +2139,50 @@ mutations() {
     '   round N ≥ 2, skip this sub-step entirely** — steps 4, 5, 7 and 8'"'"'s symcheck clauses then have' \
     '   steps 4, 5, 7 and 8'"'"'s symcheck clauses then have'
 
+  # (#99) The pass is ROUND 1 ONLY (the two entries above pin that, deliberately). What was missing
+  # is any record that later rounds went unchecked: round 1's clean `<M>/<M>` was all the gate saw,
+  # so a review that added unchecked code rendered identically to one that added none. Three
+  # separate guards — the instruction to record it, how `<K>` is derived, and the honesty about
+  # what a COUNT cannot see — each with its own named assertion.
+  mutate 'command/symcheck-added-recorded' 'commands/multi-review.md' replace \
+    'no round records blocks added after round 1' 'multi-review-packaging.test.sh' \
+    '       > [symcheck-added: <K>]' \
+    '       > [symcheck-noted]'
+  mutate 'command/symcheck-added-derivation' 'commands/multi-review.md' replace \
+    'nothing says how <K> is derived' 'multi-review-packaging.test.sh' \
+    '   the count above minus `<M>`, floored at `0`. An exit 3 from `rows` means the current count is' \
+    '   the count above minus `<M>`. An exit 3 from `rows` means the current count is'
+
+  # (fable-rd2-r2) The gate keys STALE off "fewer records than rounds", so the instruction must
+  # promise exactly one per round — without it a primary recording on its own cadence trips a
+  # warning it was never told how to avoid.
+  mutate 'command/symcheck-added-one-per-round' 'commands/multi-review.md' replace \
+    'nothing states the one-per-round rule' 'multi-review-packaging.test.sh' \
+    '   different facts, and the gate renders them differently. **Exactly one record per round**: the' \
+    '   different facts, and the gate renders them differently. The'
+
+  # (fable-rd2-r1) ...and a PR-flavor primary must be told to skip, matching the gate's dormancy.
+  mutate 'command/symcheck-added-skip-on-pr' 'commands/multi-review.md' replace \
+    'told to record a count that cannot mean anything' 'multi-review-packaging.test.sh' \
+    '   **Skip this entirely on a PR-flavor doc.** You never edit a PR diff, so no block can be added to' \
+    '   You never edit a PR diff, so no block can be added to'
+
+  # (fable-rd1-r1/r4) The paragraph must stay IN THE PRIMARY TURN and say EVERY round. Recorded in
+  # the fan-out it runs before the body edits, so the count predates this round's own fixes — and
+  # on the final round those are exactly the blocks nobody checks. The packaging window is scoped
+  # to the Primary turn section, so weakening this phrase is what the assertion sees.
+  mutate 'command/symcheck-added-in-primary-turn' 'commands/multi-review.md' replace \
+    'nothing pins the record to the primary turn' 'multi-review-packaging.test.sh' \
+    '   **Record what the symbol-check pass did not see — EVERY round, and here, not in the fan-out' \
+    '   **Record what the symbol-check pass did not see'
+
+  # The blind spot must stay stated. A reader who believes `<K>` detects any change will read a
+  # zero as "nothing happened", when a one-for-one block swap produces exactly that zero.
+  mutate 'command/symcheck-added-count-not-identity' 'commands/multi-review.md' replace \
+    '<K> is presented as if it detected any change' 'multi-review-packaging.test.sh' \
+    '   **`<K>` is a COUNT, not an identity diff, and the gate says so.** Rows are positional (`B<n>`)' \
+    '   **`<K>` has a blind spot.** Rows are positional (`B<n>`)'
+
   mutate 'command/symcheck-not-a-secondary' 'commands/multi-review.md' replace \
     'nothing says the symcheck pass is not a secondary' 'multi-review-packaging.test.sh' \
     '   argument, so **the symcheck pass is not a secondary**: like the crossref pass it is excluded' \
@@ -2580,6 +2624,45 @@ mutations() {
     'recovery instruction omits the quarantine line' 'multi-review-star.test.sh' \
     "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order, PLUS one 'quarantine <provider>=<hash>' line for each entry in a footer's 'quarantined:' list — verify binds these by hash, so the key needs no round suffix) and re-run\" 1" \
     "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run\" 1"
+
+  # (#99) ...and the gate must RENDER it. FIVE outcomes, five entries: a positive count, a zero that
+  # does not overclaim, a NO RECORD when nothing was written, a STALE when some round forgot, and
+  # silence on a PR scratch. This comment has now been wrong about the count twice — "three
+  # branches" (fable-rd1-r3 found the zero branch uncovered) and then four (fable-rd2-r1/r2 added
+  # the flavor and staleness branches). Count the `echo`s before trusting it again.
+  mutate 'star/gate-symcheck-added-rendered' 'scripts/multi-review-star.sh' replace \
+    'round-1-only gap is silent' 'multi-review-star.test.sh' \
+    '        echo "  — round 1 only: ${sadd} more block(s) now than were checked, so at least ${sadd} are unchecked"' \
+    '        :'
+  mutate 'star/gate-symcheck-added-no-record' 'scripts/multi-review-star.sh' replace \
+    'an unrecorded later round is silent' 'multi-review-star.test.sh' \
+    '        echo "  — round 1 only: NO RECORD of whether blocks were added since"' \
+    '      :'
+  # (fable-rd1-r3) The ZERO branch needed its own entry. The rendering has four outcomes, not the
+  # three the first cut of this comment claimed, and the one it left uncovered is the anti-overclaim
+  # wording the whole design leans on: a COUNT cannot see a one-for-one swap, so a bare "no change"
+  # here would assert more than the number knows.
+  mutate 'star/gate-symcheck-added-zero' 'scripts/multi-review-star.sh' replace \
+    'zero added-count rendered nothing or overclaimed' 'multi-review-star.test.sh' \
+    '        echo "  — round 1 only: no net change in block count since (a one-for-one swap would not show here)"' \
+    '        :'
+
+  # (fable-rd2-r1) A PR scratch must stay silent, and the COVERAGE ENCLOSURE DOES NOT DO THAT — the
+  # first cut of this entry said it did, which was simply false: `rows` exits 3 on a scratch, the
+  # round records `not applicable`, and a non-empty `sx` reaches the block. Only the flavor branch
+  # keeps it out. The primary never edits a PR diff, so the warning could never be true there.
+  mutate 'star/gate-symcheck-added-dormant-on-pr' 'scripts/multi-review-star.sh' replace \
+    'was warned about unchecked blocks it cannot have' 'multi-review-star.test.sh' \
+    '    if [[ "$(_doc_flavor "$doc")" != pr ]]; then' \
+    '    if true; then'
+
+  # (fable-rd2-r2) A count that is not current is worse than none — it reads as an all-clear. The
+  # record carries no round, and the reader is `tail -1`, so without this a round that forgot to
+  # record renders an earlier round's number as this round's fact: #99's own gap, one round down.
+  mutate 'star/gate-symcheck-added-stale' 'scripts/multi-review-star.sh' replace \
+    'rendered as current on a round-3 review' 'multi-review-star.test.sh' \
+    '      elif [[ "$srd" =~ ^[0-9]+$ ]] && (( sn < srd )); then' \
+    '      elif false; then'
 
   # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
   # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent

@@ -3006,6 +3006,91 @@ grep -qF 'symcheck-rd1-r1' <<<"$out" \
   && ok "gate-summary: the pass's findings are still present" \
   || bad "gate-summary: the exclusion suppressed the findings along with the raiser — criterion 11"
 
+# --- symcheck runs round 1 only, so later rounds' blocks are UNCHECKED (#99) ---
+# The pass is derived and dispatched in round 1 only, so a ready-to-paste block the author adds
+# while fixing a finding is never checked against the repo — the least-reviewed code in the change
+# by construction. The gate must say so rather than render round 1's clean count alone, which is
+# indistinguishable from a review where nothing was added.
+D="$(mkstar sym-added.md \
+  '> [symcheck-coverage: 4/4 rows verdicted]' \
+  '> [symcheck-added: 2]')"
+out="$(bash "$SUT" gate-summary "$D" claude-opus-5 2>/dev/null)"
+grep -qF 'more block(s) now than were checked' <<<"$out" \
+  && ok "gate-summary: blocks added after round 1 are reported as unchecked (#99)" \
+  || bad "gate-summary: round-1-only gap is silent — 4/4 reads as fully checked: $out"
+
+# Zero is recorded and rendered too, and the wording must NOT overclaim: this is a COUNT, not an
+# identity diff, so a round that swapped one block for another nets zero and would show here as
+# no change. Option 2 in #99 (a stable per-block identity) is what would close that; the gate must
+# not imply it already has.
+D="$(mkstar sym-added0.md \
+  '> [symcheck-coverage: 4/4 rows verdicted]' \
+  '> [symcheck-added: 0]')"
+out="$(bash "$SUT" gate-summary "$D" claude-opus-5 2>/dev/null)"
+grep -qF 'no net change in block count' <<<"$out" \
+  && ok "gate-summary: a zero added-count renders, and says a swap would not show (#99)" \
+  || bad "gate-summary: zero added-count rendered nothing or overclaimed: $out"
+
+# A multi-round review that recorded NOTHING is the failure this feature exists to make visible —
+# byte-identical at the gate to a single-round review without it, unless the gate derives it.
+SA2="${WORK}/sym-added-norecord.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 2/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]'; } > "$SA2"
+out="$(bash "$SUT" gate-summary "$SA2" claude-opus-5 2>/dev/null)"
+grep -qF 'NO RECORD of whether blocks were added' <<<"$out" \
+  && ok "gate-summary: a round-2 review with no added-count is reported NO RECORD (#99)" \
+  || bad "gate-summary: an unrecorded later round is silent: $out"
+
+# ...including a review that converged at ROUND 1 (fable-rd1-r1). The pass runs at round 1's
+# fan-out, so the primary's own fixes are unchecked in every round — round 1 included. Treating a
+# one-round review as "nothing to report" would hide the most common case of the gap entirely.
+SA1="${WORK}/sym-added-rd1.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 1/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]'; } > "$SA1"
+out="$(bash "$SUT" gate-summary "$SA1" claude-opus-5 2>/dev/null)"
+grep -qF 'NO RECORD of whether blocks were added' <<<"$out" \
+  && ok "gate-summary: a round-1 review with no added-count is NO RECORD too (fable-rd1-r1)" \
+  || bad "gate-summary: a single-round review hid the gap — its own fixes are unchecked: $out"
+
+# A PR scratch renders NONE of this (fable-rd2-r1). `symcheck.sh rows` exits 3 on a PR scratch by
+# construction — pr.sh writes no `**Files:**` sections — so the round records
+# `[symcheck-coverage: not applicable]`, which is NON-EMPTY and therefore reaches the block below.
+# The coverage enclosure alone does NOT keep PR scratches out; only the flavor does. The primary
+# never edits a PR diff, so no block can be added to it and the warning could never be true.
+SA0="${WORK}/sym-added-pr.md"
+{ echo "# PR review: something"; echo '<!-- multi-review: converged · round 2/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo
+  echo '- **PR:** https://github.com/o/r/pull/1'; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: not applicable]'; } > "$SA0"
+out="$(bash "$SUT" gate-summary "$SA0" claude-opus-5 2>/dev/null)"
+grep -qF 'round 1 only:' <<<"$out" \
+  && bad "gate-summary: a PR scratch was warned about unchecked blocks it cannot have: $out" \
+  || ok "gate-summary: the added-count line is dormant on a PR scratch (fable-rd2-r1)"
+
+# A record carries no round and the reader is `tail -1`, so a later round that FORGOT to record
+# would render an earlier round's count as current — the #99 gap moved one round down. Exactly one
+# record per round is mandated, so fewer records than the marker's round is a derivable gap.
+SA3="${WORK}/sym-added-stale.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 3/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]' '> [symcheck-added: 0]'; } > "$SA3"
+out="$(bash "$SUT" gate-summary "$SA3" claude-opus-5 2>/dev/null)"
+grep -qF 'STALE' <<<"$out" \
+  && ok "gate-summary: fewer records than rounds renders STALE, not the old count (fable-rd2-r2)" \
+  || bad "gate-summary: a round-1 record rendered as current on a round-3 review: $out"
+
+# ...and a review whose every round DID record renders the value, not STALE.
+SA4="${WORK}/sym-added-current.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 2/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]' '> [symcheck-added: 0]' '> [symcheck-added: 3]'; } > "$SA4"
+out="$(bash "$SUT" gate-summary "$SA4" claude-opus-5 2>/dev/null)"
+grep -qF '3 more block(s)' <<<"$out" && ! grep -qF 'STALE' <<<"$out" \
+  && ok "gate-summary: one record per round renders the latest count (fable-rd2-r2)" \
+  || bad "gate-summary: a complete record set was reported stale or lost its count: $out"
+
 # --- round-stats is the OTHER STAR_PASSES consumer, and the one #90 shipped without ---
 # gate-summary and round-stats read the same string but in different code; in the #90 build the
 # round-stats consumer was missed entirely and the pass got its own provider column plus a vote in

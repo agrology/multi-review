@@ -289,7 +289,10 @@ unrelated to those rows. Its findings still merge normally
 way a provider's findings are), so a `defect` still reaches the human gate even from an
 otherwise-incomplete turn.
 
-Each round records a durable coverage line alongside the round's quarantine records:
+**Round 1 records a durable coverage line** alongside the round's quarantine records — round 1,
+not every round: like the symbol-check pass below, this one is derived and dispatched once per
+review, because the pairs it compares mostly live in unedited text that a diff-scoped round-N copy
+does not carry.
 
     > [crossref-coverage: not applicable]
     > [crossref-coverage: <M>/<M> rows verdicted]
@@ -358,7 +361,8 @@ An exit-1 turn is **reported, never quarantined**, for the same reason as above,
 merge normally (`multi-review-star.sh merge --pass "<doc>.symcheck"`, namespaced
 `symcheck-rd<N>-<id>`).
 
-Each round records a durable coverage line alongside the round's quarantine records:
+**Round 1 records a durable coverage line** alongside the round's quarantine records — round 1,
+not every round: this pass is derived and dispatched once per review, not once per round.
 
     > [symcheck-coverage: not applicable]
     > [symcheck-coverage: <M>/<M> rows verdicted]
@@ -367,6 +371,26 @@ Each round records a durable coverage line alongside the round's quarantine reco
 `gate-summary` renders it beside the cross-reference line — `Symbol-check pass: not applicable`,
 `Symbol-check pass: <M>/<M> rows verdicted`, or `Symbol-check pass: <N>/<M> rows verdicted —
 INCOMPLETE`.
+
+**Every round records what the pass therefore did not see** (#99), written by the primary at the
+END of its own turn — after the edits that address that round's findings, before it touches the
+marker. Because the pass runs in round 1 only, its count covers the document as the secondaries
+first read it, not the ready-to-paste code the author adds afterwards while fixing findings, which
+is the least-reviewed code in the change by construction. Round 1 records one too: its own fixes
+are unchecked for exactly the same reason, and a review that converges at round 1 is the commonest
+shape of the gap. Each round records:
+
+    > [symcheck-added: <K>]
+
+`<K>` is the doc's current `rows` count minus round 1's `<M>` (`0` when that line said `not
+applicable`), floored at `0`. The gate renders it under the coverage line — `— round 1 only: <K> more block(s) now than were checked, so at least <K> are
+unchecked`, or `— round 1 only: no net change in block count since (a one-for-one swap would not
+show here)`, and `— round 1 only: NO RECORD of whether blocks were added since` when no round
+recorded one at all. A document where the pass never applied renders none of this.
+
+`<K>` is a **count, not an identity diff**: rows are positional (`B<n>`) and carry line ranges that
+shift on any edit above them, so a round that replaces one block with another nets zero. That blind
+spot is why the zero wording names it rather than claiming nothing changed.
 
 **Known limits of the introduces set**, in both directions. It harvests the backticked tokens from
 `- Create:`/`- Produces:` lines, and a block ends only at a blank line — so a prose-heavy entry

@@ -214,6 +214,31 @@ _symcheck_coverage() { # <doc> -> "not applicable" | "N/M rows verdicted"
     | tail -1
 }
 
+# _symcheck_added <doc> — the durable count of ready-to-paste blocks the doc has gained since the
+# symbol-check pass ran (#99). The pass is round 1 only, so a block added while fixing a finding is
+# never checked; the primary records this each later round and the gate renders it beside the
+# coverage line. Read like its siblings, last one wins.
+#
+# It is a COUNT, not an identity diff: rows are positional (`B<n>`) and carry line ranges that
+# shift on any edit above them, so a round that swaps one block for another nets zero here. Closing
+# that needs a stable per-block identity — option 2 in #99 — and the rendering below is worded so
+# the gate does not imply this already has one.
+_symcheck_added() { # <doc> -> "<K>"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -oE '^> \[symcheck-added: [0-9]+\]' \
+    | sed -E 's/^> \[symcheck-added: ([0-9]+)\]$/\1/' \
+    | tail -1
+}
+
+# _symcheck_added_count <doc> -> how many rounds recorded one. The record carries no round of its
+# own and the reader above is `tail -1`, so a later round that FORGOT to record would render an
+# earlier round's count as current — #99's own gap, moved one round down (fable-rd2-r2). Exactly one
+# record per round is mandated, so a count below the marker's round is a derivable "nobody looked".
+_symcheck_added_count() { # <doc> -> "<N>"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -cE '^> \[symcheck-added: [0-9]+\]'
+}
+
 # _planlint_coverage <doc> — the plan lint's durable line (spec B5), read the way the two pass
 # readers above read theirs. Records that the lint RAN this round; passing is what the blocking
 # fan-out step guarantees.
@@ -1784,6 +1809,38 @@ cmd_gate_summary() {
         echo "Symbol-check pass: ${sx}"
       else
         echo "Symbol-check pass: ${sx} — INCOMPLETE"
+      fi
+    fi
+    # (#99) The pass runs in ROUND 1 ONLY, so the count above covers the document as the
+    # secondaries first read it — not the blocks the author added afterwards while fixing their
+    # findings, which are the least-reviewed code in the change by construction. Say which.
+    # Rendered for the not-applicable case too: a round-1 doc with no blocks that GAINS one is
+    # exactly this gap, and the coverage line alone would read as "nothing to check".
+    #
+    # NOT conditioned on the round (fable-rd1-r1). The primary records this at the END of its own
+    # turn, so EVERY round has one to record — round 1 included, whose fixes are unchecked for
+    # exactly the same reason. Gating the NO RECORD on round > 1 hid the commonest case of the gap:
+    # a review that converges at round 1 and never records anything rendered as if all was checked.
+    #
+    # DORMANT ON A PR SCRATCH (fable-rd2-r1). `rows` is not applicable to one by construction — no
+    # `**Files:**` sections — so the round records `not applicable`, which is NON-EMPTY and reaches
+    # here: the coverage enclosure above does NOT keep PR scratches out, only this does. The primary
+    # never edits a PR diff, so no block can be added to it and the warning could never be true.
+    # The plan-lint block below branches on the same flavor, for the same kind of reason (#118).
+    if [[ "$(_doc_flavor "$doc")" != pr ]]; then
+      local sadd sn srd
+      sadd="$(_symcheck_added "$doc")"
+      sn="$(_symcheck_added_count "$doc")"
+      srd="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')"
+      if [[ -z "$sadd" ]]; then
+        echo "  — round 1 only: NO RECORD of whether blocks were added since"
+      elif [[ "$srd" =~ ^[0-9]+$ ]] && (( sn < srd )); then
+        # A count that is not current is worse than none: it reads as an all-clear.
+        echo "  — round 1 only: the block count is STALE — ${sn} of ${srd} round(s) recorded one"
+      elif [[ "$sadd" == "0" ]]; then
+        echo "  — round 1 only: no net change in block count since (a one-for-one swap would not show here)"
+      else
+        echo "  — round 1 only: ${sadd} more block(s) now than were checked, so at least ${sadd} are unchecked"
       fi
     fi
     echo
