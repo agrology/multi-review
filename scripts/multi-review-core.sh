@@ -362,7 +362,10 @@ cmd_blocks() { # <doc> [<start> <end>]
   [[ $# -ge 1 ]] || die "usage: multi-review-core.sh blocks <doc> [<start> <end>]" 2
   [[ -f "$1" ]] || die "blocks: doc not found: $1" 2
   local doc="$1" start="${2:-1}" end="${3:-}"
-  [[ -n "$end" ]] || end="$(wc -l < "$doc" | tr -d ' ')"
+  # NR, not `wc -l`: a doc with no trailing newline has one fewer newline than lines, and a
+  # `wc -l` default would drop its last line from the scan — silently reporting a block whose
+  # closing fence IS that last line as unterminated (#122).
+  [[ -n "$end" ]] || end="$(awk 'END{print NR}' "$doc")"
   [[ "$start" =~ ^[0-9]+$ && "$end" =~ ^[0-9]+$ ]] || die "blocks: start and end must be line numbers, got '${start}' '${end}'" 2
   sed -n "${start},${end}p" "$doc" | awk -v base="$start" '
     {

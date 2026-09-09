@@ -915,12 +915,16 @@ mutations() {
   # rounds: it appends and rebuilds the manifest from THAT ROUND ALONE. Since #107 (1da040f) the
   # self-check runs on the STAGED merge, so on the BASE57 doc the finding-id cross-check refuses the
   # write and leaves the doc untouched — every BASE57 assertion passes with this line deleted, and
-  # this entry credited BASE57 until it did. What the cross-check cannot see is a dropped round that
-  # left no FINDING: the quarantine-only round in BASE57Q rebuilds the manifest, matches the id sets
-  # trivially, passes the footer count, and COMMITS — orphaning round 1's quarantine record from its
-  # manifest, a doc `verify` then calls consistent. That is the assertion this entry names.
+  # this entry credited BASE57 until it did. What the cross-check could not see is a dropped round
+  # that left no FINDING: the quarantine-only round in BASE57Q rebuilds the manifest, matches the id
+  # sets trivially, passes the footer count, and COMMITS — orphaning round 1's quarantine record.
+  # Since #123 the staged self-check DOES see that (guard (e), doc->manifest), so "refused, doc
+  # untouched" is now true with this line deleted too and no longer distinguishes the two. What
+  # remains uniquely this guard's is WHICH refusal the operator gets: the pre-check names the
+  # missing manifest and how to rebuild it, and the structural error does not. That message is the
+  # assertion this entry now names.
   mutate 'star/merge-missing-manifest' 'scripts/multi-review-star.sh' replace \
-    'merge missing-manifest mutated a quarantine-only doc (partial merge)' 'multi-review-star.test.sh' \
+    'merge missing-manifest refusal did not come from the pre-check' 'multi-review-star.test.sh' \
     "    nfoot=\"\$(review_section \"\$doc\" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->\$')\"" \
     '    nfoot=0'
 
@@ -2550,6 +2554,33 @@ mutations() {
     '  cmd_resolved "$doc" >/dev/null || { echo "multi-review-star: verify: undisclosed or contradictory [resolved:] record" >&2; return 1; }' \
     '  true'
 
+  # Guard (d) is one-directional — manifest→doc. Without its reverse, a durable in-doc quarantine
+  # record that NO manifest entry binds verifies clean, and the gate-summary readability list and
+  # the independence scan both read those lines (#123).
+  mutate 'star/verify-quarantine-doc-to-manifest' 'scripts/multi-review-star.sh' replace \
+    'verify missed an orphaned quarantine record' 'multi-review-star.test.sh' \
+    '    grep -qFx -- "$qgot" <<<"$qhashes" \' \
+    '    true \'
+
+  # ...and membership is not a BINDING. A duplicated record hashes to the one manifest entry so both
+  # copies match, and — at an equal total — one provider's record can stand in for another's
+  # (codex-rd1-r1 / codex-rd2-r1 on PR #134). Comparing the sorted hash MULTISETS is the binding.
+  # It does not mask the entry above: that one's assertion pins the membership MESSAGE, which this
+  # check does not produce.
+  mutate 'star/verify-quarantine-bound-one-to-one' 'scripts/multi-review-star.sh' replace \
+    'verify accepted skewed quarantine multiplicity' 'multi-review-star.test.sh' \
+    '  if [[ "$qdocsum" != "$qmansum" ]]; then' \
+    '  if false; then'
+
+  # The pre-check's recovery instruction must actually recover: guard (e) refuses a doc whose
+  # quarantine record no manifest entry binds, so a manifest rebuilt from `finding` lines alone is
+  # un-verifiable and the operator is stuck with an error that never says what was omitted
+  # (fable-rd2-r1 on PR #134).
+  mutate 'star/merge-missing-manifest-recovery-names-quarantine' 'scripts/multi-review-star.sh' replace \
+    'recovery instruction omits the quarantine line' 'multi-review-star.test.sh' \
+    "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order, PLUS one 'quarantine <provider>=<hash>' line for each entry in a footer's 'quarantined:' list — verify binds these by hash, so the key needs no round suffix) and re-run\" 1" \
+    "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run\" 1"
+
   # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
   # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent
   # gate summary means the human approves a claim they were never shown.
@@ -2712,6 +2743,12 @@ mutations() {
     'unterminated row' 'multi-review-core.test.sh' \
     '    END { if (infence) print bstart "\t" (base + NR - 1) "\t" btag }' \
     '    END { }'
+  # The default end counts LINES, not newlines: a `wc -l` default drops the last line of a doc
+  # with no trailing newline, so a closing fence ON that line reads as unterminated (#122).
+  mutate 'core/blocks-default-end-counts-lines' 'scripts/multi-review-core.sh' replace \
+    'no-trailing-newline doc gave' 'multi-review-core.test.sh' \
+    '  [[ -n "$end" ]] || end="$(awk '"'"'END{print NR}'"'"' "$doc")"' \
+    '  [[ -n "$end" ]] || end="$(wc -l < "$doc" | tr -d '"'"' '"'"')"'
   # Redundant behind the numeric-span check for the EXIT CODE alone; the assertion pins the
   # message, which is what makes this line load-bearing rather than SURVIVES-BY-DESIGN.
   mutate 'core/blocks-missing-doc' 'scripts/multi-review-core.sh' delete \
@@ -2758,6 +2795,12 @@ mutations() {
     'repo-only target' 'multi-review-planlint.test.sh' \
     '         && ! { [[ -f "${repo}/${rel}" ]] && _line_present "$old" "${repo}/${rel}"; }; then' \
     '         ; then'
+  # An empty expect must not pass vacuously: `grep -qF -- ""` matches any non-empty file, so
+  # without this guard an entry that names NO assertion reads as covered (#120).
+  mutate 'planlint/empty-label-not-vacuous' 'scripts/multi-review-planlint.sh' replace \
+    'empty label verdict' 'multi-review-planlint.test.sh' \
+    '    elif [[ -z "$expect" ]]; then' \
+    '    elif false; then'
   mutate 'planlint/defect-exits-1' 'scripts/multi-review-planlint.sh' replace \
     'with a label-missing row' 'multi-review-planlint.test.sh' \
     '  (( bad == 0 ))' \

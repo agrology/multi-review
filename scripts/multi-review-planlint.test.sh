@@ -68,6 +68,15 @@ out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"; rc=$?
 [[ "$(verdict "$out" l/sbd)" == ok ]] && ok "check: SURVIVES-BY-DESIGN needs no label" || bad "check: SBD verdict '$(verdict "$out" l/sbd)'"
 [[ $rc -eq 1 ]] && ok "check: one defect makes the exit 1" || bad "check: rc=$rc with a label-missing row"
 
+# An EMPTY expect label is label-missing, not a vacuous pass: `grep -qF -- ""` matches any
+# non-empty file, so the label check below would accept it without any assertion existing (#120).
+D="$(mkdoc empty-label.md '# Plan' '' '```bash' 'guard_a || die "a"' '```' '' '```bash' \
+  "  mutate 'l/empty' 'scripts/x.sh' delete '' 'x.test.sh' 'guard_a || die \"a\"'" \
+  '```' '' '## Review' '')"
+out="$(bash "$SUT" check "$D" --repo "$REPO" 2>/dev/null)"; rc=$?
+[[ "$(verdict "$out" l/empty)" == label-missing ]] && ok "check: an empty expect label is label-missing" || bad "check: empty label verdict '$(verdict "$out" l/empty)'"
+[[ $rc -eq 1 ]] && ok "check: an empty expect label is a defect" || bad "check: empty label rc=$rc"
+
 # --- duplicate-id ---
 D="$(mkdoc dup.md '# Plan' '' '```bash' 'g1 || die' 'g2 || die' 'bad "lbl"' '```' '' '```bash' \
   "  mutate 'd/same' 'scripts/x.sh' delete 'lbl' 'x.test.sh' 'g1 || die'" \

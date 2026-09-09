@@ -1275,6 +1275,39 @@ _structural_consistency() { # <doc> -> 0 consistent, 1 + stderr otherwise
     done < <(printf '%s\n' "$review" | grep -E '^<!-- star-quarantined: ')
     [[ "$qok" == "1" ]] || { echo "multi-review-star: verify: quarantine record missing or tampered for ${qkey}" >&2; return 1; }
   done < <(awk '$1=="quarantine"{print $2}' "${doc}.manifest")
+  # (e) the REVERSE of (d) — doc→manifest. (d) is one-directional: it proves every manifest entry
+  # still has its record and says NOTHING about a record no entry covers. An ORPHANED record is a
+  # durable in-doc claim that a provider was quarantined, bound by nothing — and merge's own
+  # pre-check was the only thing standing between that and a green `verify` (#123). It is not
+  # cosmetic: the gate-summary readability list and the independence scan both read these lines,
+  # so an unbound record changes what the human sees at the gate. Fence-scoped through the same
+  # $review as (d), so a QUOTED example stays documentation.
+  local qhashes qgot
+  qhashes="$(awk '$1=="quarantine"{sub(/^[^=]*=/,"",$2); print $2}' "${doc}.manifest")"
+  while IFS= read -r qline; do
+    [[ -z "$qline" ]] && continue
+    qgot="$(printf '%s' "$qline" | sha)"
+    grep -qFx -- "$qgot" <<<"$qhashes" \
+      || { echo "multi-review-star: verify: quarantine record in the doc that no manifest entry binds: ${qline}" >&2; return 1; }
+  done < <(printf '%s\n' "$review" | grep -E '^<!-- star-quarantined: ')
+  # ...and BIND as a MULTISET, which is what (d) and the loop above only approximate. Membership is
+  # satisfied by ANY same-hash counterpart, so it accepts a duplicated record (both copies match the
+  # one entry; codex-rd1-r1) and, more subtly, unequal MULTIPLICITY at an equal total: a duplicated
+  # `--quarantined` flag makes merge write two identical manifest entries, so a doc holding one
+  # `gemini` and three `fable` records against a manifest of two and two satisfies both directions
+  # and both counts — while the gate renders `fable` three times (codex-rd2-r1). Comparing the
+  # sorted hash lists is the actual binding. It subsumes (d) and the loop above FOR THE EXIT CODE
+  # alone; each of those names WHICH record or entry is at fault, which is what keeps them
+  # load-bearing rather than redundant (guard (d) carries no mutation entry of its own — a
+  # pre-existing gap, recorded here rather than widened silently).
+  local qdocsum qmansum
+  qdocsum="$(printf '%s\n' "$review" | grep -E '^<!-- star-quarantined: ' \
+    | while IFS= read -r qline; do printf '%s' "$qline" | sha; done | LC_ALL=C sort)"
+  qmansum="$(awk '$1=="quarantine"{sub(/^[^=]*=/,"",$2); print $2}' "${doc}.manifest" | LC_ALL=C sort)"
+  if [[ "$qdocsum" != "$qmansum" ]]; then
+    echo "multi-review-star: verify: the doc's quarantine records do not bind one-to-one to the manifest's — one is duplicated, altered, or recorded a different number of times" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -1404,7 +1437,7 @@ cmd_merge() {
       die "merge: unterminated code fence in ## Review (file line $((rstart + ufl))): cannot tell whether a round was already merged here — close the fence" 1
     fi
     nfoot="$(review_section "$doc" | strip_fences /dev/stdin | grep -cE '^<!-- star-findings: .*-->$')"
-    [[ "$nfoot" -eq 0 ]] || die "merge: '${doc}' carries ${nfoot} already-merged round(s) but '${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run" 1
+    [[ "$nfoot" -eq 0 ]] || die "merge: '${doc}' carries ${nfoot} already-merged round(s) but '${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order, PLUS one 'quarantine <provider>=<hash>' line for each entry in a footer's 'quarantined:' list — verify binds these by hash, so the key needs no round suffix) and re-run" 1
   fi
 
   # Zero admitted copies is a REACHABLE state, not an impossible one: a default (fable-only) run

@@ -380,6 +380,15 @@ err="$(bash "$SUT" blocks "${WORK}/nope.md" 2>&1 >/dev/null)"; rc=$?
   || bad "blocks: missing doc rc=$rc err='$err' — the -f guard is what names the cause; without it the numeric-span check fails first with the wrong message"
 bash "$SUT" blocks "$BL" x 3 >/dev/null 2>&1; [[ $? -eq 2 ]] && ok "blocks: non-numeric span exits 2" || bad "blocks: bad span rc=$?"
 
+# The default end must count LINES, not newlines. A doc with no trailing newline has one fewer
+# newline than lines, so a `wc -l` default drops the last line from the scan entirely — here the
+# closing fence, which silently reports a closed block as unterminated (#122).
+NL="${WORK}/no-trailing-newline.md"; printf '# D\n\n```bash\nx\n```' > "$NL"
+out="$(bash "$SUT" blocks "$NL" 2>/dev/null)"; rc=$?
+[[ $rc -eq 0 && "$out" == $'3\t5\tbash' ]] \
+  && ok "blocks: the last line of a doc with no trailing newline is scanned" \
+  || bad "blocks: no-trailing-newline doc gave rc=$rc '$out' (want 3<TAB>5<TAB>bash)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

@@ -1220,7 +1220,8 @@ Run `${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh check-converged "<doc>"`
 - **Doc↔manifest consistency is self-checked.** `merge` verifies the doc against its `.manifest`
   both before merging (it refuses to build on an already-inconsistent doc) and before committing
   the round it has staged — so a dropped/duplicated round, a finding split from its `> —` lines,
-  or a mangled footer fails loud at the handoff instead of accumulating silently to the gate. A
+  a mangled footer, or a durable quarantine record the manifest does not bind fails loud at the
+  handoff instead of accumulating silently to the gate. A
   **missing** manifest is checked too: if the doc carries `<!-- star-findings: -->` footers from an
   earlier round but the manifest is gone, `merge` refuses before touching the doc rather than
   rebuilding a manifest that covers only the current round (issue #57).
