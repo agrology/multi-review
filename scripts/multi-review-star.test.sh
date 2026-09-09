@@ -3006,6 +3006,52 @@ grep -qF 'symcheck-rd1-r1' <<<"$out" \
   && ok "gate-summary: the pass's findings are still present" \
   || bad "gate-summary: the exclusion suppressed the findings along with the raiser — criterion 11"
 
+# --- symcheck runs round 1 only, so later rounds' blocks are UNCHECKED (#99) ---
+# The pass is derived and dispatched in round 1 only, so a ready-to-paste block the author adds
+# while fixing a finding is never checked against the repo — the least-reviewed code in the change
+# by construction. The gate must say so rather than render round 1's clean count alone, which is
+# indistinguishable from a review where nothing was added.
+D="$(mkstar sym-added.md \
+  '> [symcheck-coverage: 4/4 rows verdicted]' \
+  '> [symcheck-added: 2]')"
+out="$(bash "$SUT" gate-summary "$D" claude-opus-5 2>/dev/null)"
+grep -qF 'more block(s) now than were checked' <<<"$out" \
+  && ok "gate-summary: blocks added after round 1 are reported as unchecked (#99)" \
+  || bad "gate-summary: round-1-only gap is silent — 4/4 reads as fully checked: $out"
+
+# Zero is recorded and rendered too, and the wording must NOT overclaim: this is a COUNT, not an
+# identity diff, so a round that swapped one block for another nets zero and would show here as
+# no change. Option 2 in #99 (a stable per-block identity) is what would close that; the gate must
+# not imply it already has.
+D="$(mkstar sym-added0.md \
+  '> [symcheck-coverage: 4/4 rows verdicted]' \
+  '> [symcheck-added: 0]')"
+out="$(bash "$SUT" gate-summary "$D" claude-opus-5 2>/dev/null)"
+grep -qF 'no net change in block count' <<<"$out" \
+  && ok "gate-summary: a zero added-count renders, and says a swap would not show (#99)" \
+  || bad "gate-summary: zero added-count rendered nothing or overclaimed: $out"
+
+# A multi-round review that recorded NOTHING is the failure this feature exists to make visible —
+# byte-identical at the gate to a single-round review without it, unless the gate derives it.
+SA2="${WORK}/sym-added-norecord.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 2/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]'; } > "$SA2"
+out="$(bash "$SUT" gate-summary "$SA2" claude-opus-5 2>/dev/null)"
+grep -qF 'NO RECORD of whether blocks were added' <<<"$out" \
+  && ok "gate-summary: a round-2 review with no added-count is reported NO RECORD (#99)" \
+  || bad "gate-summary: an unrecorded later round is silent: $out"
+
+# ...and stays DORMANT on a single-round review, which has no later round to report on.
+SA1="${WORK}/sym-added-rd1.md"
+{ echo "# Doc"; echo '<!-- multi-review: converged · round 1/5 -->'
+  echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' '> [symcheck-coverage: 4/4 rows verdicted]'; } > "$SA1"
+out="$(bash "$SUT" gate-summary "$SA1" claude-opus-5 2>/dev/null)"
+grep -qF 'NO RECORD of whether blocks were added' <<<"$out" \
+  && bad "gate-summary: a single-round review was told blocks might be unchecked: $out" \
+  || ok "gate-summary: the added-count line stays dormant on a round-1 review (#99)"
+
 # --- round-stats is the OTHER STAR_PASSES consumer, and the one #90 shipped without ---
 # gate-summary and round-stats read the same string but in different code; in the #90 build the
 # round-stats consumer was missed entirely and the pass got its own provider column plus a vote in

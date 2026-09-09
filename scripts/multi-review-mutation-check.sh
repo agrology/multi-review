@@ -2139,6 +2139,27 @@ mutations() {
     '   round N ≥ 2, skip this sub-step entirely** — steps 4, 5, 7 and 8'"'"'s symcheck clauses then have' \
     '   steps 4, 5, 7 and 8'"'"'s symcheck clauses then have'
 
+  # (#99) The pass is ROUND 1 ONLY (the two entries above pin that, deliberately). What was missing
+  # is any record that later rounds went unchecked: round 1's clean `<M>/<M>` was all the gate saw,
+  # so a review that added unchecked code rendered identically to one that added none. Three
+  # separate guards — the instruction to record it, how `<K>` is derived, and the honesty about
+  # what a COUNT cannot see — each with its own named assertion.
+  mutate 'command/symcheck-added-recorded' 'commands/multi-review.md' replace \
+    'no round records blocks added after round 1' 'multi-review-packaging.test.sh' \
+    '       > [symcheck-added: <K>]' \
+    '       > [symcheck-noted]'
+  mutate 'command/symcheck-added-derivation' 'commands/multi-review.md' replace \
+    'nothing says how <K> is derived' 'multi-review-packaging.test.sh' \
+    '   Let `<K>` be that count minus the `<M>` recorded in round 1'"'"'s `symcheck-coverage` line (`0` if' \
+    '   Let `<K>` be that count minus what round 1 recorded (`0` if'
+
+  # The blind spot must stay stated. A reader who believes `<K>` detects any change will read a
+  # zero as "nothing happened", when a one-for-one block swap produces exactly that zero.
+  mutate 'command/symcheck-added-count-not-identity' 'commands/multi-review.md' replace \
+    '<K> is presented as if it detected any change' 'multi-review-packaging.test.sh' \
+    '   **`<K>` is a COUNT, not an identity diff, and the gate says so.** Rows are positional (`B<n>`)' \
+    '   **`<K>` has a blind spot.** Rows are positional (`B<n>`)'
+
   mutate 'command/symcheck-not-a-secondary' 'commands/multi-review.md' replace \
     'nothing says the symcheck pass is not a secondary' 'multi-review-packaging.test.sh' \
     '   argument, so **the symcheck pass is not a secondary**: like the crossref pass it is excluded' \
@@ -2580,6 +2601,23 @@ mutations() {
     'recovery instruction omits the quarantine line' 'multi-review-star.test.sh' \
     "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order, PLUS one 'quarantine <provider>=<hash>' line for each entry in a footer's 'quarantined:' list — verify binds these by hash, so the key needs no round suffix) and re-run\" 1" \
     "    [[ \"\$nfoot\" -eq 0 ]] || die \"merge: '\${doc}' carries \${nfoot} already-merged round(s) but '\${doc}.manifest' is missing — refusing to merge onto rounds it cannot verify. Restore the manifest, or rebuild it from the doc's '<!-- star-findings: -->' footers (one 'finding <id>=<hash>' line per entry, every round, in document order) and re-run\" 1"
+
+  # (#99) ...and the gate must RENDER it. Three branches, three assertions: a positive count says
+  # blocks are unchecked, a zero says so without implying it saw a swap, and a later round that
+  # recorded nothing is NO RECORD rather than silence. The dormancy branch is guarded too — firing
+  # this on a round-1 review would tell the human code is unchecked when the pass covered all of it.
+  mutate 'star/gate-symcheck-added-rendered' 'scripts/multi-review-star.sh' replace \
+    'round-1-only gap is silent' 'multi-review-star.test.sh' \
+    '        echo "  — round 1 only: ${sadd} more block(s) now than were checked, so at least ${sadd} are unchecked"' \
+    '        :'
+  mutate 'star/gate-symcheck-added-no-record' 'scripts/multi-review-star.sh' replace \
+    'an unrecorded later round is silent' 'multi-review-star.test.sh' \
+    '      echo "  — round 1 only: NO RECORD of whether blocks were added since"' \
+    '      :'
+  mutate 'star/gate-symcheck-added-dormant-rd1' 'scripts/multi-review-star.sh' replace \
+    'a single-round review was told blocks might be unchecked' 'multi-review-star.test.sh' \
+    '    elif [[ "$sround" =~ ^[0-9]+$ ]] && (( sround > 1 )); then' \
+    '    else'
 
   # gate-summary renders the claim BEFORE the human approves the publish. Nothing can mechanically
   # verify a prose finding was fixed, so the gate is the only thing standing behind it — a silent

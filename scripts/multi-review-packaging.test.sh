@@ -1199,6 +1199,20 @@ else
   grep -qF 'symcheck-coverage: <N>/<M> rows verdicted]' <<<"$blk" \
     && ok "command: the incomplete symcheck state is recorded" \
     || bad "command: the incomplete symcheck coverage state is never recorded"
+  # (#99) The pass is round 1 only, so a block added while fixing a finding is never checked. The
+  # later rounds must RECORD that, or the gate renders round 1's clean count alone and a review
+  # that added unchecked code is byte-identical to one that added none.
+  grep -qF 'symcheck-added: <K>]' <<<"$blk" \
+    && ok "command: later rounds record the count of blocks added since the pass ran (#99)" \
+    || bad "command: no round records blocks added after round 1 — the gate cannot show the gap"
+  grep -qF 'minus the `<M>` recorded in round 1' <<<"$blk" \
+    && ok "command: the added-count is derived against round 1's recorded <M> (#99)" \
+    || bad "command: nothing says how <K> is derived, so the count is left to invention"
+  # The wording must not overclaim: a COUNT cannot see a one-for-one swap, and a reader who thinks
+  # it can will trust a zero that means nothing.
+  grep -qF 'COUNT, not an identity diff' <<<"$blk" \
+    && ok "command: the added-count's blind spot (a swapped block) is stated (#99)" \
+    || bad "command: <K> is presented as if it detected any change, which it does not"
   grep -qF 'Wait on the symcheck pass here too' <<<"$blk" \
     && ok "command: the symcheck copy is waited on with the secondaries" \
     || bad "command: nothing waits on <doc>.symcheck — merge could run before the pass writes anything"

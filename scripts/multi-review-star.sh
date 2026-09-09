@@ -214,6 +214,22 @@ _symcheck_coverage() { # <doc> -> "not applicable" | "N/M rows verdicted"
     | tail -1
 }
 
+# _symcheck_added <doc> — the durable count of ready-to-paste blocks the doc has gained since the
+# symbol-check pass ran (#99). The pass is round 1 only, so a block added while fixing a finding is
+# never checked; the primary records this each later round and the gate renders it beside the
+# coverage line. Read like its siblings, last one wins.
+#
+# It is a COUNT, not an identity diff: rows are positional (`B<n>`) and carry line ranges that
+# shift on any edit above them, so a round that swaps one block for another nets zero here. Closing
+# that needs a stable per-block identity — option 2 in #99 — and the rendering below is worded so
+# the gate does not imply this already has one.
+_symcheck_added() { # <doc> -> "<K>"
+  review_section "$1" | strip_fences /dev/stdin \
+    | grep -oE '^> \[symcheck-added: [0-9]+\]' \
+    | sed -E 's/^> \[symcheck-added: ([0-9]+)\]$/\1/' \
+    | tail -1
+}
+
 # _planlint_coverage <doc> — the plan lint's durable line (spec B5), read the way the two pass
 # readers above read theirs. Records that the lint RAN this round; passing is what the blocking
 # fan-out step guarantees.
@@ -1785,6 +1801,23 @@ cmd_gate_summary() {
       else
         echo "Symbol-check pass: ${sx} — INCOMPLETE"
       fi
+    fi
+    # (#99) The pass runs in ROUND 1 ONLY, so the count above covers the document as the
+    # secondaries first read it — not the blocks the author added afterwards while fixing their
+    # findings, which are the least-reviewed code in the change by construction. Say which.
+    # Rendered for the not-applicable case too: a round-1 doc with no blocks that GAINS one is
+    # exactly this gap, and the coverage line alone would read as "nothing to check".
+    local sadd sround
+    sadd="$(_symcheck_added "$doc")"
+    sround="$("${STAR_DIR}/multi-review-core.sh" marker "$doc" 2>/dev/null | awk '{print $2}')"
+    if [[ -n "$sadd" ]]; then
+      if [[ "$sadd" == "0" ]]; then
+        echo "  — round 1 only: no net change in block count since (a one-for-one swap would not show here)"
+      else
+        echo "  — round 1 only: ${sadd} more block(s) now than were checked, so at least ${sadd} are unchecked"
+      fi
+    elif [[ "$sround" =~ ^[0-9]+$ ]] && (( sround > 1 )); then
+      echo "  — round 1 only: NO RECORD of whether blocks were added since"
     fi
     echo
   fi
