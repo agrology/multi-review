@@ -32,6 +32,14 @@ die() { echo "multi-review-reviewer: $1" >&2; exit "$2"; }
 #             not list `gpt-6-astra` and 0.154.0 does. The companion dispatches `spawn("codex")`
 #             from PATH, so pinning a model the PATH codex predates breaks the arm every round —
 #             check `codex debug models` on the binary PATH actually resolves before bumping.
+#             UPDATING THE BINARY IS NOT ENOUGH. The companion keeps a long-lived `codex
+#             app-server` per session, and one started BEFORE the upgrade goes on serving the old
+#             image — it does not re-exec. Hit while making this very change: a broker from two
+#             days earlier was still answering as 0.147.0 after the CLI was 0.154.0, so the arm
+#             would have been tested through a client that cannot see the model just pinned. Kill
+#             the broker (SIGTERM, never -9 — it unlinks its socket and pid file on the way out)
+#             and let the next dispatch respawn it; `ps -eo lstart,command | grep app-server`
+#             shows whether the running one predates the upgrade.
 #             NB: codex self-reports its family id `gpt-5-codex` regardless of the pinned variant,
 #             so the disclosed `> — via` model may differ
 #             (https://github.com/agrology/multi-review/issues/20) — `vendor_of_model` maps the
