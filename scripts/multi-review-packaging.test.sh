@@ -59,7 +59,8 @@ if [[ -f "$f" ]]; then
 fi
 
 # --- codex dispatch must request a REASONING EFFORT explicitly ---
-# codex defaults to `reasoning effort: none` for `gpt-5.6-terra`. Observed live: 32-second review
+# codex defaults to a LOW effort for whichever model is pinned (`none` on `gpt-5.6-terra`, where
+# this was observed; `low` on `gpt-6-astra`). Observed live: 32-second review
 # turns in which the model never opened the document it was pointed at — it read the skill, the
 # protocol contract and repo source, then reported `[no-findings]`. Three consecutive worthless
 # clean verdicts came from that pairing, and a clean verdict from a turn that read nothing is
@@ -74,7 +75,7 @@ if [[ -f "$f" ]]; then
   elif grep -q -- '--effort high' <<<"$(sed -n "${n},$((n+2))p" "$f")"; then
     ok "codex dispatch requests high reasoning effort"
   else
-    bad "codex dispatch lacks --effort high — codex defaults to effort none, and a 32s turn reviews the protocol instead of the document"
+    bad "codex dispatch lacks --effort high — codex defaults to a low effort, and a 32s turn reviews the protocol instead of the document"
   fi
 fi
 

@@ -50,7 +50,7 @@ grep -qi 'required' <<<"$err" && ok "resolve no-flag error explains --reviewer i
 # must test the built-in default, not a value a developer happens to export in their shell.
 out="$(env -u MULTI_REVIEW_REVIEWER_MODEL bash "$SUT" resolve --reviewer codex 2>/dev/null)"; rc=$?
 [[ "$rc" == 0 ]] && ok "resolve --reviewer codex exits 0" || bad "resolve rc=$rc (want 0)"
-[[ "$out" == "codex|openai|subagent|gpt-5.6-terra|yes" ]] \
+[[ "$out" == "codex|openai|subagent|gpt-6-astra|yes" ]] \
   && ok "codex falls back to its documented default model" || bad "codex default row was '$out'"
 out="$(MULTI_REVIEW_REVIEWER_MODEL=gpt-9-turbo bash "$SUT" resolve --reviewer codex 2>/dev/null)"
 [[ "$out" == "codex|openai|subagent|gpt-9-turbo|yes" ]] \
@@ -678,6 +678,18 @@ for id in o4 o4-mini o5 o9-preview; do
   out="$(bash "$SUT" vendor-of-model "$id" 2>/dev/null)"
   [[ "$out" == "openai" ]] && ok "vendor mapping: '$id' -> openai (family, not an enumeration)" \
     || bad "vendor mapping: '$id' unmapped -> '$out' — a future o-series disclosure starves the arm every round"
+done
+
+# --- vendor mapping: the GPT family is not frozen at 5 either ---
+# Same class as the o-series case above, and no longer hypothetical: the codex arm now dispatches
+# `gpt-6-astra`. An unmappable disclosure is `die 1` -> quarantine, every round, for a reviewer
+# that answered correctly — and the id is the model's own SELF-REPORT, which for codex is already
+# unstable (`gpt-5.6`, `gpt-5.6-terra` and `gpt-5` observed from ONE requested id, #20). So the
+# spellings a gpt-6 turn might disclose are pinned here rather than trusted.
+for id in gpt-6 gpt-6-astra GPT-6-Astra gpt-6-codex gpt-7 gpt-7.2-whatever; do
+  out="$(bash "$SUT" vendor-of-model "$id" 2>/dev/null)"
+  [[ "$out" == "openai" ]] && ok "vendor mapping: '$id' -> openai (family, not an enumeration)" \
+    || bad "vendor mapping: '$id' unmapped -> '$out' — a gpt-6 disclosure would quarantine the codex arm every round"
 done
 
 # --- vendor mapping: Anthropic accepts its BARE family name, like every other vendor ---

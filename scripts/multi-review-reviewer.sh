@@ -23,15 +23,35 @@ die() { echo "multi-review-reviewer: $1" >&2; exit "$2"; }
 #   codex   — OpenAI publishes no "latest" alias, so a named default is unavoidable. It must be
 #             non-empty: an unset model lets the `codex:codex-rescue` wrapper answer as Claude.
 #             `verify-vendor` catches that after the fact; this keeps it from happening.
-#             `gpt-5.6-terra` is the current top codex tier (successor to gpt-5.4/5.5); bump this
-#             when OpenAI ships the next one. NB: codex self-reports its family id `gpt-5-codex`
-#             regardless of the pinned variant, so the disclosed `> — via` model may differ
-#             (https://github.com/agrology/multi-review/issues/20).
+#             `gpt-6-astra` is the current top codex tier — priority 1 in codex's own catalog,
+#             "our most capable model for complex, demanding work", above the whole gpt-5.6 family
+#             it replaces here. Bump this when OpenAI ships the next one; read the catalog rather
+#             than guessing an id, with `codex debug models`.
+#             THE CLI GATES THE CATALOG. The model list is fetched server-side and filtered by
+#             client version, so a codex older than the model simply does not have it: 0.147.0 does
+#             not list `gpt-6-astra` and 0.154.0 does. The companion dispatches `spawn("codex")`
+#             from PATH, so pinning a model the PATH codex predates breaks the arm every round —
+#             check `codex debug models` on the binary PATH actually resolves before bumping.
+#             UPDATING THE BINARY IS NOT ENOUGH. The companion keeps a long-lived `codex
+#             app-server` per session, and one started BEFORE the upgrade goes on serving the old
+#             image — it does not re-exec. Hit while making this very change: a broker from two
+#             days earlier was still answering as 0.147.0 after the CLI was 0.154.0, so the arm
+#             would have been tested through a client that cannot see the model just pinned. Kill
+#             the broker (SIGTERM, never -9 — it unlinks its socket and pid file on the way out)
+#             and let the next dispatch respawn it; `ps -eo lstart,command | grep app-server`
+#             shows whether the running one predates the upgrade.
+#             NB: the SELF-REPORT IS UNSTABLE and need not match the pinned id — that is the fact
+#             to rely on, not any one spelling (https://github.com/agrology/multi-review/issues/20).
+#             Observed from a single requested id: `gpt-5-codex`, `gpt-5.6`, `gpt-5.6-terra` and
+#             `gpt-5`; the first `gpt-6-astra` dispatch disclosed `gpt-6`. So `vendor_of_model` maps
+#             the whole `gpt-*` family rather than an enumeration, pinned by a test — do not expect
+#             a particular string in a `> — via` line, and do not read an unfamiliar one as a
+#             mis-pinned dispatch.
 # MULTI_REVIEW_REVIEWER_MODEL overrides the default for whichever provider is selected — nothing
 # here is unoverridable.
 provider_row() { # <id> -> "id|vendor|dispatch-kind|model|has-skill"
   case "$1" in
-    codex)  echo "codex|openai|subagent|${MULTI_REVIEW_REVIEWER_MODEL:-gpt-5.6-terra}|yes" ;;
+    codex)  echo "codex|openai|subagent|${MULTI_REVIEW_REVIEWER_MODEL:-gpt-6-astra}|yes" ;;
     fable)  echo "fable|anthropic|subagent|fable|no" ;;
     gemini) echo "gemini|google|shell|${MULTI_REVIEW_REVIEWER_MODEL:-gemini-pro-latest}|no" ;;
     *)      return 1 ;;

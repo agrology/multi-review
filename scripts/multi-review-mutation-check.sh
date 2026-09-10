@@ -477,7 +477,8 @@ mutations() {
     '              ( "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1'
 
   # The codex arm's reasoning effort. Dropped, the wrapper forwards no `--effort` and codex runs at
-  # its `reasoning effort: none` default for `gpt-5.6-terra` — 32-second turns that never open the
+  # its LOW default effort for whichever model is pinned (`none` on the `gpt-5.6` family it was
+  # observed on, `low` on `gpt-6-astra`) — 32-second turns that never open the
   # document and still return a well-formed `[no-findings]`. The prompt-level demand
   # (`reviewer/prompt-read-doc-in-full`) is the other half; neither one alone was enough.
   mutate 'command/codex-dispatch-effort' 'commands/multi-review.md' replace \
@@ -1345,6 +1346,15 @@ mutations() {
     'starves the arm every round' 'multi-review-reviewer.test.sh' \
     '    gpt|gpt-*|o[0-9]*|*codex*)                             echo "openai" ;;' \
     '    gpt|gpt-*|o1|o1-*|o3|o3-*|*codex*)                     echo "openai" ;;'
+
+  # ...and the SAME line's `gpt-*` half, which the entry above leaves intact. Now load-bearing
+  # rather than theoretical: the codex arm dispatches `gpt-6-astra`, so a pattern narrowed to the
+  # generation that existed when it was written quarantines a correct reviewer every round, on its
+  # own self-reported name. Two properties on one line, two entries — narrowing either is caught.
+  mutate 'reviewer/vendor-openai-gpt-generation' 'scripts/multi-review-reviewer.sh' replace \
+    'would quarantine the codex arm every round' 'multi-review-reviewer.test.sh' \
+    '    gpt|gpt-*|o[0-9]*|*codex*)                             echo "openai" ;;' \
+    '    gpt|gpt-5*|o[0-9]*|*codex*)                            echo "openai" ;;'
 
   # A commented-out `respectGitIgnore: false` folded into a substring the matcher read as a LIVE
   # opt-out once whitespace was deleted, silencing the #22 hint in exactly the repo state it warns
