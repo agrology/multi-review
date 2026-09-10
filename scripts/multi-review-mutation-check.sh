@@ -477,7 +477,8 @@ mutations() {
     '              ( "${argv[@]}" ) >"<doc>.<id>.multi-review.log" 2>&1'
 
   # The codex arm's reasoning effort. Dropped, the wrapper forwards no `--effort` and codex runs at
-  # its `reasoning effort: none` default for `gpt-5.6-terra` — 32-second turns that never open the
+  # its LOW default effort for whichever model is pinned (`none` on the `gpt-5.6` family it was
+  # observed on, `low` on `gpt-6-astra`) — 32-second turns that never open the
   # document and still return a well-formed `[no-findings]`. The prompt-level demand
   # (`reviewer/prompt-read-doc-in-full`) is the other half; neither one alone was enough.
   mutate 'command/codex-dispatch-effort' 'commands/multi-review.md' replace \

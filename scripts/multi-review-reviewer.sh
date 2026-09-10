@@ -40,10 +40,13 @@ die() { echo "multi-review-reviewer: $1" >&2; exit "$2"; }
 #             the broker (SIGTERM, never -9 — it unlinks its socket and pid file on the way out)
 #             and let the next dispatch respawn it; `ps -eo lstart,command | grep app-server`
 #             shows whether the running one predates the upgrade.
-#             NB: codex self-reports its family id `gpt-5-codex` regardless of the pinned variant,
-#             so the disclosed `> — via` model may differ
-#             (https://github.com/agrology/multi-review/issues/20) — `vendor_of_model` maps the
-#             whole `gpt-*` family for that reason, pinned by a test.
+#             NB: the SELF-REPORT IS UNSTABLE and need not match the pinned id — that is the fact
+#             to rely on, not any one spelling (https://github.com/agrology/multi-review/issues/20).
+#             Observed from a single requested id: `gpt-5-codex`, `gpt-5.6`, `gpt-5.6-terra` and
+#             `gpt-5`; the first `gpt-6-astra` dispatch disclosed `gpt-6`. So `vendor_of_model` maps
+#             the whole `gpt-*` family rather than an enumeration, pinned by a test — do not expect
+#             a particular string in a `> — via` line, and do not read an unfamiliar one as a
+#             mis-pinned dispatch.
 # MULTI_REVIEW_REVIEWER_MODEL overrides the default for whichever provider is selected — nothing
 # here is unoverridable.
 provider_row() { # <id> -> "id|vendor|dispatch-kind|model|has-skill"

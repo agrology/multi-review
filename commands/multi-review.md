@@ -547,10 +547,11 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
        the task text. The rescue wrapper parses those four out of the text as runtime controls;
        they are not instructions to the reviewer.
 
-     **`--effort high` is not optional either.** codex ships a LOW default effort for the pinned
-     model (`none` for the `gpt-5.6` family, `low` for `gpt-6-astra`), and at that effort the turn
-     does not read the document it was pointed at — observed on `gpt-5.6-terra`:
-     observed across four dispatches, three referenced the review doc in zero commands and the
+     **`--effort high` is not optional either.** codex ships a LOW default effort for every model it
+     has pinned here — `none` for the `gpt-5.6` family, `low` for `gpt-6-astra` — and at that effort
+     the turn spends itself on the skill and the protocol instead of the document. Observed on
+     `gpt-5.6-terra` at `none`, across four dispatches: three referenced the review doc in zero
+     commands and the
      fourth ran only `wc -l` on it, each burning a 32-second turn on the skill, the protocol and
      repo source before reporting `[no-findings]`. Three consecutive worthless clean verdicts came
      from that, and a clean verdict from a turn that read nothing looks exactly like a real one at
