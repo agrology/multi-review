@@ -2428,6 +2428,16 @@ mutations() {
     'the fable fallback'"'"'s observation hides the lost model diversity' 'multi-review-packaging.test.sh' \
     '     and saying the slot lost model diversity — you are Claude too, so the fallback is a fresh' \
     '     and saying nothing more — you are Claude too, so the fallback is a fresh'
+  # fable-rd1-r2 on #138: the resume path rebuilds fable's row with model `fable`, so only this
+  # text keeps a resumed review on opus and stops a second fallback observation.
+  mutate 'command/resume-keeps-fable-fallback' 'commands/multi-review.md' replace \
+    'a resumed review forgets the fable fallback' 'multi-review-packaging.test.sh' \
+    '     **A fable slot that already fell back stays on `opus`** (issue #137). The rebuilt `fable`' \
+    '     **A fable slot is re-resolved like any other** (issue #137). The rebuilt `fable`'
+  mutate 'command/resume-fallback-recorded-once' 'commands/multi-review.md' replace \
+    'a resumed review records the fable fallback twice' 'multi-review-packaging.test.sh' \
+    '     do not record the fallback a second time.' \
+    '     record the fallback again.'
   mutate 'protocol/fable-opus-fallback' 'docs/multi-review.md' replace \
     'the fable slot'"'"'s opus fallback is undocumented' 'multi-review-packaging.test.sh' \
     '- The `fable` slot falls back to `opus` when a fable dispatch dies at the harness level before' \

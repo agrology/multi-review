@@ -140,6 +140,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      `--resume` is required. Without it these header-derived ids look like a fresh ask, so a
      provider that became undispatchable between sessions exits 4 and the review becomes
      permanently unresumable — with a message blaming the engineer for ids they never typed.
+
+     **A fable slot that already fell back stays on `opus`** (issue #137). The rebuilt `fable`
+     row still says model `fable` — the rows cannot know about the fallback; the doc does. If
+     `<doc>` carries your `[observation]` recording a fable→opus fallback (fan-out step 4),
+     dispatch that slot on `opus` for every remaining round, and
+     do not record the fallback a second time.
    - Exits 1 (no star hint yet — a fresh local doc, or a just-ingested PR scratch) → fall
      through to step 2.
 2. **Fresh-request check:** run

@@ -884,6 +884,21 @@ else
     && ok "command: the fable fallback's observation names the lost model diversity" \
     || bad "command: the fable fallback's observation hides the lost model diversity (issue #137)"
 fi
+# fable-rd1-r2 on #138: the rebuilt fable row still says model `fable`, so the resume path itself
+# must say the fallback holds — else a resumed session pays the failing fable call again and
+# records a second fallback observation, which then publishes twice.
+n="$(grep -n '<ids,comma,joined>' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: resume-rebuild anchor '<ids,comma,joined>' not found — the guard's anchor is gone"
+else
+  win="$(sed -n "${n},$((n+22))p" "$CMD")"
+  grep -q 'already fell back stays on `opus`' <<<"$win" \
+    && ok "command: a resumed review keeps a fallen-back fable slot on opus" \
+    || bad "command: a resumed review forgets the fable fallback (fable-rd1-r2 on #138)"
+  grep -q 'do not record the fallback a second time' <<<"$win" \
+    && ok "command: a resumed review does not record the fable fallback twice" \
+    || bad "command: a resumed review records the fable fallback twice (fable-rd1-r2 on #138)"
+fi
 grep -q 'falls back to `opus`' "${ROOT}/docs/multi-review.md" \
   && ok "protocol: the fable slot's opus fallback is documented" \
   || bad "protocol: the fable slot's opus fallback is undocumented (issue #137)"
