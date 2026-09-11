@@ -221,6 +221,12 @@ that ran and found nothing; a dispatch failure is a different signal from silenc
   as a verdict, so they are never interchanged. All secondaries quarantined
   in the same round, including `fable`, is an anomaly: the primary stops rather than merging a
   round with zero trustworthy findings.
+- The `fable` slot falls back to `opus` when a fable dispatch dies at the harness level before
+  the reviewer writes anything (out of credits, an overload, a withdrawn alias) — on the same
+  copy, in the same round, and for every later round of the review. It is not silent: the opus
+  turn discloses its own model id, and the primary records the fallback as an `[observation]`,
+  since a Claude primary with an opus secondary has fresh context but not a second model. A
+  fallback that also fails is quarantined as `dispatch failed: <error class>`.
 - A later round re-dispatches the FULL resolved secondary set, not just previously-admitted
   ones — a provider quarantined in round 1 gets a fresh independent copy again in round 2.
   The set never shrinks on its own: a secondary that went dry can still catch something in text

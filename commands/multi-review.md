@@ -604,6 +604,30 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      that declined). For the two-consecutive-rounds stop rule below, a harness error that recurs
      next round is the same reason — stop paying for it the same way.
 
+     **The `fable` slot falls back to `opus` instead** (issue #137). fable can be unavailable for
+     reasons no retry fixes — out of credits, a withdrawn alias — and in a default run it is the
+     ONLY secondary, so retrying it or stopping to ask ends the review. For the `fable` slot only,
+     this rule replaces both paragraphs above: when its Agent tool call dies on ANY harness error —
+     transient or deterministic, whatever the error's text says — **compare the copy to its seed
+     first**, exactly as above. The trigger is not keyed on the text of a credit error because
+     nobody has captured one; falling back on any failure also covers an overload and a dead alias.
+     - **Pristine** → re-dispatch the SAME slot, on the SAME copy, in the SAME round, with the
+       Agent tool's `model` parameter set to `opus`. This is the slot's one retry — do not also
+       retry fable. If the opus call dies too, compare again: a changed copy takes the mid-turn
+       path above; a copy still pristine is quarantined with `dispatch failed: <error class>`,
+       naming the opus error's class.
+     - **Changed** → the mid-turn path above. Never re-dispatch onto a written copy, on any model.
+
+     The fallback is **sticky**: every later round of this review dispatches the slot on `opus`
+     directly, rather than paying a failing fable call each round. Record it in your turn as an
+     `[observation]` (Primary turn, step 3) naming the fallback, its round and fable's error class,
+     and saying the slot lost model diversity — you are Claude too, so the fallback is a fresh
+     context from the primary's own family, not an independent vendor. That observation is what a
+     resumed run reads to stay on `opus`, and it reaches the gate and the published review. The opus
+     turn discloses its OWN id on `> — via`, which `verify-vendor` admits (fable's row is vendor
+     `anthropic`), so nothing is labelled fable that was not; if that id equals yours,
+     `check-primary-id` already forces you onto a distinguishing one.
+
      **`--background` is not optional for `codex`.** The rescue wrapper forwards to
      `codex-companion.mjs task`, which runs in the FOREGROUND by default; a real review outlives
      the harness's 10-minute foreground window, so the subagent's turn ends and the detached codex

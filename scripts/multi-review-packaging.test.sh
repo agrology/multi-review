@@ -853,6 +853,41 @@ else
     || bad "command: transient is defined only by example (fable-rd2-r2 on #129)"
 fi
 
+# Issue #137: fable can be unavailable for reasons no retry fixes (out of credits, a withdrawn
+# alias), and in a default run it is the ONLY secondary — so retrying it, or stopping to ask, ends
+# the review. The fable slot falls back to opus instead. Each rule below is prose the primary
+# follows, so this is the only thing that sees one go.
+n="$(grep -n 'falls back to `opus`' "$CMD" | head -1 | cut -d: -f1)"
+if [[ -z "$n" ]]; then
+  bad "command: the fable slot has no opus fallback (issue #137)"
+else
+  win="$(sed -n "${n},$((n+32))p" "$CMD")"
+  grep -q 'transient or deterministic' <<<"$win" \
+    && ok "command: the fable fallback triggers on any harness error class" \
+    || bad "command: the fable fallback is keyed to an error class — a credit error still stops the review (issue #137)"
+  grep -q 'Agent tool'"'"'s `model` parameter set to `opus`' <<<"$win" \
+    && ok "command: a pristine fable copy is re-dispatched on opus" \
+    || bad "command: the fable fallback never names the opus dispatch (issue #137)"
+  grep -q 'naming the opus error'"'"'s class' <<<"$win" \
+    && ok "command: an opus fallback that also dies is quarantined as a failed dispatch" \
+    || bad "command: a failed opus fallback has no disposition (issue #137)"
+  grep -q 'Never re-dispatch onto a written copy, on any model' <<<"$win" \
+    && ok "command: the fable fallback never re-dispatches onto a written copy" \
+    || bad "command: the fable fallback re-dispatches onto a written copy (issue #137)"
+  grep -q 'every later round of this review' <<<"$win" \
+    && ok "command: the fable fallback is sticky for the review" \
+    || bad "command: the fable fallback is not sticky — every round pays a failing fable call (issue #137)"
+  grep -q '`\[observation\]`' <<<"$win" \
+    && ok "command: the fable fallback is recorded as an observation" \
+    || bad "command: the fable fallback is silent at the gate (issue #137)"
+  grep -q 'lost model diversity' <<<"$win" \
+    && ok "command: the fable fallback's observation names the lost model diversity" \
+    || bad "command: the fable fallback's observation hides the lost model diversity (issue #137)"
+fi
+grep -q 'falls back to `opus`' "${ROOT}/docs/multi-review.md" \
+  && ok "protocol: the fable slot's opus fallback is documented" \
+  || bad "protocol: the fable slot's opus fallback is undocumented (issue #137)"
+
 # EXTRACTING the flag is not FORWARDING it. §2's fresh-request call is the only place --allow-missing
 # reaches resolve-set, and resolve-set is the only thing that acts on it — so without this the
 # engineer types the documented opt-out, §1 dutifully parses it off the positional, and the run
