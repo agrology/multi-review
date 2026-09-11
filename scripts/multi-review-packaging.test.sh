@@ -822,7 +822,9 @@ else
     && ok "command: exit 9 does not lend no-turn-taken to a failed dispatch" \
     || bad "command: exit 9 still reports a failed dispatch as no turn taken (issue #124)"
 fi
-grep -q 'dispatch failed' "${ROOT}/docs/multi-review.md" \
+# Pin the DISTINCTION sentence, not the bare reason: the #137 fallback bullet names
+# `dispatch failed` too, so a doc-wide match stayed green with this sentence deleted.
+grep -qF '`dispatch failed: <error class>` is a reviewer the harness never reached' "${ROOT}/docs/multi-review.md" \
   && ok "protocol: quarantine reasons distinguish a failed dispatch from a silent turn" \
   || bad "protocol: quarantine reasons never distinguish a failed dispatch (issue #124)"
 # Review of #129: the tool reports a pre-turn and a mid-turn death the same way, so the retry must
