@@ -104,7 +104,7 @@ unless a named test catches it — because a green suite is not by itself eviden
 
 | reviewer | vendor | setup |
 |---|---|---|
-| `fable` *(on by default)* | anthropic | **none** — runs in-harness |
+| `fable` *(on by default)* | anthropic | **none** — runs in-harness; if a fable dispatch fails before it writes (e.g. out of credits), the slot falls back to `opus` for the rest of the review, recorded as an observation at the gate |
 | `codex` | openai | `codex` CLI authed **+ the Codex Claude Code plugin** (below) — skill provisioned automatically per run (git-ignored) |
 | `gemini` | google | `gemini` CLI authed + 3 settings (below) |
 | `crossref` *(pass, not a reviewer)* | — | **none** — a mechanical cross-reference sweep over the doc's own internal consistency, dispatched automatically alongside the secondaries on a multi-section document. It does **not** count toward the secondary total or the independence warning — see [`docs/multi-review.md`](docs/multi-review.md). |

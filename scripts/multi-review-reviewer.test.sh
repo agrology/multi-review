@@ -453,6 +453,14 @@ bash "$SUT" verify-vendor --baseline "${P%|*}" "${P#*|}" --reviewer codex >/dev/
 [[ "$rc" == 0 ]] && ok "verify-vendor passes in-vendor non-exact id (gpt-5.5 -> gpt-5-codex)" \
   || bad "verify-vendor in-vendor rc=$rc (want 0)"
 
+# Issue #137: the fable slot falls back to opus, whose turn discloses its OWN id. That is admitted
+# because fable's row is vendor anthropic — pinned here so tightening fable to its own family
+# fails loudly instead of quarantining every fallback turn.
+P="$(mkpair fableopus '' '> [finding:r1|low] x\n> — via claude-opus-5\n')"
+bash "$SUT" verify-vendor --baseline "${P%|*}" "${P#*|}" --reviewer fable >/dev/null 2>&1; rc=$?
+[[ "$rc" == 0 ]] && ok "verify-vendor admits an opus turn in the fable slot (issue #137 fallback)" \
+  || bad "verify-vendor rejects an opus turn in the fable slot (rc=$rc, want 0) — the #137 fallback is quarantined"
+
 # out-of-vendor: provider codex, reviewer discloses a Claude id (the real observed drift)
 P="$(mkpair drift '' '> [reviewer:r1] x\n> — via claude-sonnet-4-6\n')"
 err="$(bash "$SUT" verify-vendor --baseline "${P%|*}" "${P#*|}" --reviewer codex 2>&1 >/dev/null)"; rc=$?

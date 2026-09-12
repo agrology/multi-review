@@ -2398,6 +2398,50 @@ mutations() {
     'quarantine reasons never distinguish a failed dispatch' 'multi-review-packaging.test.sh' \
     '  ran and wrote nothing; `dispatch failed: <error class>` is a reviewer the harness never reached' \
     '  ran and wrote nothing; the other is a reviewer the harness never reached'
+  # Issue #137: the fable slot falls back to opus. Every rule is primary-instruction prose, so each
+  # needs its own entry — losing any one of them leaves the rest reading as a complete rule.
+  mutate 'command/fable-fallback-any-class' 'commands/multi-review.md' replace \
+    'the fable fallback is keyed to an error class' 'multi-review-packaging.test.sh' \
+    "     transient or deterministic, whatever the error's text says — **compare the copy to its seed" \
+    "     if it is transient, whatever the error's text says — **compare the copy to its seed"
+  mutate 'command/fable-fallback-opus-dispatch' 'commands/multi-review.md' replace \
+    'the fable fallback never names the opus dispatch' 'multi-review-packaging.test.sh' \
+    "       Agent tool's \`model\` parameter set to \`opus\`. This is the slot's one retry — do not also" \
+    "       Agent tool's \`model\` parameter unchanged. This is the slot's one retry — do not also"
+  mutate 'command/fable-fallback-double-failure' 'commands/multi-review.md' replace \
+    'a failed opus fallback has no disposition' 'multi-review-packaging.test.sh' \
+    "       naming the opus error's class." \
+    "       as you see fit."
+  mutate 'command/fable-fallback-not-onto-written-copy' 'commands/multi-review.md' replace \
+    'the fable fallback re-dispatches onto a written copy' 'multi-review-packaging.test.sh' \
+    '     - **Changed** → the mid-turn path above. Never re-dispatch onto a written copy, on any model.' \
+    '     - **Changed** → re-dispatch on `opus` as well.'
+  mutate 'command/fable-fallback-sticky' 'commands/multi-review.md' replace \
+    'the fable fallback is not sticky' 'multi-review-packaging.test.sh' \
+    '     The fallback is **sticky**: every later round of this review dispatches the slot on `opus`' \
+    '     The fallback lasts one round: the next round dispatches the slot on `fable` again, not `opus`'
+  mutate 'command/fable-fallback-observation' 'commands/multi-review.md' replace \
+    'the fable fallback is silent at the gate' 'multi-review-packaging.test.sh' \
+    "     \`[observation]\` (Primary turn, step 3) naming the fallback, its round and fable's error class," \
+    "     note to yourself naming the fallback, its round and fable's error class,"
+  mutate 'command/fable-fallback-names-lost-diversity' 'commands/multi-review.md' replace \
+    'the fable fallback'"'"'s observation hides the lost model diversity' 'multi-review-packaging.test.sh' \
+    '     and saying the slot lost model diversity — you are Claude too, so the fallback is a fresh' \
+    '     and saying nothing more — you are Claude too, so the fallback is a fresh'
+  # fable-rd1-r2 on #138: the resume path rebuilds fable's row with model `fable`, so only this
+  # text keeps a resumed review on opus and stops a second fallback observation.
+  mutate 'command/resume-keeps-fable-fallback' 'commands/multi-review.md' replace \
+    'a resumed review forgets the fable fallback' 'multi-review-packaging.test.sh' \
+    '     **A fable slot that already fell back stays on `opus`** (issue #137). The rebuilt `fable`' \
+    '     **A fable slot is re-resolved like any other** (issue #137). The rebuilt `fable`'
+  mutate 'command/resume-fallback-recorded-once' 'commands/multi-review.md' replace \
+    'a resumed review records the fable fallback twice' 'multi-review-packaging.test.sh' \
+    '     do not record the fallback a second time.' \
+    '     record the fallback again.'
+  mutate 'protocol/fable-opus-fallback' 'docs/multi-review.md' replace \
+    'the fable slot'"'"'s opus fallback is undocumented' 'multi-review-packaging.test.sh' \
+    '- The `fable` slot falls back to `opus` when a fable dispatch dies at the harness level before' \
+    '- The `fable` slot is retried when a fable dispatch dies at the harness level before'
 
   # §4. The never-drop rule protects a reviewer that REVIEWED and found nothing. Without this
   # carve-out it also protects one that cannot run: gemini was re-dispatched in all four rounds
