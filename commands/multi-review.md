@@ -553,6 +553,32 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
        the task text. The rescue wrapper parses those four out of the text as runtime controls;
        they are not instructions to the reviewer.
 
+       **codex's task text is a POINTER to the brief, never the brief itself** (issue #140).
+       Write the brief to a file and dispatch the path:
+
+           ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.<id>" \
+             --reviewer codex --out "<doc>.<id>.brief"
+
+       which prints the absolute path and nothing else. The task text is then exactly:
+
+           Read <that path> in full and do everything it says. It is your complete brief.
+           --model <model> --effort high --write --background
+
+       `codex:codex-rescue` is a third-party wrapper that re-types its whole task text into ONE
+       double-quoted shell argument to `codex-companion.mjs`. A brief carrying a `"` — and a
+       reviewer brief quoting a diff usually does — ends that argument early, the remainder is
+       parsed as shell, and the permission layer denies a command that now carries pipes and
+       redirects. The denial is CORRECT: running it would execute fragments of the brief. Headless
+       runs auto-deny rather than prompting, so the round loses codex silently and the review
+       finishes on the fable floor with no cross-vendor refutation. Measured 2026-09-23: rounds 3,
+       4, 9, 10 and 12 of one review, and all four rounds of another. Interactively it surfaces as
+       a permission prompt a human waves through, which is why it never showed up outside daemon
+       use. A path has no quoting surface, so this removes the failure rather than escaping around
+       it.
+
+       **fable takes the brief inline, as before** — it is dispatched to `general-purpose`, whose
+       task text reaches the agent as an argument and never through a shell.
+
      **`--effort high` is not optional either.** codex ships a LOW default effort for every model it
      has pinned here — `none` for the `gpt-5.6` family, `low` for `gpt-6-astra` — and at that effort
      the turn spends itself on the skill and the protocol instead of the document. Observed on
