@@ -446,6 +446,14 @@ mutations() {
   # pr-watch#17. Dropped, merge prefixes an already-namespaced id a second time and publishes
   # `fable-rd7-fable-rd7-r1` -- unique, parseable, manifest-consistent, and wrong in every record
   # that quotes it. Nothing else in the pipeline can notice.
+  # #139. Dropped, nothing on the page forbids backgrounding the wait, and a headless run of any PR
+  # whose reviewer needs the grace wait exits 0 with the round unconverged. The stopgap on the
+  # consumer side (a raised BASH_MAX_TIMEOUT_MS) makes it less likely, never impossible.
+  mutate 'command/wait-foreground' 'commands/multi-review.md' replace \
+    'does not forbid backgrounding a wait' 'multi-review-packaging.test.sh' \
+    '   **NEVER run a wait in the background and end your turn.** Every wait on this page — the' \
+    '   **Waits may run in the background if that is convenient.** Every wait on this page — the'
+
   # pr-watch#17. Dropped, the round's own findings land on the worklist too -- the author has not
   # seen them yet, so the primary is asked to resolve findings nothing could have fixed, and the
   # list it must empty is never empty. A worklist that cries wolf gets ignored.

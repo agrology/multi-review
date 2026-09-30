@@ -784,6 +784,29 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    alone, and in a default (fable-only) run that empties the admitted set and trips the
    all-quarantined anomaly stop — the review dies without a single reviewer having failed.
 
+   **NEVER run a wait in the background and end your turn.** Every wait on this page — the
+   per-copy bound, the exit-8 retries, the exit-9 grace wait and the crossref wait below — runs in
+   the FOREGROUND, in a Bash call you are still inside when it returns. Issue #139: headless
+   `claude -p` kills a backgrounded shell about five seconds after the final result and never wakes
+   the turn, so the run exits 0 with the round unconverged and no terminal marker. It is
+   deterministic for any PR whose reviewer needs the grace wait — on `agrology-field-digest#1` both
+   attempts died that way, ~13 minutes in, well inside the run limit, while the other 14 PRs that
+   afternoon converged because none of them needed it. Interactively the wake-up arrives and
+   nothing looks wrong, which is why this survived: the protocol calls itself autonomous by
+   default, and this one step depended on a session with a human in it.
+
+   **Use 540s per call, not 600s**, and repeat the call until the bound you want is spent:
+
+       "${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-wait.sh" "<doc>.<id>" awaiting-author 540 \
+         --seed "<doc>.<id>.seed"
+
+   540 is under Claude Code's default 600000 ms foreground Bash ceiling, which is the pressure that
+   makes a 600s wait reach for `run_in_background` in the first place. Two 540s calls cover the
+   600s bound with room to spare; a raised `BASH_MAX_TIMEOUT_MS` on the host makes one call enough
+   but is not something this page can assume. Exit 8 from a call that merely ran out of foreground
+   time is the ordinary "alive and still writing" case — keep waiting, and count the RETRIES
+   against the bound, not the calls.
+
    Use the two reasons **verbatim** when you do quarantine here — `no turn taken` for exit 9, and
    the wait's own message for anything else. `gate-summary` renders quarantine reasons as free
    text, so two different failures worded two different ways read alike to whoever reads the gate.
@@ -793,7 +816,9 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    **Wait on the crossref pass here too, if step 4 dispatched it — with the secondaries, not
    after them.** Bound `<doc>.crossref` against `<doc>.crossref.seed` with the same bound and
-   retry timing above (up to 3 more waits on exit 8, one grace wait on exit 9). Exit 10 and
+   retry timing above (up to 3 more waits on exit 8, one grace wait on exit 9), **and in the
+   foreground, for the reason stated above** — this wait has the same #139 exposure and no roster
+   slot, so a killed one loses the pass with nothing to quarantine. Exit 10 and
    exit 2 mean exactly what they mean above. **Unlike a secondary, this pass has no roster slot
    and is never quarantined** — there is no `--quarantined <id>:<reason>` to feed step 7's merge
    for it. Once its wait budget is exhausted, whatever the final exit code or marker state, move
