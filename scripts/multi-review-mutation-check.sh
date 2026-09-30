@@ -465,7 +465,7 @@ mutations() {
   # The other direction: dropped, a finding the primary ALREADY recorded as resolved stays on the
   # worklist for every later round, so the list grows monotonically and stops meaning anything.
   mutate 'star/resolve-candidates-skips-resolved' 'scripts/multi-review-star.sh' replace \
-    'already has a \[resolved:\] record' 'multi-review-star.test.sh' \
+    'listed a finding that already has a' 'multi-review-star.test.sh' \
     '      if ($1 in R) next' \
     '      if (0) next'
 
@@ -2261,7 +2261,7 @@ mutations() {
   # was never written (a crashed or never-dispatched pass) is silently treated as present, and
   # merge proceeds to build a doc from content that does not exist.
   mutate 'star/merge-pass-file-exists' 'scripts/multi-review-star.sh' delete \
-    'missing pass copy did not fail loudly' 'multi-review-star.test.sh' \
+    'did not name the missing copy' 'multi-review-star.test.sh' \
     '    [[ -f "$copy" ]] || die "merge: pass copy not found: $copy" 1'
 
   # pass_id_of_copy's failure must actually ABORT the merge before the doc is written — the
@@ -2277,10 +2277,13 @@ mutations() {
   # rewrite to <pass>-rd<N>-<id>) an ordinary copy's do — occurrence 2 of this call, the pass
   # loop's own. Without it a pass's raw copy content (including its header) would be spliced in
   # verbatim, with no namespaced finding id for merge/adjudication to key on.
-  mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace:2 \
+  # Target updated when the call sites gained their status checks (pr-watch#17): the two loops no
+  # longer share a verbatim line, so this names the pass loop's own variable rather than an
+  # occurrence index. An index into duplicate lines is exactly what let this entry go stale.
+  mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace \
     'pass copy findings did not merge' 'multi-review-star.test.sh' \
-    '    block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'"'"'\n'"'"'' \
-    '    block="${block}$(cat "$copy")"$'"'"'\n'"'"''
+    '    local pnsb; pnsb="$(namespace_blocks "$provider" "$round" "$copy")" \' \
+    '    local pnsb; pnsb="$(cat "$copy")" \'
 
   # STAR_PASSES itself, the single source of truth for which namespace prefixes are passes
   # rather than providers — governs BOTH pass_id_of_copy's validation and gate-summary's

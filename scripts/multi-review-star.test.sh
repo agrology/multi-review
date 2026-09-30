@@ -461,11 +461,19 @@ grep -qF 'crossref' <<<"$err" \
 BASEPM="${WORK}/mpassmissing.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASEPM"
 mkcopy "${BASEPM}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
 before="$(shasum "$BASEPM" | cut -d' ' -f1)"
-bash "$SUT" merge --round 1 "$BASEPM" "${BASEPM}.codex" --pass "${BASEPM}.crossref" >/dev/null 2>&1; rc=$?
+err="$(bash "$SUT" merge --round 1 "$BASEPM" "${BASEPM}.codex" --pass "${BASEPM}.crossref" 2>&1 >/dev/null)"; rc=$?
 after="$(shasum "$BASEPM" | cut -d' ' -f1)"
 [[ $rc -ne 0 && "$before" == "$after" ]] \
   && ok "merge --pass: missing pass copy -> nonzero exit, doc untouched" \
   || bad "merge --pass: missing pass copy did not fail loudly (rc=$rc)"
+# The MESSAGE, not merely the exit code. Once the call sites gained their own `|| die`
+# (pr-watch#17), a deleted `[[ -f "$copy" ]]` guard still failed nonzero -- via "refusing to
+# write - see the id error above", which names no missing file and points at an id error that
+# does not exist. The mutation sweep caught that as a SURVIVED guard: right exit code, useless
+# diagnosis. Asserting the text keeps the specific guard load-bearing.
+grep -qF "pass copy not found" <<<"$err" \
+  && ok "merge --pass: the missing pass copy is NAMED, not just refused" \
+  || bad "merge --pass: failure did not name the missing copy (err='$err')"
 
 # --- merge: manifest + quarantine ---
 BASE2="${WORK}/m2.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASE2"
