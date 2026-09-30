@@ -443,6 +443,21 @@ mutations() {
   # `replace` with a false condition, never `delete`: deleting the `if` line orphans its `die` and
   # `fi`, so `bash -n` rejects the mutated file and the runner aborts the entry for a syntax
   # reason instead of proving the guard.
+  # pr-watch#17. Dropped, merge prefixes an already-namespaced id a second time and publishes
+  # `fable-rd7-fable-rd7-r1` -- unique, parseable, manifest-consistent, and wrong in every record
+  # that quotes it. Nothing else in the pipeline can notice.
+  mutate 'star/ns-idempotent' 'scripts/multi-review-star.sh' replace \
+    'doubled the prefix' 'multi-review-star.test.sh' \
+    '      if (index(id, pfx) == 1) { print; next }' \
+    '      if (0) { print; next }'
+
+  # The other half. Dropped, an id namespaced for a DIFFERENT round is silently prefixed on top,
+  # minting a second finding that reads like the one the doc already carries.
+  mutate 'star/ns-foreign-refused' 'scripts/multi-review-star.sh' replace \
+    'accepted a foreign-round ns-id' 'multi-review-star.test.sh' \
+    '      if (id ~ /^[A-Za-z0-9_]+-rd[0-9]+-/) {' \
+    '      if (0) {'
+
   mutate 'star/resume-requires-roster' 'scripts/multi-review-star.sh' replace \
     'silently degraded to a fresh ask' 'multi-review-star.test.sh' \
     '  if (( resume )) && [[ -z "${_resume_ids//[[:space:]]/}" ]]; then' \
