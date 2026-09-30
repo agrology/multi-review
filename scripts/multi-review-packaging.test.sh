@@ -79,6 +79,20 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- step 4 must hand the primary a WORKLIST, not just an instruction (pr-watch#17) ---
+# MCP-enterprise#316 round 7 republished five agreed round-6 findings as standing, although the
+# push had deleted every function they describe. Step 4 was prose with nothing to enumerate, so a
+# primary that never re-opened them produced a post leading with defects that no longer existed.
+# The command must name resolve-candidates AND state the defect-vs-remedy test, because the two
+# round-6 highs were closed by deleting the code rather than by the remedy the reviewer proposed.
+if [[ -f "$f" ]]; then
+  if grep -q 'resolve-candidates' "$f" && grep -qi 'whether the DEFECT still exists' "$f"; then
+    ok "step 4 hands the primary a worklist and the defect-not-remedy test"
+  else
+    bad "step 4 lacks the resolve-candidates worklist or the defect-not-remedy test (pr-watch#17)"
+  fi
+fi
+
 # --- scripts self-locate from a FOREIGN cwd (spec §2 regression guard for the plugin move) ---
 # multi-review-pr.sh's publish resolves its sibling multi-review-star.sh via
 # "$(dirname "$0")", not the caller's cwd — this is the live self-locating call now that

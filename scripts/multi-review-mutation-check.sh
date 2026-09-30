@@ -446,6 +446,27 @@ mutations() {
   # pr-watch#17. Dropped, merge prefixes an already-namespaced id a second time and publishes
   # `fable-rd7-fable-rd7-r1` -- unique, parseable, manifest-consistent, and wrong in every record
   # that quotes it. Nothing else in the pipeline can notice.
+  # pr-watch#17. Dropped, the round's own findings land on the worklist too -- the author has not
+  # seen them yet, so the primary is asked to resolve findings nothing could have fixed, and the
+  # list it must empty is never empty. A worklist that cries wolf gets ignored.
+  mutate 'star/resolve-candidates-excludes-current-round' 'scripts/multi-review-star.sh' replace \
+    "listed THIS round's finding" 'multi-review-star.test.sh' \
+    '      if (rd >= latest) next' \
+    '      if (rd > latest) next'
+
+  # The other direction: dropped, a finding the primary ALREADY recorded as resolved stays on the
+  # worklist for every later round, so the list grows monotonically and stops meaning anything.
+  mutate 'star/resolve-candidates-skips-resolved' 'scripts/multi-review-star.sh' replace \
+    'already has a \[resolved:\] record' 'multi-review-star.test.sh' \
+    '      if ($1 in R) next' \
+    '      if (0) next'
+
+  # The command-level half: step 4 with no worklist to enumerate is what produced #316's round 7.
+  mutate 'command/step4-worklist' 'commands/multi-review.md' replace \
+    'lacks the resolve-candidates worklist' 'multi-review-packaging.test.sh' \
+    '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-candidates "<doc>"' \
+    '       (work from the findings you remember agreeing with)'
+
   mutate 'star/ns-idempotent' 'scripts/multi-review-star.sh' replace \
     'doubled the prefix' 'multi-review-star.test.sh' \
     '      if (index(id, pfx) == 1) { print; next }' \
