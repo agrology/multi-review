@@ -93,6 +93,20 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- codex's brief must be dispatched BY PATH, not inlined (#140) ---
+# `codex:codex-rescue` re-types its whole task text into one double-quoted shell argument. A brief
+# carrying a `"` ends that argument early, the rest is parsed as shell, and the permission layer
+# denies the mangled command -- correctly, but the round silently loses its cross-vendor reviewer,
+# and headless auto-denies rather than prompting. Measured 2026-09-23 across four live reviews.
+# Prose-level, like the effort guard above: the dispatch is prose.
+if [[ -f "$f" ]]; then
+  if grep -q -- '--out "<doc>.<id>.brief"' "$f" && grep -qi 'POINTER to the brief' "$f"; then
+    ok "codex dispatch sends the brief by path, not inlined"
+  else
+    bad "codex dispatch inlines the brief — a quote in it is parsed as shell and the call is denied (#140)"
+  fi
+fi
+
 # --- scripts self-locate from a FOREIGN cwd (spec §2 regression guard for the plugin move) ---
 # multi-review-pr.sh's publish resolves its sibling multi-review-star.sh via
 # "$(dirname "$0")", not the caller's cwd — this is the live self-locating call now that

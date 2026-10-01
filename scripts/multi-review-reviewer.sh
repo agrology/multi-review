@@ -749,7 +749,7 @@ PROMPT
   cat "$rowsfile"
 }
 
-cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file> | --symcheck <rows-file>
+cmd_prompt() { # <doc> --reviewer <id> [--out <path>] | --crossref <rows-file> | --symcheck <rows-file>
   local doc="${1:-}"
   [[ -n "$doc" ]] || die "usage: multi-review-reviewer.sh prompt <doc-path> --reviewer <id>" 2
   shift
@@ -796,10 +796,46 @@ cmd_prompt() { # <doc> --reviewer <id> | --crossref <rows-file> | --symcheck <ro
     [[ "$a" == "--symcheck" ]] \
       && die "usage: --symcheck must be the only flag after <doc-path>, not combined with --reviewer" 2
   done
+  # --out <path> writes the brief to a FILE and prints that path, instead of printing the brief
+  # itself. Issue #140: the codex route hands the brief to `codex:codex-rescue`, a third-party
+  # wrapper that re-types its whole task text into one double-quoted shell argument. A brief
+  # carrying a `"` ends that argument early, the remainder is parsed as shell, and the permission
+  # layer denies a command that now contains pipes and redirects -- correctly, because running it
+  # would execute fragments of the brief. Headless AUTO-DENIES, so the round simply loses codex:
+  # 5 of 12 rounds in one review, all four rounds in another (measured 2026-09-23).
+  #
+  # Escaping the quotes would only move the boundary to the next metacharacter. A path has no
+  # quoting surface at all, so the dispatcher sends a short pointer and the reviewer reads the
+  # brief off disk -- the same idea as the companion's own `--prompt-file`, applied at the layer
+  # we control, since the wrapper forwards unknown flags as task text rather than as flags.
+  local out=""
+  local -a rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out) [[ $# -ge 2 ]] || die "--out requires a path" 2; out="$2"; shift 2 ;;
+      *) rest+=("$1"); shift ;;
+    esac
+  done
+  set -- ${rest+"${rest[@]}"}
+
   local row has_skill kind
   row="$(resolve_row "$@")" || exit 2
   has_skill="$(field "$row" 5)"; kind="$(field "$row" 3)"
-  emit_prompt "$(abs_path "$doc")" "$has_skill" "$kind"
+  if [[ -z "$out" ]]; then
+    emit_prompt "$(abs_path "$doc")" "$has_skill" "$kind"
+    return
+  fi
+  # 0600 BEFORE the content lands: the brief quotes the document under review, which on a private
+  # repo is not world-readable material, and a file created 0644 is readable for the instant
+  # between creation and chmod.
+  : > "$out" || die "cannot write the brief to: $out" 2
+  chmod 600 "$out" 2>/dev/null || true
+  emit_prompt "$(abs_path "$doc")" "$has_skill" "$kind" > "$out" \
+    || die "cannot write the brief to: $out" 2
+  # Non-empty is the contract the caller depends on: a pointer to an empty brief dispatches a
+  # reviewer with no instructions, which reads at the gate as a reviewer that said nothing.
+  [[ -s "$out" ]] || die "wrote an empty brief to: $out" 1
+  abs_path "$out"
 }
 
 # The gemini dispatch argv, built in ONE place. `cmd_command` emits it for the dispatcher; the
