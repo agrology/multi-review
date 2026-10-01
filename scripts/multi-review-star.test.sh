@@ -466,11 +466,10 @@ after="$(shasum "$BASEPM" | cut -d' ' -f1)"
 [[ $rc -ne 0 && "$before" == "$after" ]] \
   && ok "merge --pass: missing pass copy -> nonzero exit, doc untouched" \
   || bad "merge --pass: missing pass copy did not fail loudly (rc=$rc)"
-# The MESSAGE, not merely the exit code. Once the call sites gained their own `|| die`
-# (pr-watch#17), a deleted `[[ -f "$copy" ]]` guard still failed nonzero -- via "refusing to
-# write - see the id error above", which names no missing file and points at an id error that
-# does not exist. The mutation sweep caught that as a SURVIVED guard: right exit code, useless
-# diagnosis. Asserting the text keeps the specific guard load-bearing.
+# The MESSAGE, not merely the exit code. Once the call sites gained their own `|| die`, deleting
+# the `[[ -f "$copy" ]]` guard still failed nonzero -- via "refusing to write, see the id error
+# above", which names no missing file and points at an id error that does not exist. The sweep
+# scored that as a SURVIVED guard: right exit code, useless diagnosis.
 grep -qF "pass copy not found" <<<"$err" \
   && ok "merge --pass: the missing pass copy is NAMED, not just refused" \
   || bad "merge --pass: failure did not name the missing copy (err='$err')"

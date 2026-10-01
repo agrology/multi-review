@@ -446,14 +446,6 @@ mutations() {
   # pr-watch#17. Dropped, merge prefixes an already-namespaced id a second time and publishes
   # `fable-rd7-fable-rd7-r1` -- unique, parseable, manifest-consistent, and wrong in every record
   # that quotes it. Nothing else in the pipeline can notice.
-  # #139. Dropped, nothing on the page forbids backgrounding the wait, and a headless run of any PR
-  # whose reviewer needs the grace wait exits 0 with the round unconverged. The stopgap on the
-  # consumer side (a raised BASH_MAX_TIMEOUT_MS) makes it less likely, never impossible.
-  mutate 'command/wait-foreground' 'commands/multi-review.md' replace \
-    'does not forbid backgrounding a wait' 'multi-review-packaging.test.sh' \
-    '   **NEVER run a wait in the background and end your turn.** Every wait on this page — the' \
-    '   **Waits may run in the background if that is convenient.** Every wait on this page — the'
-
   # pr-watch#17. Dropped, the round's own findings land on the worklist too -- the author has not
   # seen them yet, so the primary is asked to resolve findings nothing could have fixed, and the
   # list it must empty is never empty. A worklist that cries wolf gets ignored.
@@ -529,6 +521,13 @@ mutations() {
     'lacks --effort high' 'multi-review-packaging.test.sh' \
     '       unset**, and `--model <model> --effort high --write --background` appended to the END of' \
     '       unset**, and `--model <model> --write --background` appended to the END of'
+
+  # #140. Inlining the brief back into the task text is the regression this fixes: a `"` in the
+  # brief ends the wrapper's quoted argument early and the permission layer denies the rest.
+  mutate 'command/codex-brief-by-path' 'commands/multi-review.md' replace \
+    'inlines the brief' 'multi-review-packaging.test.sh' \
+    '       **codex'"'"'s task text is a POINTER to the brief, never the brief itself** (issue #140).' \
+    '       **codex takes the brief inline as its task text.**'
 
   # G3. The same dispatch line must also CAPTURE the process. Without the redirect a gemini that
   # died on launch leaves a copy byte-identical to its seed — indistinguishable from one still
@@ -2277,9 +2276,9 @@ mutations() {
   # rewrite to <pass>-rd<N>-<id>) an ordinary copy's do — occurrence 2 of this call, the pass
   # loop's own. Without it a pass's raw copy content (including its header) would be spliced in
   # verbatim, with no namespaced finding id for merge/adjudication to key on.
-  # Target updated when the call sites gained their status checks (pr-watch#17): the two loops no
-  # longer share a verbatim line, so this names the pass loop's own variable rather than an
-  # occurrence index. An index into duplicate lines is exactly what let this entry go stale.
+  # Target updated when the call sites gained their status checks: the two loops no longer share
+  # a verbatim line, so this names the pass loop's own variable rather than an occurrence index.
+  # An index into duplicate lines is exactly how an entry goes stale in silence.
   mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace \
     'pass copy findings did not merge' 'multi-review-star.test.sh' \
     '    local pnsb; pnsb="$(namespace_blocks "$provider" "$round" "$copy")" \' \
