@@ -467,6 +467,38 @@ mutations() {
     '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-candidates "<doc>"' \
     '       (work from the findings you remember agreeing with)'
 
+  # --- the head trace (pr-watch#17, round 2) -------------------------------------------------
+  # Dropped, an anchored file that no longer exists at head traces cited-present, and the primary
+  # is told the code it cited is still there -- the exact false reassurance the refreshed diff
+  # already gives it, which is the whole reason this column exists.
+  mutate 'star/trace-missing-path' 'scripts/multi-review-star.sh' replace \
+    'missed the gone anchor path' 'multi-review-star.test.sh' \
+    '  if [[ -n "$path" && ! -e "${root}/${path}" ]]; then' \
+    '  if [[ -n "$path" && -e "${root}/${path}" ]]; then'
+
+  # The symbol half: #316's shape is a function deleted out of a file the push also edited, so the
+  # path survives and only the symbol is gone. Dropped (every symbol reported as found), that case
+  # traces cited-present and carries exactly as it did before this work.
+  mutate 'star/trace-missing-symbol' 'scripts/multi-review-star.sh' replace \
+    'missed the deleted symbol' 'multi-review-star.test.sh' \
+    '    if git -C "$root" grep -qI --fixed-strings -e "$sym" -- . 2>/dev/null; then found=1; break; fi' \
+    '    found=1; break'
+
+  # The filter that keeps the signal worth reading. Dropped, a plain English backtick (`pass`,
+  # `null`, `true`) counts as a code citation; it is present in every tree, so every finding traces
+  # cited-present and the column means nothing.
+  mutate 'star/trace-symbol-shape' 'scripts/multi-review-star.sh' replace \
+    'English word counted as a citation' 'multi-review-star.test.sh' \
+    '        if (s !~ /_/ && s !~ /[a-z][A-Z]/) continue' \
+    '        if (0) continue'
+
+  # The command half of the trace: without the diff-hides-deletions warning the primary keeps
+  # trusting `## Diff` to show a removal, which it structurally cannot.
+  mutate 'command/step4-diff-hides-deletions' 'commands/multi-review.md' replace \
+    'diff-hides-deletions warning' 'multi-review-packaging.test.sh' \
+    '   **`## Diff` will not show you a deletion.** It is refreshed to the current `base..head` — the' \
+    '   The refreshed `## Diff` shows you what the author deleted between rounds.'
+
   mutate 'star/ns-idempotent' 'scripts/multi-review-star.sh' replace \
     'doubled the prefix' 'multi-review-star.test.sh' \
     '      if (index(id, pfx) == 1) { print; next }' \

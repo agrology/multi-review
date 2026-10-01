@@ -3839,6 +3839,77 @@ out="$(bash "$SUT" resolve-candidates "$R1" 2>/dev/null)"; rc=$?
   && ok "resolve-candidates: round 1 reports an empty worklist, exit 0" \
   || bad "resolve-candidates: round 1 gave rc=$rc out='$out'"
 
+# --- resolve-candidates: the head trace (pr-watch#17, round 2) ---
+# The worklist does the looking, because the scratch's ## Diff cannot: it is refreshed to the
+# current base..head, so code DELETED between rounds is absent from it rather than shown as a
+# removal. MCP-enterprise#316 resolved the 21 findings fixed by ADDING a remedy (visible as `+`
+# lines) and carried the five fixed by deletion. `cited-gone:` is that missing signal.
+TR="${WORK}/trace"; mkdir -p "$TR"
+( cd "$TR" && git init -q . && git config user.email t@t && git config user.name t \
+  && printf 'def still_here():\n    pass\n' > keep.py && git add -A && git commit -qm init ) >/dev/null 2>&1
+TD="${TR}/tdoc.md"
+{ echo "# Doc"; echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' \
+    '> [finding:fable-rd1-r1|high] `ledger_noise` double-counts' '> — via claude-fable-5' \
+    '> — risk: wrong totals' '> — evidence: traced it' '> — at gone.py:3' \
+    '> [agree:fable-rd1-r1] confirmed' '> — via claude-opus-5' '' \
+    '> [finding:fable-rd1-r2|med] `still_here` is called twice' '> — via claude-fable-5' \
+    '> — risk: slow' '> — evidence: read it' '> — at keep.py:1' \
+    '> [agree:fable-rd1-r2] confirmed' '> — via claude-opus-5' '' \
+    '> [finding:fable-rd1-r3|low] the comment is stale' '> — via claude-fable-5' \
+    '> — risk: confusion' \
+    '> [agree:fable-rd1-r3] confirmed' '> — via claude-opus-5' '' \
+    '> [finding:fable-rd1-r4|med] `ledger_noise` is also wrong here' '> — via claude-fable-5' \
+    '> — risk: r' '> — evidence: e' '> — at keep.py:2' \
+    '> [agree:fable-rd1-r4] confirmed' '> — via claude-opus-5' '' \
+    '> [finding:fable-rd2-r1|high] this round' '> — via claude-fable-5' '> — risk: r' \
+    '> [agree:fable-rd2-r1] confirmed' '> — via claude-opus-5'
+} > "$TD"
+out="$(cd "$TR" && bash "$SUT" resolve-candidates "$TD" 2>/dev/null)"; rc=$?
+(( rc == 0 )) || bad "resolve-candidates trace: exited $rc (it REPORTS, it must never block)"
+grep -qE '^fable-rd1-r1	1	high	cited-gone:gone\.py	' <<<"$out" \
+  && ok "resolve-candidates: an anchored path absent at head traces cited-gone" \
+  || bad "resolve-candidates: missed the gone anchor path — got '$out'"
+grep -qE '^fable-rd1-r2	1	med	cited-present	' <<<"$out" \
+  && ok "resolve-candidates: a symbol still in the tree traces cited-present" \
+  || bad "resolve-candidates: wrong trace for a live citation — got '$out'"
+grep -qE '^fable-rd1-r3	1	low	no-citation	' <<<"$out" \
+  && ok "resolve-candidates: a finding citing no code traces no-citation" \
+  || bad "resolve-candidates: wrong trace for an uncited finding — got '$out'"
+# The anchored FILE is still there; only the symbol is gone. This is the #316 shape -- a function
+# deleted out of a file the push also edited -- and the one the diff cannot show.
+grep -qE '^fable-rd1-r4	1	med	cited-gone:ledger_noise	' <<<"$out" \
+  && ok "resolve-candidates: a deleted symbol in a surviving file traces cited-gone" \
+  || bad "resolve-candidates: missed the deleted symbol — got '$out'"
+# Concern stays LAST: it is free text, so no column may follow it.
+grep -q 'cited-present	`still_here` is called twice$' <<<"$out" \
+  && ok "resolve-candidates: the concern remains the final column" \
+  || bad "resolve-candidates: concern is no longer last — got '$out'"
+
+# Outside a checkout there is nothing to trace, and that must not fail or block.
+out="$(cd "$WORK" && bash "$SUT" resolve-candidates "$TD" 2>/dev/null)"; rc=$?
+if (( rc == 0 )) && [[ -n "$out" ]] && ! grep -qv '	no-repo	' <<<"$out"; then
+  ok "resolve-candidates: outside a repo every row traces no-repo, exit 0"
+else
+  bad "resolve-candidates: no-repo degradation failed (rc=$rc out='$out')"
+fi
+
+# A plain English word in backticks must NOT count as a citation: it is present in every tree, so
+# admitting it would make the trace answer cited-present for every finding and mean nothing.
+PW="${TR}/plain.md"
+{ echo "# Doc"; echo "<!-- multi-review-mode: star -->"; echo; echo "## Review"; echo
+  printf '%s\n' \
+    '> [finding:fable-rd1-r1|low] the `pass` branch is unreachable' '> — via claude-fable-5' \
+    '> — risk: r' \
+    '> [agree:fable-rd1-r1] confirmed' '> — via claude-opus-5' '' \
+    '> [finding:fable-rd2-r1|low] this round' '> — via claude-fable-5' '> — risk: r' \
+    '> [agree:fable-rd2-r1] confirmed' '> — via claude-opus-5'
+} > "$PW"
+out="$(cd "$TR" && bash "$SUT" resolve-candidates "$PW" 2>/dev/null)"
+grep -qE '^fable-rd1-r1	1	low	no-citation	' <<<"$out" \
+  && ok "resolve-candidates: a plain English backtick is not treated as a code citation" \
+  || bad "resolve-candidates: an English word counted as a citation — got '$out'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
