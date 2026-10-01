@@ -79,6 +79,19 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- step 5's waits must run in the FOREGROUND (#139) ---
+# Headless `claude -p` kills a backgrounded shell ~5s after the final result and never wakes the
+# turn, so a review that needs the grace wait exits 0 unconverged with no terminal marker. Both
+# attempts on agrology-field-digest#1 died that way while 14 other PRs converged the same afternoon.
+# Deterministic, invisible interactively, and the protocol calls this step autonomous.
+if [[ -f "$f" ]]; then
+  if grep -qi 'NEVER run a wait in the background' "$f" && grep -q '540' "$f"; then
+    ok "step 5 forbids a backgrounded wait and gives a foreground-safe bound"
+  else
+    bad "step 5 does not forbid backgrounding a wait (#139) — headless runs exit 0 unconverged"
+  fi
+fi
+
 # --- step 4 must hand the primary a WORKLIST, not just an instruction (pr-watch#17) ---
 # MCP-enterprise#316 round 7 republished five agreed round-6 findings as standing, although the
 # push had deleted every function they describe. Step 4 was prose with nothing to enumerate, so a
