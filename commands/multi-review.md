@@ -553,6 +553,32 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
        the task text. The rescue wrapper parses those four out of the text as runtime controls;
        they are not instructions to the reviewer.
 
+       **codex's task text is a POINTER to the brief, never the brief itself** (issue #140).
+       Write the brief to a file and dispatch the path:
+
+           ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh prompt "<doc>.<id>" \
+             --reviewer codex --out "<doc>.<id>.brief"
+
+       which prints the absolute path and nothing else. The task text is then exactly:
+
+           Read <that path> in full and do everything it says. It is your complete brief.
+           --model <model> --effort high --write --background
+
+       `codex:codex-rescue` is a third-party wrapper that re-types its whole task text into ONE
+       double-quoted shell argument to `codex-companion.mjs`. A brief carrying a `"` — and a
+       reviewer brief quoting a diff usually does — ends that argument early, the remainder is
+       parsed as shell, and the permission layer denies a command that now carries pipes and
+       redirects. The denial is CORRECT: running it would execute fragments of the brief. Headless
+       runs auto-deny rather than prompting, so the round loses codex silently and the review
+       finishes on the fable floor with no cross-vendor refutation. Measured 2026-09-23: rounds 3,
+       4, 9, 10 and 12 of one review, and all four rounds of another. Interactively it surfaces as
+       a permission prompt a human waves through, which is why it never showed up outside daemon
+       use. A path has no quoting surface, so this removes the failure rather than escaping around
+       it.
+
+       **fable takes the brief inline, as before** — it is dispatched to `general-purpose`, whose
+       task text reaches the agent as an argument and never through a shell.
+
      **`--effort high` is not optional either.** codex ships a LOW default effort for every model it
      has pinned here — `none` for the `gpt-5.6` family, `low` for `gpt-6-astra` — and at that effort
      the turn spends itself on the skill and the protocol instead of the document. Observed on
@@ -959,6 +985,35 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      body (or, for a PR, note it — the diff is read-only), or
    - `> [dispute:<ns-id>] <one-line reason>` + `> — via <primary-model-id>` — reject it, tersely.
 
+   **Whatever you write on the record is PUBLISHED, verbatim, to the author.** In PR flavor
+   `compose-review` hands these records to the poster, which relabels the grammar around them and
+   copies the words themselves exactly — it cannot shorten them without paraphrasing a verdict,
+   which is the one thing a daemon posting on your behalf must never do. So the record is the
+   author's inbox, not your notebook: **at most five sentences**, and every one of them about the
+   defect — the verdict, the severity if you are moving it, the evidence that decides it, and what
+   the author must do.
+
+   Anything else goes in PLAIN PROSE under the record, unquoted, where the gate still reads it and
+   the composer never ingests it:
+
+       > [agree:fable-rd14-r1] Confirmed: `north.farm/?ref=digest` blanks and the remainder
+       > matches no `_LINK_RE` alternative, so a model-supplied URL ships as a live link.
+       > Taking `high` over `med` — severity is consequence-if-true. The push adds four
+       > acceptance cases and no refusal case for a separator-then-separator continuation,
+       > so the suite stays green straight through the regression.
+       > — via claude-opus-5
+
+       Traced by hand against `git show dbeae0d:…`; the interpreter is blocked in this
+       session, so no test was watched go red. Third example in the finding is wrong —
+       `//promo` is still refused.
+
+   What does NOT belong in a published record, however true: standing session bounds (a blocked
+   interpreter, blocked redirection, `tee` seeding), quarantine and dispatch bookkeeping, round-bound
+   or convergence commentary, and notes about the protocol reviewing itself. Those are for the human
+   at the gate, who reads the doc; the author reads the PR and needs none of it. They also repeat
+   nearly verbatim every round, which is what turned a fourteen-round review into a comment no human
+   reads (pr-watch, 2026-09-22).
+
    **A fix about whether a CHECK CAN FAIL must demonstrate the failure, not assert it**
    (issue #47 §1). When the finding concerns a test, a guard, an assertion or a coverage claim,
    "I added a test" is not a fix — "I broke it on purpose and watched that test go red" is. Say
@@ -1040,6 +1095,13 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    naming the model that raised it, so a defect you found yourself reaches the author. A
    missing `> — via` line is a contract error, and now a publishing one: `compose-review`
    refuses to compose without it.
+
+   Published means the same five-sentence bound as a verdict, and the same test: an observation
+   earns its place in the comment only if it tells the AUTHOR something about their change. "This
+   lookahead has now been wrong in four consecutive directions; the remedy is a design decision, not
+   a fifth tightening" is an observation. "codex was dispatched, its Bash was denied, so this round
+   is one secondary plus me" is a gate note — put it in plain prose under the record. When a round
+   has nothing for the author, write no observation at all.
 4. **Round N ≥ 2 only — record what the author already fixed.** You have just re-read a
    refreshed diff at a new head. For every finding you agreed with in an EARLIER round that this
    push has fixed, append:
