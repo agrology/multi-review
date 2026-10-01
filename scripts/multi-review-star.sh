@@ -5,6 +5,9 @@
 #   resolve-set [--reviewers csv]
 #   remember-set --pref-file <path> (--reviewers <csv> | --clear)
 #   available
+#   resolve-candidates <doc> -> "ns-id\tround\tsev\tconcern" per finding the primary owes a
+#                              step-4 decision on: agreed, unresolved, raised in an EARLIER round.
+#                              Reports; never blocks (pr-watch#17).
 #   open-findings <doc>
 #   observations <doc>
 #   resolved <doc>          -> "ns-id\tnote\tmodel\twitness" per `> [resolved:]` record (issue #88)
@@ -596,6 +599,43 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
       }
     }
   '
+}
+
+# resolve-candidates <doc> -> "ns-id\tround\tsev\tconcern" per finding the primary OWES a
+# step-4 decision on: agreed, no `[resolved:]` record, and raised in an EARLIER round.
+#
+# pr-watch#17. MCP-enterprise#316 round 7 republished five agreed round-6 findings as standing,
+# although the push it reviewed had deleted every function they describe and added a test for each.
+# Step 4 ("record what the author already fixed") was prose with no worklist behind it, so a
+# primary that simply did not re-open those findings produced a post leading with two 🔴 and two 🟠
+# describing no code on the branch -- the first thing a human approver reads.
+#
+# REPORTS, NEVER BLOCKS. Exit is 0 with an empty list and 0 with a full one; only a malformed doc
+# fails (via _table / cmd_resolved). A gate that refuses to converge on an unemptied worklist would
+# wedge exactly the reviews that need a human most -- the failure `check-converged`'s single-primary
+# clause already produces on agrology-field-digest#15. The primary is asked to empty it; the gate
+# reads what it did.
+#
+# THIS round's findings are excluded on purpose: the author has not seen them yet, so there is
+# nothing they could have fixed. Disputed findings are excluded because there is nothing to resolve.
+cmd_resolve_candidates() { # <doc>
+  local doc="${1:?doc}" t resolved latest
+  t="$(_table "$doc")" || exit $?
+  # cmd_resolved is the authority on what is already recorded, not a grep: it also validates the
+  # records, so a malformed one fails here rather than silently leaving a finding on the worklist.
+  resolved="$(cmd_resolved "$doc" | cut -f1)" || exit $?
+  latest="$(printf '%s\n' "$t" | awk -F'\t' '
+    { if (match($1, /-rd[0-9]+-/)) { r = substr($1, RSTART+3, RLENGTH-4) + 0; if (r > m) m = r } }
+    END { print m + 0 }')"
+  printf '%s\n' "$t" | awk -F'\t' -v latest="$latest" -v res="$resolved" '
+    BEGIN { n = split(res, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") R[a[i]] = 1 }
+    $3 == "agreed" {
+      if ($1 in R) next
+      if (!match($1, /-rd[0-9]+-/)) next
+      rd = substr($1, RSTART+3, RLENGTH-4) + 0
+      if (rd >= latest) next
+      print $1 "\t" rd "\t" $7 "\t" $5
+    }'
 }
 
 cmd_open_findings() { # <doc> -> ids with state==open
@@ -2361,6 +2401,7 @@ main() {
     remember-set) cmd_remember_set "$@" ;;
     available) cmd_available "$@" ;;
     open-findings) cmd_open_findings "$@" ;;
+    resolve-candidates) cmd_resolve_candidates "$@" ;;
     observations) cmd_observations "$@" ;;
     resolved) cmd_resolved "$@" ;;
     check-primary-id) cmd_check_primary_id "$@" ;;

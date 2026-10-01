@@ -461,11 +461,18 @@ grep -qF 'crossref' <<<"$err" \
 BASEPM="${WORK}/mpassmissing.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASEPM"
 mkcopy "${BASEPM}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra'
 before="$(shasum "$BASEPM" | cut -d' ' -f1)"
-bash "$SUT" merge --round 1 "$BASEPM" "${BASEPM}.codex" --pass "${BASEPM}.crossref" >/dev/null 2>&1; rc=$?
+err="$(bash "$SUT" merge --round 1 "$BASEPM" "${BASEPM}.codex" --pass "${BASEPM}.crossref" 2>&1 >/dev/null)"; rc=$?
 after="$(shasum "$BASEPM" | cut -d' ' -f1)"
 [[ $rc -ne 0 && "$before" == "$after" ]] \
   && ok "merge --pass: missing pass copy -> nonzero exit, doc untouched" \
   || bad "merge --pass: missing pass copy did not fail loudly (rc=$rc)"
+# The MESSAGE, not merely the exit code. Once the call sites gained their own `|| die`, deleting
+# the `[[ -f "$copy" ]]` guard still failed nonzero -- via "refusing to write, see the id error
+# above", which names no missing file and points at an id error that does not exist. The sweep
+# scored that as a SURVIVED guard: right exit code, useless diagnosis.
+grep -qF "pass copy not found" <<<"$err" \
+  && ok "merge --pass: the missing pass copy is NAMED, not just refused" \
+  || bad "merge --pass: failure did not name the missing copy (err='$err')"
 
 # --- merge: manifest + quarantine ---
 BASE2="${WORK}/m2.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$BASE2"
@@ -3782,6 +3789,55 @@ err="$(bash "$SUT" merge --round 1 "$NF2" "${NF2}.fable" 2>&1 >/dev/null)"; rc=$
 (( rc != 0 )) && grep -qiE 'namespac|round' <<<"$err" \
   && ok "merge: an id namespaced for ANOTHER round is refused, with a reason" \
   || bad "merge: accepted a foreign-round ns-id (rc=$rc err='$err')"
+
+
+# --- resolve-candidates: the step-4 worklist (pr-watch#17) ---
+# MCP-enterprise#316 round 7 republished five agreed round-6 findings as standing, although the
+# push it reviewed had deleted every function they describe. The primary never ran step 4 against
+# them, and nothing asked it to: step 4 was prose with no worklist behind it. This is that
+# worklist -- every finding that is AGREED, NOT resolved, and raised in an EARLIER round.
+RC="${WORK}/rc.md"
+mkstar rc.md \
+  '> [finding:fable-rd1-r1|high] round one, agreed, still unresolved' '> — via claude-fable-5' '> — risk: ra' \
+  '> [agree:fable-rd1-r1] confirmed at head aaa1111' '> — via claude-opus-5' \
+  '' \
+  '> [finding:fable-rd1-r2|med] round one, agreed, already resolved' '> — via claude-fable-5' '> — risk: rb' \
+  '> [agree:fable-rd1-r2] confirmed' '> — via claude-opus-5' \
+  '> [resolved:fable-rd1-r2] fixed at head bbb2222' '> — via claude-opus-5' \
+  '' \
+  '> [finding:fable-rd1-r3|low] round one, DISPUTED' '> — via claude-fable-5' '> — risk: rc' \
+  '> [dispute:fable-rd1-r3] not reachable' '> — via claude-opus-5' \
+  '' \
+  '> [finding:fable-rd2-r1|med] THIS round, agreed' '> — via claude-fable-5' '> — risk: rd' \
+  '> [agree:fable-rd2-r1] confirmed' '> — via claude-opus-5' \
+  > /dev/null
+out="$(bash "$SUT" resolve-candidates "$RC" 2>/dev/null)"; rc=$?
+(( rc == 0 )) || bad "resolve-candidates: exited $rc (it REPORTS, it must never block)"
+grep -qE '^fable-rd1-r1	' <<<"$out" \
+  && ok "resolve-candidates: lists an agreed, unresolved, earlier-round finding" \
+  || bad "resolve-candidates: missed the carried finding — got '$out'"
+grep -qE '^fable-rd1-r2	' <<<"$out" \
+  && bad "resolve-candidates: listed a finding that already has a [resolved:] record" \
+  || ok "resolve-candidates: a resolved finding is off the worklist"
+grep -qE '^fable-rd1-r3	' <<<"$out" \
+  && bad "resolve-candidates: listed a DISPUTED finding (there is nothing to resolve)" \
+  || ok "resolve-candidates: a disputed finding is off the worklist"
+grep -qE '^fable-rd2-r1	' <<<"$out" \
+  && bad "resolve-candidates: listed THIS round's finding (the author has not seen it yet)" \
+  || ok "resolve-candidates: the current round's own findings are off the worklist"
+grep -qE '^fable-rd1-r1	1	high	' <<<"$out" \
+  && ok "resolve-candidates: carries round and severity, so the primary can triage the list" \
+  || bad "resolve-candidates: wrong columns — got '$out'"
+
+# Round 1 has no earlier round, so the worklist is empty and that is not an error.
+R1="${WORK}/rc1.md"
+mkstar rc1.md \
+  '> [finding:fable-rd1-r1|med] the only round' '> — via claude-fable-5' '> — risk: re' \
+  '> [agree:fable-rd1-r1] confirmed' '> — via claude-opus-5' > /dev/null
+out="$(bash "$SUT" resolve-candidates "$R1" 2>/dev/null)"; rc=$?
+(( rc == 0 )) && [[ -z "$out" ]] \
+  && ok "resolve-candidates: round 1 reports an empty worklist, exit 0" \
+  || bad "resolve-candidates: round 1 gave rc=$rc out='$out'"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
