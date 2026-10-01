@@ -3749,6 +3749,40 @@ RL3="$(mkcc rel3.md '# Doc' '<!-- multi-review: converged · round 1/5 -->' '<!-
 bash "$SUT" release "$RL3" >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 && -e "$RL3.codex" ]] && ok "release: no reviewers suffix is a usage error, nothing deleted" || bad "release: acted without a roster (rc=$rc)"
 
+
+# --- namespacing is IDEMPOTENT: a reviewer that already namespaced its own id (pr-watch#17) ---
+# Every id in the doc a reviewer just read looks like `<provider>-rd<N>-<id>`, so a reviewer
+# copying that shape is expected, not exotic. Prefixing unconditionally produced
+# `fable-rd7-fable-rd7-r1` live on MCP-enterprise#316 round 7: the id stays unique, so nothing
+# downstream failed loudly -- it just published a malformed id in the anchor comment and in every
+# record quoting it. Round 1 here because merge's own self-check compares merged rounds against
+# footers, and a round-7 merge into an empty doc is refused for that unrelated reason.
+NB="${WORK}/ns1.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: fable -->'; echo; echo "## Review"; echo; } > "$NB"
+mkcopy "${NB}.fable" \
+  '> [finding:fable-rd1-r1|high] already namespaced by the reviewer' '> — via claude-fable-5' '> — risk: ra' \
+  '' \
+  '> [finding:r2|med] bare, as the protocol asks' '> — via claude-fable-5' '> — risk: rb'
+merr="$(bash "$SUT" merge --round 1 "$NB" "${NB}.fable" 2>&1 >/dev/null)"; mrc=$?
+(( mrc == 0 )) || bad "merge(ns): refused the turn outright — $merr"
+grep -qF '[finding:fable-rd1-r1|high]' "$NB" \
+  && ok "merge: an already-namespaced id is left alone, not prefixed twice" \
+  || bad "merge: doubled the prefix — $(grep -oE '\[finding:[^]|]+' "$NB" | tr '\n' ' ')"
+grep -qF '[finding:fable-rd1-r2|med]' "$NB" \
+  && ok "merge: a bare id is still namespaced" \
+  || bad "merge: failed to namespace a bare id — $(grep -oE '\[finding:[^]|]+' "$NB" | tr '\n' ' ')"
+grep -qF 'fable-rd1-fable-rd1' "$NB" \
+  && bad "merge: produced a doubled ns-id" \
+  || ok "merge: no doubled ns-id anywhere in the doc"
+
+# A FOREIGN prefix is a different thing: an id namespaced for another round would collide with the
+# finding already carrying it, so it must fail loudly rather than be silently accepted or mangled.
+NF2="${WORK}/ns2.md"; { echo "# Doc"; echo '<!-- multi-review-mode: star · reviewers: fable -->'; echo; echo "## Review"; echo; } > "$NF2"
+mkcopy "${NF2}.fable" '> [finding:fable-rd6-r1|high] an id from another round' '> — via claude-fable-5' '> — risk: rc'
+err="$(bash "$SUT" merge --round 1 "$NF2" "${NF2}.fable" 2>&1 >/dev/null)"; rc=$?
+(( rc != 0 )) && grep -qiE 'namespac|round' <<<"$err" \
+  && ok "merge: an id namespaced for ANOTHER round is refused, with a reason" \
+  || bad "merge: accepted a foreign-round ns-id (rc=$rc err='$err')"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

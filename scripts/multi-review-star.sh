@@ -772,9 +772,21 @@ pass_id_of_copy() {
 
 # emit a copy's finding blocks with ids namespaced <id> -> <provider>-rd<N>-<id> on the
 # [finding:] line only, preserving |sev; all other lines pass through verbatim.
-namespace_blocks() { # <provider> <round> <copy>
+namespace_blocks() { # <provider> <round> <copy>   (0 ok · 1 an id is namespaced for elsewhere)
   local provider="$1" round="$2" copy="$3"
-  review_section "$copy" | strip_fences /dev/stdin | awk -v pfx="${provider}-rd${round}-" '
+  # IDEMPOTENT (pr-watch#17). Every id in the doc a reviewer just read is already
+  # `<provider>-rd<N>-<id>`, so a reviewer echoing that shape is expected rather than exotic.
+  # Prefixing unconditionally produced `fable-rd7-fable-rd7-r1` live on MCP-enterprise#316 round 7,
+  # and nothing downstream failed: the doubled id is still unique, still parses, still matches its
+  # manifest entry. It simply published a malformed id in the PR's anchor comment and in every
+  # record quoting it. Silent because the only contract it breaks is legibility.
+  #
+  # A FOREIGN prefix is refused instead of rewritten. `fable-rd6-r1` arriving in round 7 means the
+  # reviewer re-raised an id the doc already carries; prefixing it would mint a second finding that
+  # reads like the first, and accepting it as-is would collide. Neither is recoverable downstream,
+  # and the turn is cheap to re-run.
+  review_section "$copy" | strip_fences /dev/stdin \
+    | awk -v pfx="${provider}-rd${round}-" '
     /^> \[finding:[A-Za-z0-9_-]+([|][^]]*)?]/ {
       # rewrite only the id token between "finding:" and the first "|" or "]"
       pre = "> [finding:"; s = substr($0, length(pre)+1)
@@ -782,9 +794,15 @@ namespace_blocks() { # <provider> <round> <copy>
       i = 1
       while (i <= length(s) && substr(s,i,1) != "|" && substr(s,i,1) != "]") i++
       id = substr(s, 1, i-1); tail = substr(s, i)
+      if (index(id, pfx) == 1) { print; next }
+      if (id ~ /^[A-Za-z0-9_]+-rd[0-9]+-/) {
+        printf "multi-review-star: merge: finding id \"%s\" is namespaced for another provider or round (this turn namespaces %s); the reviewer must raise a BARE id\n", id, pfx > "/dev/stderr"
+        foreign = 1; exit 1
+      }
       print pre pfx id tail; next
     }
     { print }
+    END { if (foreign) exit 1 }
   '
 }
 
@@ -1487,7 +1505,12 @@ cmd_merge() {
   for copy in "${copies[@]}"; do
     [[ -f "$copy" ]] || die "merge: copy not found: $copy" 1
     provider="$(provider_of_copy "$doc" "$copy")" || exit $?
-    block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'\n'
+    # Checked, not inlined into the concatenation: a command substitution's failure is invisible
+    # inside `block="${block}$(...)"`, so a refused copy would merge as an empty contribution and
+    # the round would read as a reviewer that raised nothing.
+    local nsb; nsb="$(namespace_blocks "$provider" "$round" "$copy")" \
+      || die "merge: refusing to write — see the id error above for ${copy}" 1
+    block="${block}${nsb}"$'\n'
   done
   # --pass copies use the SAME namespace_blocks path ordinary copies use, validated against
   # STAR_PASSES (pass_id_of_copy) rather than the reviewer registry — see comment above.
@@ -1495,7 +1518,9 @@ cmd_merge() {
     [[ -z "$copy" ]] && continue
     [[ -f "$copy" ]] || die "merge: pass copy not found: $copy" 1
     provider="$(pass_id_of_copy "$doc" "$copy")" || exit $?
-    block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'\n'
+    local pnsb; pnsb="$(namespace_blocks "$provider" "$round" "$copy")" \
+      || die "merge: refusing to write — see the id error above for ${copy}" 1
+    block="${block}${pnsb}"$'\n'
   done
 
   # Stage the ENTIRE merge, self-check the staged pair, and commit only on success (#107).

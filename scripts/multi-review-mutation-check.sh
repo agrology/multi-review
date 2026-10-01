@@ -443,6 +443,21 @@ mutations() {
   # `replace` with a false condition, never `delete`: deleting the `if` line orphans its `die` and
   # `fi`, so `bash -n` rejects the mutated file and the runner aborts the entry for a syntax
   # reason instead of proving the guard.
+  # pr-watch#17. Dropped, merge prefixes an already-namespaced id a second time and publishes
+  # `fable-rd7-fable-rd7-r1` -- unique, parseable, manifest-consistent, and wrong in every record
+  # that quotes it. Nothing else in the pipeline can notice.
+  mutate 'star/ns-idempotent' 'scripts/multi-review-star.sh' replace \
+    'doubled the prefix' 'multi-review-star.test.sh' \
+    '      if (index(id, pfx) == 1) { print; next }' \
+    '      if (0) { print; next }'
+
+  # The other half. Dropped, an id namespaced for a DIFFERENT round is silently prefixed on top,
+  # minting a second finding that reads like the one the doc already carries.
+  mutate 'star/ns-foreign-refused' 'scripts/multi-review-star.sh' replace \
+    'accepted a foreign-round ns-id' 'multi-review-star.test.sh' \
+    '      if (id ~ /^[A-Za-z0-9_]+-rd[0-9]+-/) {' \
+    '      if (0) {'
+
   mutate 'star/resume-requires-roster' 'scripts/multi-review-star.sh' replace \
     'silently degraded to a fresh ask' 'multi-review-star.test.sh' \
     '  if (( resume )) && [[ -z "${_resume_ids//[[:space:]]/}" ]]; then' \
@@ -2240,10 +2255,13 @@ mutations() {
   # rewrite to <pass>-rd<N>-<id>) an ordinary copy's do — occurrence 2 of this call, the pass
   # loop's own. Without it a pass's raw copy content (including its header) would be spliced in
   # verbatim, with no namespaced finding id for merge/adjudication to key on.
-  mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace:2 \
+  # Target updated when the call sites gained their status checks: the two loops no longer share
+  # a verbatim line, so this names the pass loop's own variable rather than an occurrence index.
+  # An index into duplicate lines is exactly how an entry goes stale in silence.
+  mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace \
     'pass copy findings did not merge' 'multi-review-star.test.sh' \
-    '    block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'"'"'\n'"'"'' \
-    '    block="${block}$(cat "$copy")"$'"'"'\n'"'"''
+    '    local pnsb; pnsb="$(namespace_blocks "$provider" "$round" "$copy")" \' \
+    '    local pnsb; pnsb="$(cat "$copy")" \'
 
   # STAR_PASSES itself, the single source of truth for which namespace prefixes are passes
   # rather than providers — governs BOTH pass_id_of_copy's validation and gate-summary's
