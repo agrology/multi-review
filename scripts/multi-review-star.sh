@@ -5,8 +5,10 @@
 #   resolve-set [--reviewers csv]
 #   remember-set --pref-file <path> (--reviewers <csv> | --clear)
 #   available
-#   resolve-candidates <doc> -> "ns-id\tround\tsev\tconcern" per finding the primary owes a
-#                              step-4 decision on: agreed, unresolved, raised in an EARLIER round.
+#   resolve-candidates <doc> -> "ns-id\tround\tsev\ttrace\tconcern" per finding the primary owes
+#                              a step-4 decision on: agreed, unresolved, raised in an EARLIER round.
+#                              `trace` is cited-gone:<path|symbol> | cited-present | no-citation |
+#                              no-repo -- whether the code the finding cites is still at this head.
 #                              Reports; never blocks (pr-watch#17).
 #   open-findings <doc>
 #   observations <doc>
@@ -601,8 +603,88 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
   '
 }
 
-# resolve-candidates <doc> -> "ns-id\tround\tsev\tconcern" per finding the primary OWES a
-# step-4 decision on: agreed, no `[resolved:]` record, and raised in an EARLIER round.
+# _code_symbols <text> -> up to 3 distinct CODE-SHAPED backticked tokens, one per line.
+#
+# Only `snake_case` or `camelCase` single identifiers qualify. A finding's prose is full of
+# backticks — `null`, `true`, `main` — and a plain English word is present in every repo, so
+# admitting one would make the head trace below answer "still there" for every finding and say
+# nothing. Requiring an underscore or an internal capital keeps the set small enough that its
+# absence MEANS something.
+_code_symbols() { # <text>
+  printf '%s\n' "$1" | awk '
+    {
+      n = split($0, parts, "`")
+      for (i = 2; i <= n; i += 2) {
+        # With an odd number of backticks the final part is an UNTERMINATED span (the rest of the
+        # line), not a code token. n is even exactly in that case, and that part sits at index n.
+        if (i == n && n % 2 == 0) continue
+        s = parts[i]
+        gsub(/^[ \t]+|[ \t]+$/, "", s)
+        sub(/\(\)$/, "", s)
+        if (s !~ /^[A-Za-z_][A-Za-z0-9_]*$/) continue
+        if (length(s) < 4) continue
+        if (s !~ /_/ && s !~ /[a-z][A-Z]/) continue
+        if (s in seen) continue
+        seen[s] = 1
+        print s
+        if (++c == 3) exit
+      }
+    }'
+}
+
+# _head_trace <doc> <ns-id> <text> -> one token: whether the code this finding CITES is still
+# present at the head the primary is looking at now.
+#
+#   cited-gone:<path|symbol>  the anchored file, or every code symbol the finding names, is absent
+#   cited-present             the citation still resolves — the defect may or may not still be there
+#   no-citation               the finding anchors nothing and names no code-shaped symbol
+#   no-repo                   not run from inside a checkout, so nothing can be traced
+#
+# This is a LEAD, never a verdict. `cited-present` says only that the text resolves; the defect can
+# be fixed with every symbol intact (a guard added, an order corrected). `cited-gone` is the one
+# that carries information, and it is the case the scratch cannot show: `## Diff` is refreshed to
+# the current `base..head`, the branch's END STATE, so code the author DELETED between rounds is
+# simply absent from it — not a `-` line, not anywhere. A fix by removal is therefore invisible
+# exactly where the primary looks, and reads identically to "I cannot find what this finding
+# describes". That is how MCP-enterprise#316 round 7 republished five agreed round-6 findings as
+# standing 🔴/🟠 after the push it reviewed had deleted every function they describe: findings
+# fixed by ADDING a remedy show up as `+` lines and were duly resolved (21 of them), and only the
+# removals carried. The primary could have seen it — `multi-review-pr.sh head-record` keeps each
+# round's head in the `.records` sidecar, and a round-to-round delta shows the deletion — but that
+# is an extra step nothing performed. So do the looking here, in the one place the worklist is
+# already assembled, and hand the primary a positive signal instead of an absence to interpret.
+_head_trace() { # <doc> <ns-id> <text>
+  local doc="$1" id="$2" text="$3" root anchor path syms sym first="" found=0 nsym=0
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+  [[ -n "$root" ]] || { echo "no-repo"; return 0; }
+  # Never fatal. anchor_of exits 2 on a MALFORMED anchor, which publish already hard-fails on;
+  # here it degrades to "no anchor to trace" so the worklist keeps its REPORTS-NEVER-BLOCKS
+  # contract even on a doc that cannot post.
+  anchor="$(anchor_of "$doc" "$id" 2>/dev/null)" || anchor=""
+  path="${anchor%%$'\t'*}"
+  if [[ -n "$path" && ! -e "${root}/${path}" ]]; then
+    printf 'cited-gone:%s\n' "$path"; return 0
+  fi
+  syms="$(_code_symbols "$text")"
+  while IFS= read -r sym; do
+    [[ -n "$sym" ]] || continue
+    nsym=$((nsym + 1)); [[ -n "$first" ]] || first="$sym"
+    # Tracked files in the worktree: the head the author pushed, which is what the primary reviews.
+    if git -C "$root" grep -qI --fixed-strings -e "$sym" -- . 2>/dev/null; then found=1; break; fi
+  done <<< "$syms"
+  if (( nsym == 0 )); then
+    [[ -n "$path" ]] && { echo "cited-present"; return 0; }
+    echo "no-citation"; return 0
+  fi
+  (( found )) && { echo "cited-present"; return 0; }
+  # EVERY symbol absent, not merely one: a single missing token is ordinary prose drift.
+  printf 'cited-gone:%s\n' "$first"
+}
+
+# resolve-candidates <doc> -> "ns-id\tround\tsev\ttrace\tconcern" per finding the primary OWES a
+# step-4 decision on: agreed, no `[resolved:]` record, and raised in an EARLIER round. `trace` is
+# _head_trace's token — see there for why the list does the looking rather than describing it.
+# `concern` stays LAST: it is free text and may contain anything but a newline.
 #
 # pr-watch#17. MCP-enterprise#316 round 7 republished five agreed round-6 findings as standing,
 # although the push it reviewed had deleted every function they describe and added a test for each.
@@ -619,7 +701,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
 # THIS round's findings are excluded on purpose: the author has not seen them yet, so there is
 # nothing they could have fixed. Disputed findings are excluded because there is nothing to resolve.
 cmd_resolve_candidates() { # <doc>
-  local doc="${1:?doc}" t resolved latest
+  local doc="${1:?doc}" t resolved latest row id rd sev concern ev trace
   t="$(_table "$doc")" || exit $?
   # cmd_resolved is the authority on what is already recorded, not a grep: it also validates the
   # records, so a malformed one fails here rather than silently leaving a finding on the worklist.
@@ -627,15 +709,20 @@ cmd_resolve_candidates() { # <doc>
   latest="$(printf '%s\n' "$t" | awk -F'\t' '
     { if (match($1, /-rd[0-9]+-/)) { r = substr($1, RSTART+3, RLENGTH-4) + 0; if (r > m) m = r } }
     END { print m + 0 }')"
-  printf '%s\n' "$t" | awk -F'\t' -v latest="$latest" -v res="$resolved" '
+  # awk selects; the trace is computed per row in the shell, because it reads the repo.
+  while IFS=$'\t' read -r id rd sev concern ev; do
+    [[ -n "$id" ]] || continue
+    trace="$(_head_trace "$doc" "$id" "${concern} ${ev}")"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$rd" "$sev" "$trace" "$concern"
+  done < <(printf '%s\n' "$t" | awk -F'\t' -v latest="$latest" -v res="$resolved" '
     BEGIN { n = split(res, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") R[a[i]] = 1 }
     $3 == "agreed" {
       if ($1 in R) next
       if (!match($1, /-rd[0-9]+-/)) next
       rd = substr($1, RSTART+3, RLENGTH-4) + 0
       if (rd >= latest) next
-      print $1 "\t" rd "\t" $7 "\t" $5
-    }'
+      print $1 "\t" rd "\t" $7 "\t" $5 "\t" $9
+    }')
 }
 
 cmd_open_findings() { # <doc> -> ids with state==open

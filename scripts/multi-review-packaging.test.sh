@@ -106,6 +106,20 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- step 4 must tell the primary that ## Diff hides a DELETION (pr-watch#17, round 2) ---
+# The refreshed diff is the branch's end state (base..head), so code removed between rounds is
+# simply absent from it -- never a `-` line. That is why #316's primary resolved the 21 findings
+# fixed by ADDING a remedy and carried the five fixed by deletion. The worklist now traces this
+# mechanically as `cited-gone:`, and the command must point the primary at that column, or the new
+# signal ships with nothing telling it the diff it trusts cannot answer the question.
+if [[ -f "$f" ]]; then
+  if grep -q 'cited-gone' "$f" && grep -qi 'will not show you a deletion' "$f"; then
+    ok "step 4 names the cited-gone trace and why the diff cannot show a deletion"
+  else
+    bad "step 4 lacks the cited-gone trace or the diff-hides-deletions warning (pr-watch#17)"
+  fi
+fi
+
 # --- codex's brief must be dispatched BY PATH, not inlined (#140) ---
 # `codex:codex-rescue` re-types its whole task text into one double-quoted shell argument. A brief
 # carrying a `"` ends that argument early, the rest is parsed as shell, and the permission layer

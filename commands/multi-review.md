@@ -1133,10 +1133,25 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
        ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-candidates "<doc>"
 
    One line per finding you owe a decision on — agreed, no `[resolved:]` yet, raised in an earlier
-   round — as `<ns-id>  <round>  <sev>  <concern>`. Work it to the end and decide each one: a
-   `[resolved:]` record, or nothing if the defect is still live. It reports and never blocks, so an
-   unemptied worklist costs you nothing mechanically; it just leaves the post claiming defects the
-   author has already closed.
+   round — as `<ns-id>  <round>  <sev>  <trace>  <concern>`. Work it to the end and decide each
+   one: a `[resolved:]` record, or nothing if the defect is still live. It reports and never
+   blocks, so an unemptied worklist costs you nothing mechanically; it just leaves the post
+   claiming defects the author has already closed.
+
+   `<trace>` is the worklist's own look at this head, so you are not starting from an absence:
+
+   - `cited-gone:<path|symbol>` — the file this finding anchors, or every code symbol it names, is
+     no longer in the tree. **Start here.** This is the case the diff cannot show you (below), and
+     it is usually a fix by removal. Confirm the defect cannot happen without that code, then
+     record `[resolved:]`.
+   - `cited-present` — the citation still resolves. That is all it means: a defect is routinely
+     fixed with every symbol intact, by a guard added or an order corrected. Read the hunk.
+   - `no-citation` — the finding anchors nothing and names no code-shaped symbol. Judge it from
+     the diff.
+   - `no-repo` — the command did not run inside a checkout; there is no trace, decide as before.
+
+   The trace is a LEAD, never a verdict, and a `[resolved:]` record still states what changed and
+   at which head. Never cite the trace token itself as your evidence.
 
    **The test is whether the DEFECT still exists at this head — not whether the author applied the
    remedy you proposed.** Those come apart, and when they do this step fails silently. On
@@ -1147,10 +1162,18 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    still on the branch, and if it is gone, can the defect still happen? Removal, replacement and a
    documented withdrawal all resolve a finding as surely as the fix you asked for.
 
-   Three things in the refreshed scratch answer that, and all three are already in front of you:
-   the `## Diff` at the new head (what was deleted, and which tests were added — an added test is a
-   valid witness), the `## PR description` (authors record rulings and withdrawals there), and the
-   commit subjects, which often name the finding ids they answer.
+   **`## Diff` will not show you a deletion.** It is refreshed to the current `base..head` — the
+   branch's END STATE — so code the author removed between rounds is simply absent from it: not a
+   `-` line, not anywhere. A fix by removal is therefore invisible in the one place you are
+   looking, and reads exactly like "I cannot find what this finding describes". That asymmetry is
+   why #316's primary resolved 21 findings and carried five: the 21 were fixed by ADDING a remedy,
+   which appears as `+` lines. The `cited-gone:` trace above exists to close that gap — trust it
+   over your reading of the diff on this specific question.
+
+   The rest of the refreshed scratch is still in front of you and still answers the question: the
+   `## Diff` at the new head (which tests were added — an added test is a valid witness), the
+   `## PR description` (authors record rulings and withdrawals there), and the commit subjects,
+   which often name the finding ids they answer.
 
    For every finding you agreed with in an EARLIER round that this push has fixed, append:
 
