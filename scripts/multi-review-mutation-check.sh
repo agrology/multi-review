@@ -457,7 +457,7 @@ mutations() {
   # The other direction: dropped, a finding the primary ALREADY recorded as resolved stays on the
   # worklist for every later round, so the list grows monotonically and stops meaning anything.
   mutate 'star/resolve-candidates-skips-resolved' 'scripts/multi-review-star.sh' replace \
-    'already has a \[resolved:\] record' 'multi-review-star.test.sh' \
+    'listed a finding that already has a' 'multi-review-star.test.sh' \
     '      if ($1 in R) next' \
     '      if (0) next'
 
@@ -2260,7 +2260,7 @@ mutations() {
   # was never written (a crashed or never-dispatched pass) is silently treated as present, and
   # merge proceeds to build a doc from content that does not exist.
   mutate 'star/merge-pass-file-exists' 'scripts/multi-review-star.sh' delete \
-    'missing pass copy did not fail loudly' 'multi-review-star.test.sh' \
+    'did not name the missing copy' 'multi-review-star.test.sh' \
     '    [[ -f "$copy" ]] || die "merge: pass copy not found: $copy" 1'
 
   # pass_id_of_copy's failure must actually ABORT the merge before the doc is written — the
