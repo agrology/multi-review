@@ -2255,10 +2255,13 @@ mutations() {
   # rewrite to <pass>-rd<N>-<id>) an ordinary copy's do — occurrence 2 of this call, the pass
   # loop's own. Without it a pass's raw copy content (including its header) would be spliced in
   # verbatim, with no namespaced finding id for merge/adjudication to key on.
-  mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace:2 \
+  # Target updated when the call sites gained their status checks: the two loops no longer share
+  # a verbatim line, so this names the pass loop's own variable rather than an occurrence index.
+  # An index into duplicate lines is exactly how an entry goes stale in silence.
+  mutate 'star/merge-pass-namespaced' 'scripts/multi-review-star.sh' replace \
     'pass copy findings did not merge' 'multi-review-star.test.sh' \
-    '    block="${block}$(namespace_blocks "$provider" "$round" "$copy")"$'"'"'\n'"'"'' \
-    '    block="${block}$(cat "$copy")"$'"'"'\n'"'"''
+    '    local pnsb; pnsb="$(namespace_blocks "$provider" "$round" "$copy")" \' \
+    '    local pnsb; pnsb="$(cat "$copy")" \'
 
   # STAR_PASSES itself, the single source of truth for which namespace prefixes are passes
   # rather than providers — governs BOTH pass_id_of_copy's validation and gate-summary's
