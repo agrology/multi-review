@@ -486,6 +486,13 @@ mutations() {
     '       unset**, and `--model <model> --effort high --write --background` appended to the END of' \
     '       unset**, and `--model <model> --write --background` appended to the END of'
 
+  # #140. Inlining the brief back into the task text is the regression this fixes: a `"` in the
+  # brief ends the wrapper's quoted argument early and the permission layer denies the rest.
+  mutate 'command/codex-brief-by-path' 'commands/multi-review.md' replace \
+    'inlines the brief' 'multi-review-packaging.test.sh' \
+    '       **codex'"'"'s task text is a POINTER to the brief, never the brief itself** (issue #140).' \
+    '       **codex takes the brief inline as its task text.**'
+
   # G3. The same dispatch line must also CAPTURE the process. Without the redirect a gemini that
   # died on launch leaves a copy byte-identical to its seed — indistinguishable from one still
   # thinking — and the round reports the symptom (`no turn taken`) after spending the full retry

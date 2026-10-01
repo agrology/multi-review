@@ -1802,6 +1802,41 @@ err="$(bash "$SUT" prompt "$D" --symcheck "${WORK}/no-such-rows.tsv" 2>&1 >/dev/
 [[ $rc == 2 ]] && grep -qF 'rows file not found' <<<"$err" \
   && ok "prompt(symcheck): a missing rows file is named, not ignored" \
   || bad "prompt(symcheck): a missing rows file gave rc=$rc err='$err'"
+
+# --- prompt --out: the brief goes to a FILE, the caller gets a path (#140) ---
+# The codex route hands its brief to a third-party wrapper that re-types the task text into one
+# double-quoted shell argument; a `"` in the brief ends that argument early and the permission
+# layer denies the mangled command. A path has no quoting surface, so the dispatcher sends a
+# pointer. These pin the three properties the dispatcher relies on: the file holds the WHOLE
+# brief, stdout is the path and nothing else, and an unwritable target fails loud.
+D="$(mkdoc out.md awaiting-reviewer)"
+BRIEF="${WORK}/codex.brief"
+path="$(bash "$SUT" prompt "$D" --reviewer codex --out "$BRIEF" 2>/dev/null)"; rc=$?
+plain="$(bash "$SUT" prompt "$D" --reviewer codex 2>/dev/null)"
+(( rc == 0 )) && [[ "$path" == /* ]] \
+  && ok "prompt --out prints an ABSOLUTE path" \
+  || bad "prompt --out gave rc=$rc path='$path'"
+[[ "$(cat "$BRIEF")" == "$plain" ]] \
+  && ok "prompt --out writes the same brief the plain form prints" \
+  || bad "prompt --out wrote a brief that differs from the plain form"
+[[ "$(printf '%s' "$path" | wc -l | tr -d ' ')" == "0" && "$path" != *"READ THAT DOCUMENT"* ]] \
+  && ok "prompt --out keeps the brief OFF stdout (a pointer, not the text)" \
+  || bad "prompt --out leaked the brief onto stdout"
+# GNU FIRST, BSD second. `stat -f` is the file MODE on macOS but "file system status" on Linux,
+# where it SUCCEEDS and prints filesystem info -- so a `-f` first probe never falls through and the
+# comparison reads the wrong thing entirely. Green on macOS, red on ubuntu CI, measured.
+[[ "$(stat -c '%a' "$BRIEF" 2>/dev/null || stat -f '%Lp' "$BRIEF")" == "600" ]] \
+  && ok "prompt --out writes the brief 0600 (it quotes the document under review)" \
+  || bad "prompt --out left the brief world-readable"
+err="$(bash "$SUT" prompt "$D" --reviewer codex --out "${WORK}/no-such-dir/x.brief" 2>&1 >/dev/null)"; rc=$?
+(( rc != 0 )) && [[ -n "$err" ]] \
+  && ok "prompt --out: an unwritable target is named, not silently skipped" \
+  || bad "prompt --out: an unwritable target gave rc=$rc err='$err'"
+err="$(bash "$SUT" prompt "$D" --reviewer codex --out 2>&1 >/dev/null)"; rc=$?
+(( rc == 2 )) && [[ -n "$err" ]] \
+  && ok "prompt --out with no value is an error, not a silent default" \
+  || bad "prompt --out with no value gave rc=$rc err='$err'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
