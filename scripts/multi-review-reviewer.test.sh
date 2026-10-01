@@ -1822,7 +1822,10 @@ plain="$(bash "$SUT" prompt "$D" --reviewer codex 2>/dev/null)"
 [[ "$(printf '%s' "$path" | wc -l | tr -d ' ')" == "0" && "$path" != *"READ THAT DOCUMENT"* ]] \
   && ok "prompt --out keeps the brief OFF stdout (a pointer, not the text)" \
   || bad "prompt --out leaked the brief onto stdout"
-[[ "$(stat -f '%Lp' "$BRIEF" 2>/dev/null || stat -c '%a' "$BRIEF")" == "600" ]] \
+# GNU FIRST, BSD second. `stat -f` is the file MODE on macOS but "file system status" on Linux,
+# where it SUCCEEDS and prints filesystem info -- so a `-f` first probe never falls through and the
+# comparison reads the wrong thing entirely. Green on macOS, red on ubuntu CI, measured.
+[[ "$(stat -c '%a' "$BRIEF" 2>/dev/null || stat -f '%Lp' "$BRIEF")" == "600" ]] \
   && ok "prompt --out writes the brief 0600 (it quotes the document under review)" \
   || bad "prompt --out left the brief world-readable"
 err="$(bash "$SUT" prompt "$D" --reviewer codex --out "${WORK}/no-such-dir/x.brief" 2>&1 >/dev/null)"; rc=$?
