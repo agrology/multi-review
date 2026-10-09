@@ -1055,9 +1055,12 @@ cmd_replies_record() { # <scratch> [<iso>]
 #
 # Beside the watermark and for the same reasons (fable-rd3-r2, fable-rd3-r3): it is this tool's
 # bookkeeping, not part of the document a reviewer reads. GitHub-assigned integers only, so
-# nothing an author writes reaches the sidecar. Bounded by `REPLIES_MAX_COMMENTS`, because only
-# the replies SHOWN in the last ingest need excluding -- anything older is already behind the
-# mark.
+# nothing an author writes reaches the sidecar.
+#
+# Bounded by the batch at ONE SECOND, which can exceed `REPLIES_MAX_COMMENTS` (fable-rd4-r1):
+# `_merge_ids` carries the record forward for as long as the mark stands still, so a same-second
+# batch larger than the cap accumulates ids across the rounds that drain it. Nothing older needs
+# recording -- `>=` already excludes it -- so the set cannot grow past that one second.
 cmd_replies_ids() { # <scratch> [<csv>]
   local scratch="${1:?scratch}" csv="${2-}" rec
   rec="$(_records_path "$scratch")"
