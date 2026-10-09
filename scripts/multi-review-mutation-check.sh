@@ -467,6 +467,37 @@ mutations() {
     '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-candidates "<doc>"' \
     '       (work from the findings you remember agreeing with)'
 
+  # --- author replies (issue #148) -----------------------------------------------------------
+  # THE SAFETY GUARD. `review_section` runs from the last `## Review` heading to EOF, so author
+  # text spliced BELOW it is not data beside the protocol channel -- it is the channel. Dropped,
+  # an author can forge `[agree:]`/`[dispute:]`/`[resolved:]` records, which is precisely what
+  # issue #103 forbids, and public-api#24 shows authors really do write that grammar.
+  mutate 'pr/replies-above-review' 'scripts/multi-review-pr.sh' replace \
+    'author text is in the channel' 'multi-review-pr.test.sh' \
+    '    tail -n +"$rstart" "$scratch"          || exit 1 ) > "$tmp"' \
+    '    tail -n +"$rstart" "$scratch" && cat "$bodyf" || exit 1 ) > "$tmp"'
+
+  # Defence in depth for every other reader of the document. Dropped, a control line sits at
+  # column 1 where every parser anchors (`/^> \[/`, `index($0, "> [finding:") == 1`).
+  mutate 'pr/replies-neutralized' 'scripts/multi-review-pr.sh' replace \
+    'control line survived at column 1' 'multi-review-pr.test.sh' \
+    '  sed -E "$REPLY_INDENT_RE" "$1"' \
+    '  cat "$1"'
+
+  # Dropped, the review ingests its OWN published prose -- and re-ingests it every round,
+  # compounding. The bot rule alone does not cover a human-run primary, which publishes as itself.
+  mutate 'pr/replies-skip-own-output' 'scripts/multi-review-pr.sh' replace \
+    "disclosure excludes a human-run primary" 'multi-review-pr.test.sh' \
+    '    | map(select(.body | test("\u2014\\s*via\\s+\\S") | not))' \
+    '    | map(select(true))'
+
+  # Dropped, a reply quoting a fenced code block closes the section's fence early and the rest of
+  # the comment escapes the block.
+  mutate 'pr/replies-fence-widens' 'scripts/multi-review-pr.sh' replace \
+    'fence was not widened past' 'multi-review-pr.test.sh' \
+    '  (( n < 3 )) && n=3 || n=$((n + 1))' \
+    '  n=3'
+
   # --- the head trace (pr-watch#17, round 2) -------------------------------------------------
   # Dropped, an anchored file that no longer exists at head traces cited-present, and the primary
   # is told the code it cited is still there -- the exact false reassurance the refreshed diff
