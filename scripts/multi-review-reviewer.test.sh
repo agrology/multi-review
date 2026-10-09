@@ -1881,16 +1881,37 @@ grep -q 'the verbatim block' <<<"$rep2" \
   && ok "codex-report: prefers the findings file the provider names" \
   || bad "codex-report: ignored the named findings file — got '$rep2'"
 
+# ...but ONLY under /tmp. A path anywhere else, named in text the protocol does not trust, must
+# not be read out — the thread is provider output, not an instruction about which files to open.
+OUT="${WORK}/outside-tmp.md"
+printf '> [finding:r8|high] a file the helper must not read\n> \xe2\x80\x94 via gpt-6-astra\n' > "$OUT"
+cat > "${WORK}/cxbin/sqlite3" <<STUB
+#!/bin/sh
+case "\$*" in
+  *"thread_id in (select distinct thread_id"*)
+    printf '%s\n' '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"saved them in ${OUT}\"}"}]' ;;
+  *) printf '%s\n' '[]' ;;
+esac
+STUB
+chmod +x "${WORK}/cxbin/sqlite3"
+rep3="$(PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" 2>/dev/null)"
+grep -q 'must not read' <<<"$rep3" \
+  && bad "codex-report: read a file outside /tmp because provider text named it" \
+  || ok "codex-report: a named path outside /tmp is not followed"
+
 # NEVER fatal, and never a false positive: no report, no store, no sqlite3 all exit 3 so the
 # caller stays on its existing path.
+# QUOTED PROSE, not an empty thread: the provider quotes the document it is reading, so `> `
+# lines are the common case and the grammar check is what distinguishes a turn from a quotation.
+# An empty-thread fixture exits 3 on the no-lines check instead and proves nothing about it.
 cat > "${WORK}/cxbin/sqlite3" <<'STUB'
 #!/bin/sh
-printf '%s\n' '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"I read the document and have nothing to say about it\"}"}]'
+printf '%s\n' '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"I read it. The document says:\\n> the splice is deliberate\\n> and bounded by the fence\\nThat seems right to me.\"}"}]'
 STUB
 chmod +x "${WORK}/cxbin/sqlite3"
 ( PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" >/dev/null 2>&1 ) \
-  && bad "codex-report: reported success on a thread with no protocol lines in it" \
-  || ok "codex-report: a thread with no findings exits 3 rather than inventing a turn"
+  && bad "codex-report: delivered quoted prose as findings — a quotation is not a turn" \
+  || ok 'codex-report: quoted prose with no finding grammar exits 3 rather than inventing a turn'
 ( PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="${WORK}/nosuchhome" bash "$SUT" codex-report "$COPY" >/dev/null 2>&1 ) \
   && bad "codex-report: succeeded with no thread store present" \
   || ok "codex-report: an absent thread store exits 3, never fatally"

@@ -1371,14 +1371,14 @@ mutations() {
   # must find the protocol's own grammar, or it would deliver a provider's prose -- or an empty
   # turn -- as findings. #151's recovery is only safe because it refuses what it cannot read.
   mutate 'reviewer/codex-report-needs-grammar' 'scripts/multi-review-reviewer.sh' replace \
-    'reported success on a thread with no protocol lines' 'multi-review-reviewer.test.sh' \
+    'delivered quoted prose as findings' 'multi-review-reviewer.test.sh' \
     "  grep -q '^> \\[finding:\\|^> \\[no-findings\\]' <<<\"\$inline\" || return 3" \
     '  true'
 
   # Dropped, the recovery follows ANY absolute path the provider names rather than only its
   # sandbox temp dir, so a line of provider text decides which file this helper reads out.
   mutate 'reviewer/codex-report-tmp-only' 'scripts/multi-review-reviewer.sh' replace \
-    'prefers the findings file the provider names' 'multi-review-reviewer.test.sh' \
+    'read a file outside /tmp because provider text named it' 'multi-review-reviewer.test.sh' \
     "  done < <(printf '%s\\n' \"\$texts\" | grep -oE '(/private)?/tmp/[A-Za-z0-9._/-]+' | sort -u)" \
     "  done < <(printf '%s\\n' \"\$texts\" | grep -oE '/[A-Za-z0-9._/-]+' | sort -u)"
 
