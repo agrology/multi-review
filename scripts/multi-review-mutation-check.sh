@@ -1215,13 +1215,17 @@ mutations() {
   # Issue #52. argv_has exists ONLY to keep the argv assertions off a pipe: `printf | grep -q`
   # lets grep exit at the match while printf still holds the ~15 KB prompt, so printf takes SIGPIPE
   # and pipefail reports a successful match as 141. That produced five days of "unidentified macos
-  # flake". Reverting the body to the pipe idiom must fail the payload-size assertion — the three
-  # real argv assertions do NOT catch it reliably, since at 15 KB it is a coin flip; the 100 KB
-  # fixture is what makes it deterministic.
-  mutate 'reviewer/argv-has-no-pipe' 'scripts/multi-review-reviewer.test.sh' replace \
-    'argv membership failed with a large trailing element' 'multi-review-reviewer.test.sh' \
-    '  for a in "$@"; do [[ "$a" == "$want" ]] && return 0; done' \
-    '  printf "%s\\n" "$@" | grep -qx -- "$want" && return 0'
+  # flake".
+  # RETIRED, superseded by packaging/no-pipe-into-grep-q below. This entry planted the pipe idiom
+  # back into `argv_has` and credited the 100 KB payload assertion with catching it. The #110 lint,
+  # added after it, scans every tracked file for that idiom — including the suites — so it now trips
+  # on the planted line and the gate goes red through the lint's assertion instead of the named one.
+  # The runner reads that as MISCREDITED and fails, correctly: an entry cannot credit a guard that
+  # did not do the catching. It has been red on main since 1.42.0 (2026-10-01) for that reason.
+  # Nothing is lost. The property is covered repo-wide, at a stronger place than one call site: the
+  # lint rejects the idiom in `argv_has` and at 83 others, and reverting a rewritten site to a pipe
+  # is exactly what packaging/no-pipe-into-grep-q asserts. The 100 KB payload assertion itself stays
+  # in multi-review-reviewer.test.sh; only its table entry is gone.
 
   # Issue #110 — the repo-wide form of the entry above. #52 fixed argv_has, ONE site; the same
   # `producer | grep -q` defect was live at 83 other places, six of them in shipped scripts where a
