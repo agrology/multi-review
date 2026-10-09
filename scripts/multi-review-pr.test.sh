@@ -2089,6 +2089,63 @@ grep -q 'multi-review-pr-replies-ids' "$IF" \
   && bad "replies: the ids record leaked into the document" \
   || ok "replies: the ids record stays out of the document"
 
+# --- the id record must cover the whole boundary second, not just the last round -------
+# Found by tracing round 3's own fix: `cmd_replies_ids` kept only the LAST round's shown ids, so
+# on a same-second batch the reply shown two rounds ago was no longer excluded, re-qualified
+# under `>=`, and replaced the section with itself -- fable-rd3-r2 again, oscillating A, B, A, B
+# forever instead of settling. Three ingests through the real path, cap at 1.
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then
+  printf '%s\n' 'diff --git a/f b/f' '+added line' ' context'; exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  case " $* " in
+    *" body "*)                 printf '%s\n' 'Body text line.'; exit 0 ;;
+    *"title,url,author"*)       printf '%s\t%s\t%s\t%s\n' 'T' 'https://github.com/o/r/pull/13' 'bob' 'b'; exit 0 ;;
+    *"headRefOid,baseRefName"*) printf '%s\t%s\n' 'HEADSHA1' 'main'; exit 0 ;;
+    # `refresh` re-confirms the head AFTER fetching the diff, with headRefOid alone. Without this
+    # case the stub answers "unexpected gh call", refresh fails closed, and every assertion below
+    # it passes vacuously on a round that never ran.
+    *" headRefOid "*|*"headRefOid'"*|*"headRefOid"*) printf '%s\n' 'HEADSHA1'; exit 0 ;;
+  esac
+fi
+if [[ "$1" == "api" ]]; then
+  case "$2" in
+    *issues*) cat <<'J'
+[{"user":{"login":"kevin","type":"User"},"id":1,"created_at":"2026-10-08T10:00:00Z","body":"reply A is the older one","kind":"conversation"},
+ {"user":{"login":"kevin","type":"User"},"id":2,"created_at":"2026-10-08T10:00:00Z","body":"reply B shares the second","kind":"conversation"}]
+J
+    exit 0 ;;
+    *) printf '%s\n' '[]'; exit 0 ;;
+  esac
+fi
+echo "unexpected gh call: $*" >&2; exit 3
+STUBEOF
+chmod +x "${STUB}/gh"
+( cd "$WORK" && PATH="${STUB}:$PATH" MULTI_REVIEW_REPLIES_MAX=1 bash "$SUT" ingest o r 13 ) >/dev/null 2>&1
+I3="${WORK}/.multi-review/reviews/o/r/pr-13.md"
+grep -q 'reply A is the older one' "$I3" \
+  && ok "replies: round 1 of a capped same-second batch ingests the first reply" \
+  || bad "replies: round 1 did not ingest the capped batch"
+( cd "$WORK" && PATH="${STUB}:$PATH" MULTI_REVIEW_REPLIES_MAX=1 bash "$SUT" refresh "$I3" 2 ) >/dev/null 2>&1
+grep -q 'reply B shares the second' "$I3" \
+  && ok "replies: round 2 drains the next reply of the same-second batch" \
+  || bad "replies: round 2 did not reach the second reply of the batch"
+ids3="$(bash "$SUT" replies-ids "$I3" 2>/dev/null)"
+case ",$ids3," in
+  *,1,*) case ",$ids3," in *,2,*) ok "replies: the id record covers the whole boundary second (got '$ids3')" ;;
+                           *) bad "replies: the id record dropped an earlier id at the same second — got '$ids3'" ;; esac ;;
+  *) bad "replies: the id record lost the first round's id — got '$ids3'" ;;
+esac
+( cd "$WORK" && PATH="${STUB}:$PATH" MULTI_REVIEW_REPLIES_MAX=1 bash "$SUT" refresh "$I3" 3 ) >/dev/null 2>&1
+grep -q 'reply A is the older one' "$I3" \
+  && bad "replies: a reply shown two rounds ago re-qualified and replaced the section (oscillation)" \
+  || ok "replies: a reply shown two rounds ago cannot re-qualify, so the section stops oscillating"
+grep -q 'reply B shares the second' "$I3" \
+  && ok "replies: the quiet third round left the previous section in place" \
+  || bad "replies: the third round replaced a section it had nothing new for"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

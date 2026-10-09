@@ -888,9 +888,20 @@ _mark_of_replies() {
   jq -r '[.shown[].created_at] | max // ""' <<< "$1"
 }
 
-# _ids_of_replies <selection-json> -> the SHOWN replies' GitHub ids, comma-joined.
+# _ids_of_replies <selection-json> <mark> -> the SHOWN replies' ids AT the mark second.
+#
+# Only that second needs recording: `>=` already excludes everything strictly older, so the id
+# set exists purely to disambiguate the boundary. Keeping the whole shown set instead would grow
+# the record for no benefit.
 _ids_of_replies() {
-  jq -r '[.shown[].id] | map(tostring) | join(",")' <<< "$1"
+  jq -r --arg mark "$2" '
+    [.shown[] | select(.created_at == $mark) | .id] | map(tostring) | join(",")' <<< "$1"
+}
+
+# _merge_ids <old-csv> <new-csv> -> their union, first-seen order, comma-joined.
+_merge_ids() {
+  printf '%s\n%s\n' "${1//,/$'\n'}" "${2//,/$'\n'}" \
+    | awk 'NF && !s[$0]++ { printf "%s%s", (n++ ? "," : ""), $0 } END { if (n) printf "\n" }'
 }
 
 # _fetch_replies <owner> <repo> <n> [<since>] -> the rendered replies (the documented surface).
@@ -1002,7 +1013,13 @@ _ingest_replies() { # <scratch> <owner> <repo> <number> <round>
     # It is read off the SELECTION, never off the rendered text (fable-rd2-r2).
     wm="$(_mark_of_replies "$sel")"
     [[ -n "$wm" ]] && { cmd_replies_record "$scratch" "$wm" || true; }
-    ids="$(_ids_of_replies "$sel")"
+    ids="$(_ids_of_replies "$sel" "$wm")"
+    # The mark did NOT move, so a same-second batch is still draining and the ids recorded for it
+    # are still load-bearing: without this union the record is one round deep, and a reply shown
+    # two rounds ago re-qualifies under `>=` and replaces the section with itself -- `fable-rd3-r2`
+    # again, two rounds later, oscillating A, B, A, B forever instead of settling. Verified by
+    # hand on a two-reply same-second thread with the cap at 1 before this line existed.
+    [[ "$since" == "$wm" ]] && ids="$(_merge_ids "$seen_csv" "$ids")"
     [[ -n "$ids" ]] && { cmd_replies_ids "$scratch" "$ids" || true; }
     rm -f "$tmpf"
     return 0

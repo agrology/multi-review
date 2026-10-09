@@ -545,6 +545,14 @@ mutations() {
     '    | map(select(.id as $i | ($seen | index($i)) == null))' \
     '    | map(select(true))'
 
+  # Dropped, the id record is only one round deep, so on a same-second batch the reply shown TWO
+  # rounds ago is no longer excluded, re-qualifies under `>=`, and replaces the section with
+  # itself -- the same failure as fable-rd3-r2, oscillating A, B, A, B instead of settling.
+  mutate 'pr/replies-ids-cover-boundary' 'scripts/multi-review-pr.sh' replace \
+    'two rounds ago re-qualified' 'multi-review-pr.test.sh' \
+    '    [[ "$since" == "$wm" ]] && ids="$(_merge_ids "$seen_csv" "$ids")"' \
+    '    true'
+
   # Dropped, the fence toggle is length-blind again (fable-rd3-r1) and an inner backtick run
   # inside a reply un-fences the scan -- which `_compose_replies` makes the COMMON case, since it
   # widens the section fence past the longest run in the replies for exactly that reason.
