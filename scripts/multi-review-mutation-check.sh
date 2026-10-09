@@ -487,7 +487,7 @@ mutations() {
   # Dropped, the review ingests its OWN published prose -- and re-ingests it every round,
   # compounding. The bot rule alone does not cover a human-run primary, which publishes as itself.
   mutate 'pr/replies-skip-own-output' 'scripts/multi-review-pr.sh' replace \
-    "disclosure excludes a human-run primary" 'multi-review-pr.test.sh' \
+    'ingested a published review carrying' 'multi-review-pr.test.sh' \
     '    | map(select(.body | test("\u2014\\s*via\\s+\\S") | not))' \
     '    | map(select(true))'
 
