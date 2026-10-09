@@ -17,7 +17,7 @@
 #                                    ## Review (never after it: that section IS the protocol
 #                                    channel). exit 3 = no ## Review heading, left alone
 #   replies-record <scratch> [<iso>] -> read (exit 3 if unset) or write the reply ingest watermark
-#   replies-watermark <replies-file> -> the newest INGESTED reply's created_at (empty if none)
+#   select-replies <owner> <repo> <n> [<since>] -> {total, shown} as JSON (the ingest's own view)
 #   fetch-replies <owner> <repo> <n> [<since>] -> non-bot PR comments, newest-last, bounded
 #   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
 set -uo pipefail
@@ -798,40 +798,66 @@ REPLIES_MAX_CHARS="${MULTI_REVIEW_REPLY_CHARS:-2000}"
 # `— via <model>` disclosure line, which is what both pr-watch's publisher and a human-run
 # primary put in every published review. Without the second rule the review would ingest itself
 # and re-ingest its own prose every round, compounding.
-_fetch_replies() {
+# _select_replies <owner> <repo> <n> <since> -> {total, shown: [...]} as JSON.
+#
+# Selection is SEPARATE from rendering (fable-rd2-r2) so that the ingest watermark can be read
+# off `.shown[].created_at` -- the data -- instead of re-parsed out of the rendered text. Reading
+# it back from the text put the mark at the mercy of a reply BODY: one author line shaped like a
+# per-reply header set the watermark, and a future timestamp then excluded every later reply from
+# every later round, silently and permanently. That is strictly worse than the clock it replaced,
+# and it put author-influenced text into the sidecar this design deliberately keeps it out of.
+_select_replies() {
   local o="${1:?owner}" r="${2:?repo}" n="${3:?number}" since="${4-}"
   {
     gh api "repos/${o}/${r}/issues/${n}/comments" --paginate \
       --jq '[.[] | . + {kind: "conversation"}]' 2>/dev/null || echo '[]'
     gh api "repos/${o}/${r}/pulls/${n}/comments" --paginate \
       --jq '[.[] | . + {kind: ("inline on " + (.path // "?"))}]' 2>/dev/null || echo '[]'
-  } | jq -s -r \
+  } | jq -s \
       --arg since "$since" \
       --argjson maxn "$REPLIES_MAX_COMMENTS" \
       --argjson maxc "$REPLIES_MAX_CHARS" '
     (add // [])
     | map(select(.user.type != "Bot"))
     | map(select(.body != null and (.body | length) > 0))
-    # Drops the output of the review itself, in BOTH flavours: pr-watch publishes as a bot
-    # (caught above) and a human-run primary publishes as itself, but every published review
-    # carries a `— via <model>` line (`compose-review` prints `- <observation> — via <model>` at
-    # column 1). Without this the review ingests its own prose and re-ingests it every round,
-    # compounding.
+    # Drops the output of the review itself. pr-watch publishes as a bot, caught above; a
+    # human-run primary publishes as itself and is caught here, or the review ingests its own
+    # prose and re-ingests it every round, compounding.
+    #
+    # TWO markers, because the first one alone guarded a shape these channels never carry
+    # (fable-rd2-r1). `compose-inline` builds an inline comment as `<emoji> <sev> — <concern>
+    # — risk: … — 🤖 multi-review star review (…)` with no `— via` at all, and the summary
+    # goes to `pulls/N/reviews` as the review BODY, which neither fetched endpoint returns. So
+    # the one piece of self-output actually fetched, the inline comments of a human primary,
+    # walked straight in, while `— via` covered only a hand-pasted summary. The string
+    # `multi-review star review` appears in both the inline body and the composed footer,
+    # so it covers what `publish` really posts; the `— via` test stays for the paste case.
     #
     # UNQUOTED lines only, and that is the whole point (fable-rd1-r1). An author answering a
     # finding writes the grammar BACK, quoted: all three public-api#24 replies this feature
     # exists to carry are `> [dispute:…]` + `> — via claude-opus-5-5`, from a human account.
     # A bare substring test matched those too, so the filter excluded precisely the rebuttals it
     # was written to deliver, and parts 2 and 3 sat inert on an empty section. A published
-    # review never carries its disclosure inside a `>` quote; an author echoing one always does.
+    # review never carries its own markers inside a `>` quote; an author echoing one always does.
     | map(select((.body | split("\n")
                         | map(select(test("^\\s*>") | not))
-                        | any(test("\u2014\\s*via\\s+\\S"))) | not))
-    | map(select($since == "" or .created_at > $since))
+                        | any(test("\u2014\\s*via\\s+\\S")
+                              or test("multi-review star review"))) | not))
+    # `>=`, not `>` (fable-rd2-r4). GitHub stamps `created_at` to the second and one submitted
+    # review carries several inline comments, so a cap that cuts inside a same-second batch left
+    # the next reply failing a strict `>` in every later round -- the overflow the data-derived
+    # mark exists to DEFER, lost anyway. `>=` costs at most one reply re-shown in the section
+    # the following round writes, which is replaced wholesale each round and cannot compound.
+    | map(select($since == "" or .created_at >= $since))
     | sort_by(.created_at)
-    | (length) as $total
-    | .[0:$maxn]
-    | map(
+    | { total: length, shown: .[0:$maxn] }'
+}
+
+# _render_replies <selection-json> -> the text `_compose_replies` fences, or empty.
+_render_replies() {
+  jq -r \
+      --argjson maxc "$REPLIES_MAX_CHARS" '
+    (.shown | map(
         # `.kind` is added by the per-channel --jq above; `// "comment"` keeps the header
         # sane if a gh version ever drops it rather than printing a literal "null" at the
         # primary.
@@ -840,11 +866,21 @@ _fetch_replies() {
            then (.body[0:$maxc] + "\n[... reply truncated at \($maxc) characters ...]")
            else .body end)
         + "\n"
-      )
-    | join("\n")
-    + (if $total > $maxn
-       then "\n[... \($total - $maxn) further repl(ies) not shown; read them on the PR ...]\n"
-       else "" end)'
+      ) | join("\n"))
+    + (if .total > (.shown | length)
+       then "\n[... \(.total - (.shown | length)) further repl(ies) not shown; read them on the PR ...]\n"
+       else "" end)' <<< "$1"
+}
+
+# _mark_of_replies <selection-json> -> the newest SHOWN reply's created_at, from the data.
+_mark_of_replies() {
+  jq -r '[.shown[].created_at] | max // ""' <<< "$1"
+}
+
+# _fetch_replies <owner> <repo> <n> [<since>] -> the rendered replies (the documented surface).
+_fetch_replies() {
+  local sel; sel="$(_select_replies "$@")" || return 1
+  _render_replies "$sel"
 }
 
 # cmd_replace_replies <scratch> <replies-file> <round>
@@ -874,8 +910,16 @@ cmd_replace_replies() { # <scratch> <replies-file> <round>
   # in the PR body made this splice cut from their description through `## Diff`, wedging the
   # round after `record-head` had already run. Our own section is always the last heading before
   # the channel, because that is where this function puts it.
+  # FENCE-AWARE (fable-rd2-r3). `_neutralize_replies` indents only `>` lines, so a column-1
+  # `## ` inside a reply is a real heading to any line scanner -- and it then became the last
+  # heading before the channel, our own section failed its own shape test, and every later round
+  # appended a second section instead of replacing ours. An author echoing our exact heading
+  # inside a reply was worse: the splice cut inside our old fence and left it unclosed.
   pstart="$(awk -v stop="$rstart" -v re="$REPLIES_SECTION_RE" '
-    NR < stop && /^## / { last = NR; line = $0 }
+    NR >= stop { next }
+    /^`{3,}/ { fence = !fence; next }
+    fence { next }
+    /^## / { last = NR; line = $0 }
     END { if (line ~ re) print last + 0; else print 0 }
   ' "$scratch")"
   local cut="$rstart"
@@ -904,24 +948,6 @@ cmd_replace_replies() { # <scratch> <replies-file> <round>
 # them. A rebuttal ingested in round N disappeared in round N+1 with nothing posted since.
 _has_content() { grep -q '[^[:space:]]' "$1" 2>/dev/null; }
 
-# _replies_watermark <replies-file> -> the newest INGESTED reply's `created_at`, else empty.
-#
-# The mark is taken from the DATA, never from the clock (fable-rd1-r3, fable-rd1-r7). `date -u`
-# now meant the cap deleted rather than deferred: `_fetch_replies` sorts ascending and keeps the
-# first `$maxn`, so the replies it dropped were OLDER than the mark it then wrote and were
-# excluded from every later round by the `created_at > $since` filter -- the newest rebuttal on a
-# busy thread, lost permanently, with the "N further replies not shown" notice itself replaced
-# the next round. Marking the newest reply actually INGESTED makes the overflow flow into the
-# next round instead, and removes both the fetch-to-write gap and the local clock from the
-# comparison. Reads the per-reply header `_compose_replies` writes (`<login> · <iso> · <kind>`),
-# whose last occurrence is the newest shown because the fetch sorted them.
-_replies_watermark() { # <replies-file>
-  awk -F' · ' '
-    /^[^ ]+ · [0-9]+-[0-9]+-[0-9]+T[0-9:]+Z · / { ts = $2 }
-    END { if (ts != "") print ts }
-  ' "$1" 2>/dev/null
-}
-
 # _ingest_replies <scratch> <owner> <repo> <number> <round> -> 0 iff a section was spliced.
 #
 # The one ingest path, shared by `ingest` (round 1) and `refresh` (round N). Round 1 used to skip
@@ -935,16 +961,18 @@ _replies_watermark() { # <replies-file>
 # that wedges the document is worse.
 _ingest_replies() { # <scratch> <owner> <repo> <number> <round>
   local scratch="${1:?scratch}" o="${2:?owner}" r="${3:?repo}" n="${4:?number}" round="${5:?round}"
-  local since="" wm tmpf
+  local since="" sel wm tmpf
   since="$(cmd_replies_record "$scratch" 2>/dev/null || true)"
+  sel="$(_select_replies "$o" "$r" "$n" "$since")" || return 1
   tmpf="$(mktemp)" || return 1
   # No content gate here: `cmd_replace_replies` refuses an empty body itself (exit 3), which is
   # the layer that would otherwise overwrite a real section.
-  if _fetch_replies "$o" "$r" "$n" "$since" > "$tmpf" \
+  if _render_replies "$sel" > "$tmpf" \
      && cmd_replace_replies "$scratch" "$tmpf" "$round"; then
     # The watermark moves only on a SUCCESSFUL splice. Advancing it after a failed one would
     # silently skip every reply in the window -- losing exactly the rebuttal this exists to carry.
-    wm="$(_replies_watermark "$tmpf")"
+    # It is read off the SELECTION, never off the rendered text (fable-rd2-r2).
+    wm="$(_mark_of_replies "$sel")"
     [[ -n "$wm" ]] && { cmd_replies_record "$scratch" "$wm" || true; }
     rm -f "$tmpf"
     return 0
@@ -1142,7 +1170,7 @@ main() {
     replace-desc) cmd_replace_desc "$@" ;;
     replace-replies) cmd_replace_replies "$@" ;;
     replies-record)  cmd_replies_record "$@" ;;
-    replies-watermark) _replies_watermark "$@" ;;
+    select-replies)  _select_replies "$@" ;;
     fetch-replies)   _fetch_replies "$@" ;;
     fence)        cmd_fence "$@" ;;
     seed)         cmd_seed "$@" ;;

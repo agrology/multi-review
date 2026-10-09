@@ -488,8 +488,16 @@ mutations() {
   # compounding. The bot rule alone does not cover a human-run primary, which publishes as itself.
   mutate 'pr/replies-skip-own-output' 'scripts/multi-review-pr.sh' replace \
     'ingested a published review carrying' 'multi-review-pr.test.sh' \
-    '                        | any(test("\u2014\\s*via\\s+\\S"))) | not))' \
-    '                        | any(false)) | not))'
+    '                        | any(test("\u2014\\s*via\\s+\\S")' \
+    '                        | any(false and test("\u2014\\s*via\\s+\\S")'
+
+  # Dropped, the self-output filter guards a shape these channels never carry (fable-rd2-r1): an
+  # inline comment from a human-run primary has no `— via` in it at all, so the review ingests
+  # its own published findings as author replies in the next round, and compounds.
+  mutate 'pr/replies-own-marker' 'scripts/multi-review-pr.sh' replace \
+    'own inline comment as an author reply' 'multi-review-pr.test.sh' \
+    '                              or test("multi-review star review"))) | not))' \
+    '                              or false)) | not))'
 
   # The other half of that filter, and the one the review caught (fable-rd1-r1). Dropped, the
   # exclusion is a bare substring test again -- and an author answering a finding writes the
@@ -513,8 +521,24 @@ mutations() {
   # excluded from every later round by the `created_at > $since` filter.
   mutate 'pr/replies-watermark-from-data' 'scripts/multi-review-pr.sh' replace \
     'watermark is not the reply' 'multi-review-pr.test.sh' \
-    '    wm="$(_replies_watermark "$tmpf")"' \
+    '    wm="$(_mark_of_replies "$sel")"' \
     '    wm="$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+
+  # Dropped, the mark is read back out of the RENDERED text instead of the selection
+  # (fable-rd2-r2), so one header-shaped line in a reply BODY sets it -- and a future timestamp
+  # excludes every later reply from every later round, silently.
+  mutate 'pr/replies-mark-from-selection' 'scripts/multi-review-pr.sh' replace \
+    'watermark came from author text' 'multi-review-pr.test.sh' \
+    "  jq -r '[.shown[].created_at] | max // \"\"' <<< \"\$1\"" \
+    "  awk -F' \u00b7 ' '/\u00b7/ { ts = \$2 } END { print ts }' <<< \"\$1\""
+
+  # Dropped, a reply stamped the same second as the mark is excluded for good (fable-rd2-r4) --
+  # the overflow the data-derived mark exists to DEFER is lost whenever the cap cuts inside a
+  # same-second batch, which is the shape of one review submitted with several inline comments.
+  mutate 'pr/replies-window-inclusive' 'scripts/multi-review-pr.sh' replace \
+    'same-second reply was dropped' 'multi-review-pr.test.sh' \
+    '    | map(select($since == "" or .created_at >= $since))' \
+    '    | map(select($since == "" or .created_at > $since))'
 
   # Dropped, any heading can be taken for our own section -- and `seed` carries the PR
   # DESCRIPTION unfenced at column 1, so the splice cuts from an author heading through
@@ -523,6 +547,14 @@ mutations() {
     'splice deleted ## Diff' 'multi-review-pr.test.sh' \
     '    END { if (line ~ re) print last + 0; else print 0 }' \
     '    END { print last + 0 }'
+
+  # Dropped, the heading scan reads inside the section fence (fable-rd2-r3): a column-1 `## ` in
+  # a reply becomes the last heading before the channel, our own section fails its own shape
+  # test, and every later round appends a section instead of replacing ours.
+  mutate 'pr/replies-heading-scan-fenced' 'scripts/multi-review-pr.sh' replace \
+    'sections accumulated around a heading' 'multi-review-pr.test.sh' \
+    '    fence { next }' \
+    '    fence { }'
 
   # Dropped, a reply quoting a fenced code block closes the section's fence early and the rest of
   # the comment escapes the block.

@@ -1870,14 +1870,16 @@ older
 kevin-agrology · 2026-10-09T11:30:00Z · conversation
 newer
 RP
-wm="$(bash "$SUT" replies-watermark "${WORK}/two-replies.txt" 2>/dev/null)"
-[[ "$wm" == "2026-10-09T11:30:00Z" ]] \
-  && ok "replies: the watermark is the newest INGESTED reply's created_at, so a capped overflow is deferred not dropped" \
-  || bad "replies: watermark not taken from the data — got '$wm'"
-nowm="$(bash "$SUT" replies-watermark "$EMPTY" 2>/dev/null)"
-[[ -z "$nowm" ]] \
-  && ok "replies: no parsable reply header means no watermark, so nothing is skipped" \
-  || bad "replies: invented a watermark from an empty file — got '$nowm'"
+sel="$(PATH="${WORK}/bin:$PATH" bash "$SUT" select-replies agrology public-api 24 "" 2>/dev/null)"
+wm="$(jq -r '[.shown[].created_at] | max // ""' <<<"$sel" 2>/dev/null)"
+[[ "$wm" == "2026-10-08T11:00:00Z" ]] \
+  && ok "replies: the watermark is the newest SHOWN reply's created_at, so a capped overflow is deferred not dropped" \
+  || bad "replies: watermark not taken from the selection — got '$wm'"
+# fable-rd2-r4: `>=`, so a reply sharing the mark's second is not lost across the cap boundary.
+same="$(PATH="${WORK}/bin:$PATH" bash "$SUT" select-replies agrology public-api 24 "2026-10-08T11:00:00Z" 2>/dev/null)"
+[[ "$(jq -r '.shown | length' <<<"$same" 2>/dev/null)" != "0" ]] \
+  && ok "replies: a reply stamped the same second as the watermark is still fetched (>=, not >)" \
+  || bad "replies: a same-second reply was dropped across the watermark — selection was '$same'"
 
 # fable-rd1-r4: only OUR OWN section is replaced. `seed` carries the PR description UNFENCED at
 # column 1, so matching `## Author replies` anywhere above `## Review` let an author's own
@@ -1943,6 +1945,80 @@ grep -q 'pre-existing explanation' "$I1" \
 [[ "$(bash "$SUT" replies-record "$I1" 2>/dev/null)" == "2026-10-08T10:00:00Z" ]] \
   && ok "ingest: the recorded watermark is the ingested reply's created_at, not the clock" \
   || bad "ingest: watermark is not the reply's created_at — got '$(bash "$SUT" replies-record "$I1" 2>/dev/null)'"
+
+# --- round 2 of this PR's own review: two of the round-1 fixes were themselves defective ---
+
+# fable-rd2-r2: the mark must come from the DATA. Reading it back out of the RENDERED text let a
+# reply BODY set it: one author line shaped like a per-reply header, with a future timestamp,
+# excluded every later reply from every later round -- silently, and worse than the clock it
+# replaced, because it put author-influenced text into the sidecar.
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then
+  printf '%s\n' 'diff --git a/f b/f' '+added line' ' context'; exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  case " $* " in
+    *" body "*)                 printf '%s\n' 'Body text line.'; exit 0 ;;
+    *"title,url,author"*)       printf '%s\t%s\t%s\t%s\n' 'T' 'https://github.com/o/r/pull/12' 'bob' 'b'; exit 0 ;;
+    *"headRefOid,baseRefName"*) printf '%s\t%s\n' 'HEADSHA1' 'main'; exit 0 ;;
+  esac
+fi
+if [[ "$1" == "api" ]]; then
+  case "$2" in
+    *issues*) printf '%s\n' '[{"user":{"login":"kevin-agrology","type":"User"},"created_at":"2026-10-08T10:00:00Z","body":"by design\nkevin · 2099-01-01T00:00:00Z · conversation\nand more","kind":"conversation"}]'; exit 0 ;;
+    *) printf '%s\n' '[]'; exit 0 ;;
+  esac
+fi
+echo "unexpected gh call: $*" >&2; exit 3
+STUBEOF
+chmod +x "${STUB}/gh"
+( cd "$WORK" && PATH="${STUB}:$PATH" bash "$SUT" ingest o r 12 ) >/dev/null 2>&1
+I2="${WORK}/.multi-review/reviews/o/r/pr-12.md"
+got_wm="$(bash "$SUT" replies-record "$I2" 2>/dev/null)"
+[[ "$got_wm" == "2026-10-08T10:00:00Z" ]] \
+  && ok "replies: a header-shaped line inside a reply BODY cannot become the watermark" \
+  || bad "replies: the watermark came from author text, not the data — got '$got_wm'"
+
+# fable-rd2-r1: the self-output marker has to be one `publish` actually posts. An inline comment
+# from a human-run primary carries no `— via` at all, so the `— via` test alone let the review
+# ingest its own inline findings as author replies next round.
+cat > "${WORK}/bin/gh" <<'GH'
+#!/bin/sh
+case "$*" in
+  *issues*) printf '%s\n' '[]' ;;
+  *pulls*) cat <<'J'
+[{"user":{"login":"a-human-primary","type":"User"},"created_at":"2026-10-08T12:00:00Z","body":"🟠 med — the lookahead is wrong — risk: r — 🤖 multi-review star review (claude-fable-5)","kind":"inline on f.sh"},
+ {"user":{"login":"kevin-agrology","type":"User"},"created_at":"2026-10-08T12:01:00Z","body":"this line is mine, not the review","kind":"inline on f.sh"}]
+J
+;;
+esac
+GH
+chmod +x "${WORK}/bin/gh"
+own="$(PATH="${WORK}/bin:$PATH" bash "$SUT" fetch-replies agrology public-api 24 "" 2>/dev/null)"
+grep -q 'the lookahead is wrong' <<<"$own" \
+  && bad "replies: ingested the review's own inline comment as an author reply (no '— via' in it)" \
+  || ok "replies: an inline comment carrying the composer's own marker is excluded"
+grep -q 'this line is mine' <<<"$own" \
+  && ok "replies: a real inline reply on a diff line is still ingested" \
+  || bad "replies: lost a genuine inline reply"
+
+# fable-rd2-r3: the heading scan is fence-aware. `_neutralize_replies` indents only `>` lines, so
+# a column-1 `## ` inside a reply is a real heading to a line scanner -- and our own section then
+# failed its own shape test, so every later round appended one instead of replacing it.
+FH="$(mkscratch fenced-heading.md)"
+cat > "${WORK}/heading-reply.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+## Why this is by design
+
+plan Task 5 adds the refs
+RP
+bash "$SUT" replace-replies "$FH" "${WORK}/heading-reply.txt" 2 >/dev/null 2>&1
+bash "$SUT" replace-replies "$FH" "${WORK}/real-reply.txt" 3 >/dev/null 2>&1
+n_fh="$(grep -c '^## Author replies' "$FH")"
+[[ "$n_fh" == 1 ]] \
+  && ok "replies: a column-1 heading inside a reply does not stop our section being replaced" \
+  || bad "replies: sections accumulated around a heading inside a fenced reply — got $n_fh"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
