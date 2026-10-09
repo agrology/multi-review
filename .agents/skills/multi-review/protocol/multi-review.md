@@ -56,9 +56,14 @@ everything from the last `## Review` heading to the end of the file is the proto
 author text placed after it would be parsed as protocol. Control lines inside the section are
 indented so they cannot anchor at column 1 even if a reader hands the block to a parser.
 
-A reply that answers a finding is adjudicated by the primary with one of: `[dispute:<id>]` if it
-accepts the rebuttal, `[resolved:<id>]` if it checked a claimed fix at this head, or an
-`[observation]` saying in one line why the finding still stands.
+A reply that answers a finding is adjudicated by the primary, and which record is available
+depends on what the primary has already written about that finding. A finding not yet answered
+this round takes `[dispute:<id>]` if the primary accepts the rebuttal. One the primary has
+ALREADY answered takes no second response -- `[agree:]`/`[dispute:]` are one-per-finding and a
+second one fails the parser -- so it takes `[resolved:<id>]` when the primary checked a claimed
+fix at this head (an earlier-round finding only), and otherwise an `[observation]` saying in one
+line why the finding still stands. The motivating case on public-api#24 is the last of those: the
+primary had agreed in round 2, so only an observation was ever available to it.
 
 ## Findings (the channel)
 

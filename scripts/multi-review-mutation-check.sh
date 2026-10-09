@@ -488,8 +488,41 @@ mutations() {
   # compounding. The bot rule alone does not cover a human-run primary, which publishes as itself.
   mutate 'pr/replies-skip-own-output' 'scripts/multi-review-pr.sh' replace \
     'ingested a published review carrying' 'multi-review-pr.test.sh' \
-    '    | map(select(.body | test("\u2014\\s*via\\s+\\S") | not))' \
-    '    | map(select(true))'
+    '                        | any(test("\u2014\\s*via\\s+\\S"))) | not))' \
+    '                        | any(false)) | not))'
+
+  # The other half of that filter, and the one the review caught (fable-rd1-r1). Dropped, the
+  # exclusion is a bare substring test again -- and an author answering a finding writes the
+  # grammar BACK, quoted, so all three public-api#24 rebuttals #148 names are excluded. Part 1
+  # then ingests nothing in the one case it exists for, with parts 2 and 3 inert on top of it.
+  mutate 'pr/replies-quoted-echo-kept' 'scripts/multi-review-pr.sh' replace \
+    'quoted grammar reply' 'multi-review-pr.test.sh' \
+    '                        | map(select(test("^\\s*>") | not))' \
+    '                        | map(select(true))'
+
+  # Dropped, an EMPTY fetch replaces a real section. `jq -r` over an empty array prints one
+  # newline, so the file is 1 byte and every size test calls it non-empty -- a rebuttal ingested
+  # in round N vanishes in round N+1 with nothing posted since, and the watermark advances past it.
+  mutate 'pr/replies-empty-not-spliced' 'scripts/multi-review-pr.sh' replace \
+    'replaced the previous round' 'multi-review-pr.test.sh' \
+    '  _has_content "$f" || return 3' \
+    '  true'
+
+  # Dropped, the watermark is a clock reading again, and the cap DELETES instead of deferring:
+  # the fetch keeps the oldest $maxn, so everything it dropped is older than the mark and is
+  # excluded from every later round by the `created_at > $since` filter.
+  mutate 'pr/replies-watermark-from-data' 'scripts/multi-review-pr.sh' replace \
+    'watermark is not the reply' 'multi-review-pr.test.sh' \
+    '    wm="$(_replies_watermark "$tmpf")"' \
+    '    wm="$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+
+  # Dropped, any heading can be taken for our own section -- and `seed` carries the PR
+  # DESCRIPTION unfenced at column 1, so the splice cuts from an author heading through
+  # `## Diff`, wedging the round after `record-head` has already run.
+  mutate 'pr/replies-section-is-ours' 'scripts/multi-review-pr.sh' replace \
+    'splice deleted ## Diff' 'multi-review-pr.test.sh' \
+    '    END { if (line ~ re) print last + 0; else print 0 }' \
+    '    END { print last + 0 }'
 
   # Dropped, a reply quoting a fenced code block closes the section's fence early and the rest of
   # the comment escapes the block.

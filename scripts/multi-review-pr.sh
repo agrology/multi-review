@@ -17,6 +17,7 @@
 #                                    ## Review (never after it: that section IS the protocol
 #                                    channel). exit 3 = no ## Review heading, left alone
 #   replies-record <scratch> [<iso>] -> read (exit 3 if unset) or write the reply ingest watermark
+#   replies-watermark <replies-file> -> the newest INGESTED reply's created_at (empty if none)
 #   fetch-replies <owner> <repo> <n> [<since>] -> non-bot PR comments, newest-last, bounded
 #   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
 set -uo pipefail
@@ -286,6 +287,11 @@ cmd_ingest() { # [--fresh] <owner> <repo> <number> -> writes scratch file, print
   hb="$(_head_and_merge_base "$repo" "$ref" "$n")"
   IFS='|' read -r hsha hmb <<< "$hb"
   [[ -n "$hsha" ]] && cmd_record_head "$out" 1 "$hsha" "$hmb"
+  # Round 1's replies, on the same non-fatal terms as `refresh` (fable-rd1-r6). An empty
+  # watermark means "everything", which is what a first ingest of an existing thread wants.
+  if ( _ingest_replies "$out" "$o" "$r" "$n" 1 ); then
+    echo "multi-review-pr: ingested author replies for round 1" >&2
+  fi
   rm -rf "$tmpd"
   echo "$out"
 }
@@ -703,14 +709,7 @@ cmd_refresh() { # <scratch> <round> — re-fetch the diff at the current head fo
   # failure after the diff swap but before the head record would leave the round retryable while
   # a re-run's `record-anchors` poisons every shifted anchor (fable-rd1-r3). A round that proceeds
   # without the replies is the old behaviour; a round that wedges the document is worse.
-  local since=""
-  since="$(cmd_replies_record "$scratch" 2>/dev/null || true)"
-  if ( _fetch_replies "$o" "$r" "$n" "$since" > "${tmpd}/replies" \
-       && [[ -s "${tmpd}/replies" ]] \
-       && cmd_replace_replies "$scratch" "${tmpd}/replies" "$round" ); then
-    # The watermark moves only on a SUCCESSFUL splice. Advancing it after a failed one would
-    # silently skip every reply in the window -- losing exactly the rebuttal this exists to carry.
-    cmd_replies_record "$scratch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+  if ( _ingest_replies "$scratch" "$o" "$r" "$n" "$round" ); then
     echo "multi-review-pr: ingested author replies for round ${round}" >&2
   fi
   cmd_record_head "$scratch" "$round" "$head" "$mb"
@@ -754,6 +753,11 @@ _max_backtick_run() {
 # The pattern lives in a constant so the one line that applies it carries no quotes of its own
 # and can be named verbatim by the mutation table.
 REPLY_INDENT_RE='s/^([[:space:]]*>[[:space:]]*\[)/  \1/'
+# Our own section, exactly as `_compose_replies` writes its heading. BRACKETS, not backslashes:
+# `awk -v` processes escapes in the value, so `\(` arrives as a bare `(` and the parentheses
+# become a capture group that matches no literal paren at all -- the heading then never matches
+# its own shape and every round appends a second section instead of replacing ours.
+REPLIES_SECTION_RE='^## Author replies [(]round [0-9]+[)]$'
 _neutralize_replies() {
   sed -E "$REPLY_INDENT_RE" "$1"
 }
@@ -808,11 +812,21 @@ _fetch_replies() {
     (add // [])
     | map(select(.user.type != "Bot"))
     | map(select(.body != null and (.body | length) > 0))
-    # Drops the review own output, in BOTH flavours: pr-watch publishes as a bot (caught
-    # above) and a human-run primary publishes as itself, but every published review
-    # carries a `— via <model>` disclosure. Without this the review ingests its own prose
-    # and re-ingests it every round, compounding.
-    | map(select(.body | test("\u2014\\s*via\\s+\\S") | not))
+    # Drops the output of the review itself, in BOTH flavours: pr-watch publishes as a bot
+    # (caught above) and a human-run primary publishes as itself, but every published review
+    # carries a `— via <model>` line (`compose-review` prints `- <observation> — via <model>` at
+    # column 1). Without this the review ingests its own prose and re-ingests it every round,
+    # compounding.
+    #
+    # UNQUOTED lines only, and that is the whole point (fable-rd1-r1). An author answering a
+    # finding writes the grammar BACK, quoted: all three public-api#24 replies this feature
+    # exists to carry are `> [dispute:…]` + `> — via claude-opus-5-5`, from a human account.
+    # A bare substring test matched those too, so the filter excluded precisely the rebuttals it
+    # was written to deliver, and parts 2 and 3 sat inert on an empty section. A published
+    # review never carries its disclosure inside a `>` quote; an author echoing one always does.
+    | map(select((.body | split("\n")
+                        | map(select(test("^\\s*>") | not))
+                        | any(test("\u2014\\s*via\\s+\\S"))) | not))
     | map(select($since == "" or .created_at > $since))
     | sort_by(.created_at)
     | (length) as $total
@@ -842,13 +856,28 @@ cmd_replace_replies() { # <scratch> <replies-file> <round>
   local scratch="${1:?scratch}" f="${2:?replies-file}" round="${3:?round}" rstart
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
   [[ -f "$f"       ]] || die "replies file not found: $f" 1
+  # An EMPTY fetch must not replace a real section (fable-rd1-r2). `jq -r` over an empty array
+  # prints a single newline, so the file is 1 byte and `[[ -s ]]` calls it non-empty -- which
+  # spliced an empty section over the previous round's replies while the watermark advanced past
+  # them. The guard lives HERE, in the writer, rather than at the call site: this is the function
+  # that destroys the old section, and a caller cannot be trusted to remember.
+  _has_content "$f" || return 3
   rstart="$(awk '/^## Review[[:space:]]*$/ { last=NR } END { print last+0 }' "$scratch")"
   (( rstart > 0 )) || return 3
   # Where a previous round's section starts, if any. Replaced rather than appended: the fetch is
   # already scoped to "since the last ingest", so keeping the old block would duplicate every
   # earlier reply AND keep growing the document the seeded copies each carry.
   local pstart
-  pstart="$(awk -v stop="$rstart" '/^## Author replies/ && NR < stop { first=NR; exit } END { print first+0 }' "$scratch")"
+  # The LAST `## ` heading before `## Review`, and only when it is one of OUR sections
+  # (fable-rd1-r4). Matching `## Author replies` anywhere above the channel reached into the PR
+  # DESCRIPTION, which `seed` carries unfenced at column 1 -- so an author who wrote that heading
+  # in the PR body made this splice cut from their description through `## Diff`, wedging the
+  # round after `record-head` had already run. Our own section is always the last heading before
+  # the channel, because that is where this function puts it.
+  pstart="$(awk -v stop="$rstart" -v re="$REPLIES_SECTION_RE" '
+    NR < stop && /^## / { last = NR; line = $0 }
+    END { if (line ~ re) print last + 0; else print 0 }
+  ' "$scratch")"
   local cut="$rstart"
   (( pstart > 0 )) && cut="$pstart"
   local bodyf; bodyf="$(mktemp)" || die "mktemp failed" 1
@@ -866,6 +895,62 @@ cmd_replace_replies() { # <scratch> <replies-file> <round>
   fi
   mv "$tmp" "$scratch" || { rm -f "$tmp" "$bodyf"; die "cannot update: $scratch" 1; }
   rm -f "$bodyf"
+}
+
+# _has_content <file> -> 0 when the file holds at least one non-whitespace byte.
+# NOT `[[ -s ]]` (fable-rd1-r2). `jq -r` over an empty array prints a single newline, so a fetch
+# that found nothing produces a 1-byte file that `-s` calls non-empty -- and the splice then
+# replaced the PREVIOUS round's replies with an empty section while the watermark advanced past
+# them. A rebuttal ingested in round N disappeared in round N+1 with nothing posted since.
+_has_content() { grep -q '[^[:space:]]' "$1" 2>/dev/null; }
+
+# _replies_watermark <replies-file> -> the newest INGESTED reply's `created_at`, else empty.
+#
+# The mark is taken from the DATA, never from the clock (fable-rd1-r3, fable-rd1-r7). `date -u`
+# now meant the cap deleted rather than deferred: `_fetch_replies` sorts ascending and keeps the
+# first `$maxn`, so the replies it dropped were OLDER than the mark it then wrote and were
+# excluded from every later round by the `created_at > $since` filter -- the newest rebuttal on a
+# busy thread, lost permanently, with the "N further replies not shown" notice itself replaced
+# the next round. Marking the newest reply actually INGESTED makes the overflow flow into the
+# next round instead, and removes both the fetch-to-write gap and the local clock from the
+# comparison. Reads the per-reply header `_compose_replies` writes (`<login> · <iso> · <kind>`),
+# whose last occurrence is the newest shown because the fetch sorted them.
+_replies_watermark() { # <replies-file>
+  awk -F' · ' '
+    /^[^ ]+ · [0-9]+-[0-9]+-[0-9]+T[0-9:]+Z · / { ts = $2 }
+    END { if (ts != "") print ts }
+  ' "$1" 2>/dev/null
+}
+
+# _ingest_replies <scratch> <owner> <repo> <number> <round> -> 0 iff a section was spliced.
+#
+# The one ingest path, shared by `ingest` (round 1) and `refresh` (round N). Round 1 used to skip
+# it (fable-rd1-r6): replies were fetched only on refresh, and ONE ROUND is this protocol's
+# documented default, so on a long-discussed PR the whole feature first fired in a round that
+# often never ran. The conversation that already exists when a review starts is exactly the
+# material #148 is about.
+#
+# Non-fatal by contract -- callers wrap it in a subshell, because `cmd_replace_replies` dies on a
+# write failure and a round that proceeds without replies is the old behaviour, while a round
+# that wedges the document is worse.
+_ingest_replies() { # <scratch> <owner> <repo> <number> <round>
+  local scratch="${1:?scratch}" o="${2:?owner}" r="${3:?repo}" n="${4:?number}" round="${5:?round}"
+  local since="" wm tmpf
+  since="$(cmd_replies_record "$scratch" 2>/dev/null || true)"
+  tmpf="$(mktemp)" || return 1
+  # No content gate here: `cmd_replace_replies` refuses an empty body itself (exit 3), which is
+  # the layer that would otherwise overwrite a real section.
+  if _fetch_replies "$o" "$r" "$n" "$since" > "$tmpf" \
+     && cmd_replace_replies "$scratch" "$tmpf" "$round"; then
+    # The watermark moves only on a SUCCESSFUL splice. Advancing it after a failed one would
+    # silently skip every reply in the window -- losing exactly the rebuttal this exists to carry.
+    wm="$(_replies_watermark "$tmpf")"
+    [[ -n "$wm" ]] && { cmd_replies_record "$scratch" "$wm" || true; }
+    rm -f "$tmpf"
+    return 0
+  fi
+  rm -f "$tmpf"
+  return 1
 }
 
 # cmd_replies_record <scratch> [<iso>] -> read, or write, the ingest watermark.
@@ -1057,6 +1142,7 @@ main() {
     replace-desc) cmd_replace_desc "$@" ;;
     replace-replies) cmd_replace_replies "$@" ;;
     replies-record)  cmd_replies_record "$@" ;;
+    replies-watermark) _replies_watermark "$@" ;;
     fetch-replies)   _fetch_replies "$@" ;;
     fence)        cmd_fence "$@" ;;
     seed)         cmd_seed "$@" ;;

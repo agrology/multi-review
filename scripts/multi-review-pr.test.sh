@@ -1781,7 +1781,8 @@ case "$*" in
   *issues*) cat <<'J'
 [{"user":{"login":"kevin-agrology","type":"User"},"created_at":"2026-10-08T10:00:00Z","body":"by design, Task 5 adds the refs","kind":"conversation"},
  {"user":{"login":"agrology-pr-watch[bot]","type":"Bot"},"created_at":"2026-10-08T10:05:00Z","body":"**Automated review** — 1 finding","kind":"conversation"},
- {"user":{"login":"a-human-primary","type":"User"},"created_at":"2026-10-08T10:06:00Z","body":"> [finding:x|high] y\n> — via claude-opus-5","kind":"conversation"},
+ {"user":{"login":"a-human-primary","type":"User"},"created_at":"2026-10-08T10:06:00Z","body":"**Automated review** — 1 finding\n\n- the lookahead has now been wrong four times — via claude-opus-5","kind":"conversation"},
+ {"user":{"login":"kevin-agrology","type":"User"},"created_at":"2026-10-08T10:07:00Z","body":"Round 4:\n\n> [dispute:fable-rd2-r1] Still by design, see the round-3 reply.\n> — via claude-opus-5-5","kind":"conversation"},
  {"user":{"login":"kevin-agrology","type":"User"},"created_at":"2026-10-07T09:00:00Z","body":"older than the watermark","kind":"conversation"}]
 J
 ;;
@@ -1802,9 +1803,16 @@ grep -q 'inline thought' <<<"$fetched" \
 grep -q 'Automated review' <<<"$fetched" \
   && bad "fetch-replies: ingested a BOT comment (the review reading itself)" \
   || ok "fetch-replies: a bot's own review comment is excluded"
-grep -q 'claude-opus-5' <<<"$fetched" \
-  && bad "fetch-replies: ingested a published review carrying '— via' (human-run primary)" \
-  || ok "fetch-replies: a '— via' disclosure excludes a human-run primary's own output"
+grep -q 'lookahead has now been wrong' <<<"$fetched" \
+  && bad "fetch-replies: ingested a published review carrying an unquoted '— via' (human-run primary)" \
+  || ok "fetch-replies: an UNQUOTED '— via' disclosure excludes a human-run primary's own output"
+# THE MOTIVATING CASE (fable-rd1-r1). An author answering a finding writes the grammar back,
+# quoted -- all three public-api#24 replies #148 names are `> [dispute:...]` + `> — via
+# claude-opus-5-5` from a human account. A bare substring test on `— via` dropped exactly those,
+# so part 1 ingested nothing in the one case it was built for.
+grep -q 'dispute:fable-rd2-r1' <<<"$fetched" \
+  && ok "fetch-replies: an author's QUOTED grammar reply survives the self-output filter" \
+  || bad "fetch-replies: dropped the author's quoted grammar reply — the public-api#24 case"
 grep -q 'older than the watermark' <<<"$fetched" \
   && bad "fetch-replies: ignored the since watermark and re-ingested an old comment" \
   || ok "fetch-replies: comments older than the watermark are not re-ingested"
@@ -1822,6 +1830,119 @@ short="$(PATH="${WORK}/bin:$PATH" MULTI_REVIEW_REPLY_CHARS=5 bash "$SUT" fetch-r
 grep -q 'reply truncated' <<<"$short" \
   && ok "fetch-replies: an over-long single reply is truncated out loud" \
   || bad "fetch-replies: a long reply was cut silently"
+
+# --- the round-1 review's own findings on this feature (#149 round 1) ------------------
+# Seven findings, one high. Each fix gets the named assertion its mutation entry credits.
+
+# fable-rd1-r2: an empty fetch is 1 byte, not 0. `jq -r` over an empty array prints a newline,
+# so `[[ -s ]]` called it non-empty and the splice REPLACED the previous round's replies with an
+# empty section while the watermark advanced past them -- a rebuttal ingested in round N gone in
+# round N+1 with nothing posted since.
+EMPTY="${WORK}/empty-fetch"; printf '\n' > "$EMPTY"
+[[ -s "$EMPTY" ]] && ok "test setup: an empty fetch really is non-empty to -s (1 byte)" \
+  || bad "test setup: expected a 1-byte empty fetch"
+ER="$(mkscratch empty-replies.md)"
+cat > "${WORK}/real-reply.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+by design, Task 5 adds the refs
+RP
+bash "$SUT" replace-replies "$ER" "${WORK}/real-reply.txt" 3 >/dev/null 2>&1 \
+  || bad "setup: could not splice the round-3 reply"
+grep -q 'by design' "$ER" \
+  && ok "replies: the round-3 reply is in the document before the empty round" \
+  || bad "replies: setup lost the round-3 reply"
+bash "$SUT" replace-replies "$ER" "$EMPTY" 4 >/dev/null 2>&1
+rc=$?
+(( rc == 3 )) \
+  && ok "replace-replies: an all-whitespace body is refused (exit 3), not spliced over a real section" \
+  || bad "replace-replies: an empty fetch counted as content and replaced the previous round (rc=$rc)"
+grep -q 'by design' "$ER" \
+  && ok "replies: the round-3 reply survives an empty round-4 fetch" \
+  || bad "replies: an empty fetch erased a rebuttal that was already ingested"
+
+# fable-rd1-r3 / r7: the watermark comes from the DATA, not the clock. `date -u` now made the
+# cap DELETE rather than defer: the fetch keeps the oldest $maxn, so everything it dropped was
+# older than the mark and was excluded from every later round.
+cat > "${WORK}/two-replies.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+older
+
+kevin-agrology · 2026-10-09T11:30:00Z · conversation
+newer
+RP
+wm="$(bash "$SUT" replies-watermark "${WORK}/two-replies.txt" 2>/dev/null)"
+[[ "$wm" == "2026-10-09T11:30:00Z" ]] \
+  && ok "replies: the watermark is the newest INGESTED reply's created_at, so a capped overflow is deferred not dropped" \
+  || bad "replies: watermark not taken from the data — got '$wm'"
+nowm="$(bash "$SUT" replies-watermark "$EMPTY" 2>/dev/null)"
+[[ -z "$nowm" ]] \
+  && ok "replies: no parsable reply header means no watermark, so nothing is skipped" \
+  || bad "replies: invented a watermark from an empty file — got '$nowm'"
+
+# fable-rd1-r4: only OUR OWN section is replaced. `seed` carries the PR description UNFENCED at
+# column 1, so matching `## Author replies` anywhere above `## Review` let an author's own
+# description heading make the splice cut from the description through `## Diff`.
+DH="${WORK}/desc-heading.md"
+{ printf '# PR review: t\n\n'
+  printf -- '- **PR:** https://github.com/agrology/public-api/pull/24\n\n'
+  printf '## PR description\n\n## Author replies\n\nprose about this very feature\n\n'
+  printf '## Diff\n```diff\n+x\n```\n\n## Review\n\n'
+  printf '> [finding:fable-rd1-r1|low] c\n> — via claude-fable-5\n> — risk: r\n'; } > "$DH"
+bash "$SUT" replace-replies "$DH" "${WORK}/real-reply.txt" 3 >/dev/null 2>&1
+grep -q '^## Diff$' "$DH" \
+  && ok "replies: a description heading named '## Author replies' does not make the splice eat ## Diff" \
+  || bad "replies: the splice deleted ## Diff — an author's description heading was read as our own section"
+n_dh="$(grep -c '^## Author replies' "$DH")"
+[[ "$n_dh" == 2 ]] \
+  && ok "replies: the author's own heading is left alone and our section is added beside it" \
+  || bad "replies: expected the author heading plus ours — got $n_dh"
+# ...and our own section IS still replaced rather than duplicated, round over round.
+bash "$SUT" replace-replies "$ER" "${WORK}/real-reply.txt" 5 >/dev/null 2>&1
+n_er="$(grep -c '^## Author replies' "$ER")"
+[[ "$n_er" == 1 ]] \
+  && ok "replies: our own previous section is still replaced, not duplicated" \
+  || bad "replies: previous section no longer replaced — got $n_er"
+
+# fable-rd1-r6: round 1 ingests replies too. One round is this protocol's documented default, so
+# fetching only on refresh meant the whole feature first fired in a round that often never ran.
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then
+  printf '%s\n' 'diff --git a/f b/f' '+added line' ' context'; exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  case " $* " in
+    *" body "*)                 printf '%s\n' 'Body text line.'; exit 0 ;;
+    *"title,url,author"*)       printf '%s\t%s\t%s\t%s\n' 'My Title' 'https://github.com/o/r/pull/11' 'bob' 'feat/y'; exit 0 ;;
+    *"headRefOid,baseRefName"*) printf '%s\t%s\n' 'HEADSHA1' 'main'; exit 0 ;;
+  esac
+fi
+if [[ "$1" == "api" ]]; then
+  case "$2" in
+    *issues*) printf '%s\n' '[{"user":{"login":"kevin-agrology","type":"User"},"created_at":"2026-10-08T10:00:00Z","body":"pre-existing explanation: by design","kind":"conversation"}]'; exit 0 ;;
+    *) printf '%s\n' '[]'; exit 0 ;;
+  esac
+fi
+echo "unexpected gh call: $*" >&2; exit 3
+STUBEOF
+chmod +x "${STUB}/gh"
+( cd "$WORK" && PATH="${STUB}:$PATH" bash "$SUT" ingest o r 11 ) >/dev/null 2>&1
+I1="${WORK}/.multi-review/reviews/o/r/pr-11.md"
+grep -q '^## Author replies (round 1)$' "$I1" \
+  && ok "ingest: round 1 carries the conversation that already existed when the review started" \
+  || bad "ingest: no replies section at round 1 — a one-round review never sees the thread"
+grep -q 'pre-existing explanation' "$I1" \
+  && ok "ingest: the pre-existing reply text is in the scratch" \
+  || bad "ingest: the round-1 reply text is missing"
+# ...above the channel, on the same safety terms as refresh.
+[[ "$(grep -n '^## ' "$I1" | tail -1)" == *"## Review" ]] \
+  && ok "ingest: the round-1 replies section sits ABOVE ## Review" \
+  || bad "ingest: round-1 replies landed in the protocol channel"
+# The VALUE, not merely its presence: the mark must be the ingested reply's own `created_at`.
+# A clock reading here is what made the cap delete rather than defer (fable-rd1-r3).
+[[ "$(bash "$SUT" replies-record "$I1" 2>/dev/null)" == "2026-10-08T10:00:00Z" ]] \
+  && ok "ingest: the recorded watermark is the ingested reply's created_at, not the clock" \
+  || bad "ingest: watermark is not the reply's created_at — got '$(bash "$SUT" replies-record "$I1" 2>/dev/null)'"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
