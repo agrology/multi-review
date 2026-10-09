@@ -104,6 +104,14 @@ if [[ -f "$f" ]]; then
   else
     bad "step 4 lacks the resolve-candidates worklist or the defect-not-remedy test (pr-watch#17)"
   fi
+  # Issue #148 part 3: on a PR the carried worklist is RE-CHECKED, and the condition for keeping
+  # the "not re-checked" label has to be stated or the primary keeps republishing on the old
+  # terms -- which is the whole defect, not a nicety.
+  if grep -q 'multi-review-pr.sh carried' "$f" && grep -q 'not re-checked at this head" label only when' "$f"; then
+    ok "step 4 names the re-checked carried worklist and when the label may stand (#148)"
+  else
+    bad "step 4 lacks the 'carried' worklist or the condition for keeping the not-re-checked label (#148)"
+  fi
 fi
 
 # --- step 4 must tell the primary that ## Diff hides a DELETION (pr-watch#17, round 2) ---

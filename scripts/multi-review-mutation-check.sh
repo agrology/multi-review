@@ -592,6 +592,24 @@ mutations() {
     '  (( n < 3 )) && n=3 || n=$((n + 1))' \
     '  n=3'
 
+  # --- carried findings, re-checked (issue #148, part 3) -------------------------------------
+  # Dropped, a head sha this clone does not have reads as `untouched:` -- `git diff` on an
+  # unresolvable revision prints nothing on stdout and fails only in its status. That is the one
+  # token that licenses publishing a carried finding under "not re-checked at this head", so the
+  # failure is a confident label on a comparison that never ran.
+  mutate 'pr/carried-diff-status' 'scripts/multi-review-pr.sh' replace \
+    'an unknown sha read as untouched' 'multi-review-pr.test.sh' \
+    '  (( rc == 0 )) || { echo "no-base"; return 0; }' \
+    '  rc=0'
+
+  # Dropped, `_replies_text` runs past the next heading into `## Review`, where every finding
+  # block names its own id -- so EVERY carried finding reads `reply:named` and the column stops
+  # distinguishing anything.
+  mutate 'pr/carried-replies-bounded' 'scripts/multi-review-pr.sh' replace \
+    'reply column read the review channel' 'multi-review-pr.test.sh' \
+    '    grab && /^## / { grab = 0 }' \
+    '    grab && /^## never-matches/ { grab = 0 }'
+
   # --- the head trace (pr-watch#17, round 2) -------------------------------------------------
   # Dropped, an anchored file that no longer exists at head traces cited-present, and the primary
   # is told the code it cited is still there -- the exact false reassurance the refreshed diff

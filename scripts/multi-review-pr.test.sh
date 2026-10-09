@@ -2146,6 +2146,107 @@ grep -q 'reply B shares the second' "$I3" \
   && ok "replies: the quiet third round left the previous section in place" \
   || bad "replies: the third round replaced a section it had nothing new for"
 
+# --- carried: the step-4 worklist, RE-CHECKED (issue #148, part 3) ----------------------
+# `resolve-candidates` traces whether the cited code still EXISTS. Two questions it cannot
+# answer live outside the document's grammar: did the author answer this finding (part 1 puts
+# replies outside the review channel on purpose), and has the cited file changed since the round
+# that raised it. Without the second, every carried finding is published under "not re-checked at
+# this head" -- which is what public-api#24 did to a finding the author had rebutted four times.
+CR="${WORK}/carried"; mkdir -p "$CR"
+(
+  cd "$CR" || exit 1
+  git init -q . && git config user.email t@t && git config user.name t
+  mkdir -p src
+  printf 'def parse_params():\n    return 1\n' > src/a.py
+  printf 'other\n' > src/b.py
+  git add -A && git commit -qm base
+  git rev-parse HEAD > base.sha
+  printf 'other2\n' > src/b.py
+  git add -A && git commit -qm untouched-a
+  git rev-parse HEAD > mid.sha
+  printf 'def parse_params():\n    return 2\n' > src/a.py
+  git add -A && git commit -qm touched-a
+  git rev-parse HEAD > tip.sha
+) >/dev/null 2>&1
+BASE_SHA="$(cat "${CR}/base.sha")"; MID_SHA="$(cat "${CR}/mid.sha")"; TIP_SHA="$(cat "${CR}/tip.sha")"
+
+CSC="${CR}/pr-24.md"
+{ printf '# PR review: t\n\n'
+  printf -- '- **PR:** https://github.com/agrology/public-api/pull/24\n'
+  printf -- '- **Author:** kevin\n- **Branch:** b\n\n'
+  printf '## PR description\nhi\n\n## Diff\n```diff\n+x\n```\n\n## Review\n\n'
+  printf '> [finding:fable-rd1-r1|high] `parse_params` returns an unvalidated count\n'
+  printf '> — via claude-fable-5\n> — risk: r\n> — evidence: e\n> — at src/a.py:1\n'
+  printf '> [agree:fable-rd1-r1] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd1-r2|low] no anchor on this one\n'
+  printf '> — via claude-fable-5\n> — risk: r\n'
+  printf '> [agree:fable-rd1-r2] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd2-r1|med] this round, not carried\n'
+  printf '> — via claude-fable-5\n> — risk: r\n'; } > "$CSC"
+bash "$SUT" record-head "$CSC" 1 "$BASE_SHA" "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$CSC" 2 "$MID_SHA"  "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$CSC" 3 "$TIP_SHA"  "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$CSC" 4 "$(printf '%040d' 9)" "$BASE_SHA" 2>/dev/null
+
+carried_row() { # <round> <ns-id> -> that finding's row
+  ( cd "$CR" && bash "$SUT" carried "$CSC" "$1" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'
+}
+out="$( cd "$CR" && bash "$SUT" carried "$CSC" 2 2>/dev/null )"; rc=$?
+(( rc == 0 )) || bad "carried: exited $rc (it REPORTS, it must never block)"
+[[ "$(awk -F'\t' 'END{print NF}' <<<"$out")" == 7 ]] \
+  && ok "carried: seven columns — resolve-candidates' four plus touched, reply, concern" \
+  || bad "carried: wrong column count — got '$out'"
+grep -q 'fable-rd2-r1' <<<"$out" \
+  && bad "carried: listed THIS round's finding, which the author has not seen" \
+  || ok "carried: this round's findings stay off the worklist"
+
+# The file the finding cites is untouched between round 1's head and round 2's: the one case
+# where "not re-checked at this head" is an honest thing to publish.
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f5)" == "untouched:src/a.py" ]] \
+  && ok "carried: an unchanged cited file reads untouched" \
+  || bad "carried: untouched file misreported — got '$(carried_row 2 fable-rd1-r1 | cut -f5)'"
+# Round 3's head rewrote it, so the primary owes a re-check rather than a re-publication.
+[[ "$(carried_row 3 fable-rd1-r1 | cut -f5)" == "touched:src/a.py" ]] \
+  && ok "carried: a cited file rewritten since the finding's round reads touched" \
+  || bad "carried: a rewritten file was not reported — got '$(carried_row 3 fable-rd1-r1 | cut -f5)'"
+# THE GUARD. `git diff` against a sha this clone does not have prints NOTHING on stdout, which is
+# byte-identical to "the file did not change" -- and that reading licenses the very label this
+# exists to take away. Round 4's record names a sha that is not in the repo.
+[[ "$(carried_row 4 fable-rd1-r1 | cut -f5)" == "no-base" ]] \
+  && ok "carried: an unresolvable head says no-base instead of claiming untouched" \
+  || bad "carried: an unknown sha read as untouched — got '$(carried_row 4 fable-rd1-r1 | cut -f5)'"
+[[ "$(carried_row 2 fable-rd1-r2 | cut -f5)" == "no-anchor" ]] \
+  && ok "carried: a finding with no anchor says so rather than guessing a file" \
+  || bad "carried: unanchored finding misreported — got '$(carried_row 2 fable-rd1-r2 | cut -f5)'"
+# Outside a checkout there is nothing to compare, and that must not be fatal either.
+[[ "$( cd "$WORK" && bash "$SUT" carried "$CSC" 2 2>/dev/null | awk -F'\t' '$1=="fable-rd1-r1"{print $5}' )" == "no-repo" ]] \
+  && ok "carried: outside a checkout the comparison degrades to no-repo" \
+  || bad "carried: no-repo not reported outside a checkout"
+
+# Replies. No section yet, so no reply can name anything.
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f6)" == "no-replies" ]] \
+  && ok "carried: with no ingested replies the column says no-replies" \
+  || bad "carried: reply column wrong with no section — got '$(carried_row 2 fable-rd1-r1 | cut -f6)'"
+cat > "${CR}/replies.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+fable-rd1-r1 is by design — plan Task 5 adds the $refs before anything is published.
+RP
+bash "$SUT" replace-replies "$CSC" "${CR}/replies.txt" 2 >/dev/null 2>&1 \
+  || bad "carried: could not splice the replies fixture"
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f6)" == "reply:named" ]] \
+  && ok "carried: a reply naming the finding is reported, so it cannot be carried silently" \
+  || bad "carried: a named reply was missed — got '$(carried_row 2 fable-rd1-r1 | cut -f6)'"
+# THE SECOND GUARD. `_replies_text` is bounded by the next `## ` heading. Unbounded it would run
+# into `## Review`, where every finding block names its own id, and EVERY finding would read
+# reply:named -- the signal would be constant and mean nothing.
+[[ "$(carried_row 2 fable-rd1-r2 | cut -f6)" == "reply:unnamed" ]] \
+  && ok "carried: the replies section stops at the next heading, so the review channel is not read as a reply" \
+  || bad "carried: reply column read the review channel — got '$(carried_row 2 fable-rd1-r2 | cut -f6)'"
+# The trace column is resolve-candidates' own and must come through untouched.
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f4)" == cited-* ]] \
+  && ok "carried: the #147 head trace is passed through unchanged" \
+  || bad "carried: trace column lost — got '$(carried_row 2 fable-rd1-r1 | cut -f4)'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
