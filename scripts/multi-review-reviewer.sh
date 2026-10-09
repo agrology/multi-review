@@ -1210,73 +1210,150 @@ codex_dispatch_agent() { # -> path, or empty + exit 1
 # its existing path. The thread store belongs to codex, not to this protocol.
 
 CODEX_HOME_DEFAULT="${HOME:-}/.codex"
+# Overridable so the no-sqlite3 guard can be tested for real (fable-rd1-r7): removing the binary
+# from PATH removes `basename` and `grep` with it, so the assertion passed on the wrong failure.
+MULTI_REVIEW_SQLITE="${MULTI_REVIEW_SQLITE:-sqlite3}"
 
-# cmd_codex_report <copy> -> the findings the companion recorded for that copy, else exit 3.
+# _secondary_blocks <expected-model> < text -> only what a SECONDARY may say, and only what THIS
+# provider said: finding and `[no-findings]` blocks with their `> — ` continuation lines.
+#
+# Four rules, each closing a way the courier could deliver something that is not this reviewer's
+# turn:
+#
+#   - a RESPONSE verb (`[agree:]`, `[dispute:]`, `[resolved:]`, `[observation]`) is dropped.
+#     The provider reads its copy, which carries the review channel, so quoting the primary's own
+#     records back is the ORDINARY case -- and delivering them would splice records disclosed
+#     under the primary's model id into the document, which issue #103 forbids. Neither
+#     `verify-vendor` nor `channel-check` can tell: the first only matches a disclosure to its
+#     vendor, the second is satisfied because the lines ARE in the channel.
+#   - the disclosure must be the DISPATCHED provider's model (fable-rd1-r4). A finding the
+#     provider quotes from the live document is another reviewer's, and couriering it either
+#     quarantines the whole recovered turn on a mixed disclosure or merges that finding twice.
+#   - the id must be COPY-SCOPED (`r1`), never namespaced (`fable-rd1-r1`). A secondary names its
+#     own ids; the primary namespaces them on merge, so a namespaced id in recovered text is by
+#     construction someone else's finding. Two discriminators rather than one because either
+#     alone is a single point of failure on text the protocol does not trust.
+#   - each id is delivered ONCE (fable-rd1-r3). The ordinary shape of this failure writes the same
+#     block two or three times -- the heredoc in `command`, the echo-back in `aggregatedOutput`,
+#     the summary in `text` -- and `channel-check` fails a copy with a duplicate finding id, which
+#     loses the findings one step later than #151 did.
+#
+# The filter sits in the only function that produces text for delivery rather than at the call
+# site, so a second recovery path added later cannot forget it.
+_secondary_blocks() { # <expected-model>
+  awk -v want="${1:?model}" '
+    function id_of(l,   t, c) {
+      t = l; sub(/^> \[finding:/, "", t)
+      c = index(t, "|"); if (c == 0) c = index(t, "]")
+      return (c > 0) ? substr(t, 1, c - 1) : ""
+    }
+    function endblock(   i) {
+      if (nb > 0 && okid && okvia) { for (i = 1; i <= nb; i++) print buf[i]; seen[id] = 1 }
+      nb = 0; okid = 0; okvia = 0; id = ""
+    }
+    /^> \[finding:/ {
+      endblock(); id = id_of($0)
+      okid = (id != "" && id !~ /-rd[0-9]+-/ && !(id in seen))
+      buf[++nb] = $0; next
+    }
+    /^> \[no-findings\]/ {
+      endblock(); id = "[no-findings]"
+      okid = !(id in seen)
+      buf[++nb] = $0; next
+    }
+    nb > 0 && index($0, "> \xe2\x80\x94 via ") == 1 {
+      if (substr($0, length("> \xe2\x80\x94 via ") + 1) == want) okvia = 1
+      buf[++nb] = $0; next
+    }
+    nb > 0 && index($0, "> \xe2\x80\x94 ") == 1 { buf[++nb] = $0; next }
+    { endblock() }
+    END { endblock() }
+  '
+}
+
+# _tmp_path_ok <path> -> 0 when the path really resolves inside the sandbox temp dir.
+#
+# NOT a pattern match (fable-rd1-r2). `(/private)?/tmp/[A-Za-z0-9._/-]+` admits `..`, so
+# `/tmp/../Users/agrology/x.md` passed a check whose stated guarantee -- asserted by the PR text,
+# the test and the mutation entry alike -- was that only the temp dir is read. A symlinked
+# directory under /tmp slipped through for the same reason. So resolve the directory and re-check
+# the RESULT: on macOS that also collapses /tmp to /private/tmp, which is why both are accepted.
+_tmp_path_ok() {
+  local f="${1:?path}" d r
+  case "$f" in *..*) return 1 ;; esac
+  d="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)" || return 1
+  r="${d}/$(basename "$f")"
+  case "$r" in /private/tmp/*|/tmp/*) return 0 ;; *) return 1 ;; esac
+}
+
+# cmd_codex_report <copy> -> the findings the companion recorded for THIS dispatch, else exit 3.
 #
 # Two shapes, because the provider used both: a temp file it names in its report (preferred -- it
 # is the text it meant to append, verbatim), and failing that the `> `-prefixed protocol lines
 # inside the thread items themselves.
 cmd_codex_report() { # <copy>
-  local copy="${1:?copy}" base db rows texts f
+  local copy="${1:?copy}" base db rows texts f seed since model row
   base="$(basename "$copy")"
-  db="${MULTI_REVIEW_CODEX_HOME:-$CODEX_HOME_DEFAULT}/thread_history_1.sqlite"
-  command -v sqlite3 >/dev/null 2>&1 || return 3
+  # `CODEX_HOME` is codex's own documented variable (fable-rd1-r8): a store moved with it would
+  # otherwise be invisible while the default path still exists and reads as "no report".
+  db="${MULTI_REVIEW_CODEX_HOME:-${CODEX_HOME:-$CODEX_HOME_DEFAULT}}/thread_history_1.sqlite"
+  command -v "$MULTI_REVIEW_SQLITE" >/dev/null 2>&1 || return 3
   [[ -r "$db" ]] || return 3
-  # Find the THREAD by the copy's basename, then read the whole thread -- not just the matching
-  # items. The item that holds the findings names the file the provider wrote them TO
-  # (`pr-150.codex-findings.md`), not the copy it could not write, so an item-level filter misses
-  # exactly the row worth recovering. The basename rather than the path because the thread records
-  # the path as the provider typed it, which may canonicalize differently.
-  # `-json`, not the default line-per-row output: an item carries embedded newlines, so a
-  # row-per-line read splits one record across many and parses none of them. This is how the first
-  # version of this helper found 12 matching rows and reported nothing.
-  rows="$(sqlite3 -readonly -json "$db" \
-    "select item_json from thread_items where thread_id in (select distinct thread_id from thread_items where instr(item_json, '${base//\'/\'\'}') > 0) order by rollout_ordinal desc limit 400;" \
+  # BOUNDED TO THIS DISPATCH (fable-rd1-r1). The basename repeats every round, and
+  # `rollout_ordinal` is per-thread, so an unbounded select interleaves threads and a round where
+  # the provider did nothing recovers the PREVIOUS round's findings as a fresh turn -- #151 in the
+  # reassuring direction, which is worse than the silence it replaced. The copy's `.seed` is
+  # written at dispatch, so its mtime is exactly this round's floor; without it there is no floor
+  # and the recovery does not run.
+  seed="${copy}.seed"
+  [[ -f "$seed" ]] || return 3
+  since="$(date -r "$seed" +%s 2>/dev/null)" || return 3
+  [[ -n "$since" ]] || return 3
+  # The provider's own model, so a finding it QUOTED from another reviewer is not couriered as its
+  # own. Resolved from the registry rather than passed in: the caller already knows which copy it
+  # is asking about, and a mismatched argument would be a silent way back into fable-rd1-r4.
+  row="$(resolve_row --reviewer codex 2>/dev/null)" || return 3
+  model="$(printf '%s' "$row" | cut -d'|' -f4)"
+  [[ -n "$model" ]] || return 3
+  # A URI open, not `-readonly`. A read-only connection to a WAL database needs the `-shm` file
+  # and fails with SQLITE_CANTOPEN when it is absent -- which is the normal state once the
+  # provider has finished, so the recovery was unavailable in exactly the case it exists for.
+  # Found by running this on its own review: exit 3 while the store held 11 matching items.
+  # `immutable=1` reads without the shared-memory file; the trade is that a concurrent write may
+  # not be visible, which for a best-effort recovery is the right side.
+  rows="$("$MULTI_REVIEW_SQLITE" "file:${db}?mode=ro&immutable=1" -json \
+    "select item_json from thread_items where thread_id in (select distinct thread_id from thread_items where instr(item_json, '${base//\'/\'\'}') > 0) and created_at_ms >= ${since}000 order by rollout_ordinal desc limit 400;" \
     2>/dev/null)" || return 3
   [[ -n "$rows" ]] || return 3
   # `aggregatedOutput` too: a provider that cannot write the copy tends to print its findings, so
   # the command's OUTPUT is as likely to carry them as the command itself.
+  # AUTHORED item types only (codex-rd1-r2, recovered from this very review). The thread also
+  # holds the `userMessage` we SENT -- the brief, which quotes the finding grammar in full -- so
+  # reading every type let the recovery deliver the protocol's own example text back as the
+  # provider's turn, with a correct disclosure and no reviewer output at all behind it. A valid
+  # disclosure proves who a line claims to be from, never that the provider authored it.
   texts="$(printf '%s\n' "$rows" \
-    | jq -r '.[] | (.item_json | fromjson? | [.text?, .command?, .aggregatedOutput?] | map(select(. != null)) | join("\n"))' \
+    | jq -r '.[] | (.item_json | fromjson?
+                     | select(.type == "agentMessage" or .type == "commandExecution" or .type == "fileChange")
+                     | [.text?, .command?, .aggregatedOutput?] | map(select(. != null)) | join("\n"))' \
     2>/dev/null)"
   [[ -n "$texts" ]] || return 3
-  # A file it named, if that file is still there. Preferred: it is the verbatim block it meant to
-  # append. ONLY under /tmp, on purpose -- a provider that cannot write its copy writes to its
-  # sandbox's temp dir, and following any absolute path named in provider text would make this
-  # recovery read arbitrary files on the strength of text the protocol does not trust.
+  # A file it named, if that file is still there and really is in the temp dir.
   local block
   while IFS= read -r f; do
-    [[ -n "$f" && -r "$f" ]] || continue
-    block="$(_secondary_blocks < "$f")" || true
+    # Trailing punctuation is part of the prose, not the path (fable-rd1-r6): "saved them in
+    # /tmp/x.md." captured the period and skipped the file for the commonest sentence shape.
+    f="${f%%[.,:;)]}"
+    [[ -n "$f" ]] || continue
+    _tmp_path_ok "$f" || continue
+    [[ -r "$f" ]] || continue
+    block="$(_secondary_blocks "$model" < "$f")" || true
     [[ -n "$block" ]] && { printf '%s\n' "$block"; return 0; }
   done < <(printf '%s\n' "$texts" | grep -oE '(/private)?/tmp/[A-Za-z0-9._/-]+' | sort -u)
   # Otherwise the protocol lines as recorded in the thread.
-  block="$(printf '%s\n' "$texts" | _secondary_blocks)" || true
+  block="$(printf '%s\n' "$texts" | _secondary_blocks "$model")" || true
   [[ -n "$block" ]] || return 3
   printf '%s\n' "$block"
-}
-
-# _secondary_blocks < text -> only what a SECONDARY may say: finding and `[no-findings]` blocks
-# with their `> — ` continuation lines. Everything else is dropped, and a RESPONSE verb
-# (`[agree:]`, `[dispute:]`, `[resolved:]`, `[observation]`) is dropped with it.
-#
-# This is the whole safety argument for the recovery. The provider reads its copy, which carries
-# the review channel, so quoting the primary's own records back is the ORDINARY case -- and a
-# courier that delivers them verbatim would splice `[agree:]` and `[resolved:]` lines disclosed
-# under the primary's model id into the document. That is what issue #103 forbids and what #149's
-# "the section goes above `## Review`" argument exists to prevent, reintroduced from the other
-# direction by the fix for #151. Nothing downstream catches it: `verify-vendor` only checks that a
-# disclosure matches its vendor, and `channel-check` is satisfied because the lines ARE in the
-# channel.
-#
-# Keep the filter here, in the only function that produces text for delivery, rather than at the
-# call site: a second recovery path added later would otherwise have to remember.
-_secondary_blocks() {
-  awk '
-    /^> \[finding:/ || /^> \[no-findings\]/ { keep = 1; print; next }
-    keep && /^> — / { print; next }
-    { keep = 0 }
-  '
 }
 
 codex_workspace_root() { # -> path, or empty
