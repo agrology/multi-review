@@ -527,10 +527,31 @@ mutations() {
   # Dropped, the mark is read back out of the RENDERED text instead of the selection
   # (fable-rd2-r2), so one header-shaped line in a reply BODY sets it -- and a future timestamp
   # excludes every later reply from every later round, silently.
+  # ASCII-only, and it must read the mark out of reply BODIES -- the actual regression. An
+  # earlier spelling of this mutant fed awk a `\u00b7` field separator that awk does not read as
+  # that character, so it died by printing an empty mark instead of by reproducing the defect:
+  # the same miscrediting class as the entry retired at the top of this branch.
   mutate 'pr/replies-mark-from-selection' 'scripts/multi-review-pr.sh' replace \
     'watermark came from author text' 'multi-review-pr.test.sh' \
     "  jq -r '[.shown[].created_at] | max // \"\"' <<< \"\$1\"" \
-    "  awk -F' \u00b7 ' '/\u00b7/ { ts = \$2 } END { print ts }' <<< \"\$1\""
+    "  jq -r '[.shown[].body, .shown[].created_at] | map(select(test(\"T[0-9][0-9]:\"))) | max // \"\"' <<< \"\$1\""
+
+  # Dropped, a round with NOTHING NEW still replaces the section (fable-rd3-r2): the boundary
+  # reply re-qualifies under `>=` forever, renders, passes the content gate, and overwrites a
+  # section that carried the whole of the previous round -- the guarantee fable-rd1-r2 bought.
+  # It also stalls a same-second batch over the cap forever (fable-rd3-r3).
+  mutate 'pr/replies-exclude-seen-ids' 'scripts/multi-review-pr.sh' replace \
+    'already-ingested reply re-qualified' 'multi-review-pr.test.sh' \
+    '    | map(select(.id as $i | ($seen | index($i)) == null))' \
+    '    | map(select(true))'
+
+  # Dropped, the fence toggle is length-blind again (fable-rd3-r1) and an inner backtick run
+  # inside a reply un-fences the scan -- which `_compose_replies` makes the COMMON case, since it
+  # widens the section fence past the longest run in the replies for exactly that reason.
+  mutate 'pr/replies-fence-length-aware' 'scripts/multi-review-pr.sh' replace \
+    'quoted a code block' 'multi-review-pr.test.sh' \
+    '      else if (RLENGTH >= flen) { fence = 0 }' \
+    '      else { fence = 0 }'
 
   # Dropped, a reply stamped the same second as the mark is excluded for good (fable-rd2-r4) --
   # the overflow the data-derived mark exists to DEFER is lost whenever the cap cuts inside a

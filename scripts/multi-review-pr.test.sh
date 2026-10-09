@@ -2020,6 +2020,72 @@ n_fh="$(grep -c '^## Author replies' "$FH")"
   && ok "replies: a column-1 heading inside a reply does not stop our section being replaced" \
   || bad "replies: sections accumulated around a heading inside a fenced reply — got $n_fh"
 
+# --- round 3: the >= window needed the ingested ids beside it ---------------------------
+
+# fable-rd3-r2: a round with nothing new must leave the section ALONE. With `>=` alone the
+# boundary reply re-qualified forever, so a quiet round rendered that one reply, passed the
+# content gate, and replaced a section carrying the whole of the previous round.
+cat > "${WORK}/bin/gh" <<'GH'
+#!/bin/sh
+case "$*" in
+  *issues*) cat <<'J'
+[{"user":{"login":"kevin-agrology","type":"User"},"id":111,"created_at":"2026-10-08T10:00:00Z","body":"first rebuttal","kind":"conversation"},
+ {"user":{"login":"kevin-agrology","type":"User"},"id":222,"created_at":"2026-10-08T10:00:00Z","body":"second rebuttal, same second","kind":"conversation"}]
+J
+;;
+  *) printf '%s\n' '[]' ;;
+esac
+GH
+chmod +x "${WORK}/bin/gh"
+seen_sel="$(PATH="${WORK}/bin:$PATH" bash "$SUT" select-replies agrology public-api 24 "2026-10-08T10:00:00Z" "[111,222]" 2>/dev/null)"
+[[ "$(jq -r '.shown | length' <<<"$seen_sel" 2>/dev/null)" == "0" ]] \
+  && ok "replies: a round with nothing new selects nothing, so the previous section is left alone" \
+  || bad "replies: an already-ingested reply re-qualified and would replace the section — got '$seen_sel'"
+# ...while a genuinely NEW reply stamped that same second is still selected (rd2-r4 preserved).
+new_sel="$(PATH="${WORK}/bin:$PATH" bash "$SUT" select-replies agrology public-api 24 "2026-10-08T10:00:00Z" "[111]" 2>/dev/null)"
+[[ "$(jq -r '.shown[0].id' <<<"$new_sel" 2>/dev/null)" == "222" ]] \
+  && ok "replies: a NEW reply sharing the watermark second is still selected" \
+  || bad "replies: lost a new same-second reply — got '$new_sel'"
+# fable-rd3-r3: a same-second batch bigger than the cap advances across rounds instead of stalling.
+capped="$(PATH="${WORK}/bin:$PATH" MULTI_REVIEW_REPLIES_MAX=1 bash "$SUT" select-replies agrology public-api 24 "" "[]" 2>/dev/null)"
+capped_id="$(jq -r '.shown[0].id' <<<"$capped" 2>/dev/null)"
+next="$(PATH="${WORK}/bin:$PATH" MULTI_REVIEW_REPLIES_MAX=1 bash "$SUT" select-replies agrology public-api 24 "2026-10-08T10:00:00Z" "[${capped_id}]" 2>/dev/null)"
+[[ "$(jq -r '.shown | length' <<<"$next" 2>/dev/null)" == "1" && "$(jq -r '.shown[0].id' <<<"$next")" != "$capped_id" ]] \
+  && ok "replies: a same-second batch over the cap flows into the next round rather than stalling" \
+  || bad "replies: the capped overflow stalled — first='$capped_id' next='$next'"
+
+# fable-rd3-r1: the fence scan is LENGTH-aware. `_compose_replies` widens the section fence past
+# the longest run in the replies precisely because reply bodies carry backtick runs, so a blind
+# toggle is flipped by the inner one and the rd2-r3 failure returns.
+IF="$(mkscratch inner-fence.md)"
+cat > "${WORK}/inner-fence-reply.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+Here is the generator output:
+
+```
+some code
+```
+
+## Why this is by design
+
+plan Task 5 adds the refs
+RP
+bash "$SUT" replace-replies "$IF" "${WORK}/inner-fence-reply.txt" 2 >/dev/null 2>&1
+bash "$SUT" replace-replies "$IF" "${WORK}/real-reply.txt" 3 >/dev/null 2>&1
+n_if="$(grep -c '^## Author replies' "$IF")"
+[[ "$n_if" == 1 ]] \
+  && ok "replies: an inner backtick run inside a reply does not un-fence the heading scan" \
+  || bad "replies: sections accumulated around a reply that quoted a code block — got $n_if"
+
+# The ids record is this tool's own bookkeeping, like the watermark: sidecar only.
+bash "$SUT" replies-ids "$IF" "111,222" 2>/dev/null
+[[ "$(bash "$SUT" replies-ids "$IF" 2>/dev/null)" == "111,222" ]] \
+  && ok "replies: the ingested ids round-trip through the records sidecar" \
+  || bad "replies: ids did not round-trip"
+grep -q 'multi-review-pr-replies-ids' "$IF" \
+  && bad "replies: the ids record leaked into the document" \
+  || ok "replies: the ids record stays out of the document"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

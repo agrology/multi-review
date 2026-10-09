@@ -17,7 +17,8 @@
 #                                    ## Review (never after it: that section IS the protocol
 #                                    channel). exit 3 = no ## Review heading, left alone
 #   replies-record <scratch> [<iso>] -> read (exit 3 if unset) or write the reply ingest watermark
-#   select-replies <owner> <repo> <n> [<since>] -> {total, shown} as JSON (the ingest's own view)
+#   select-replies <owner> <repo> <n> [<since>] [<seen-ids-json>] -> {total, shown} as JSON
+#   replies-ids <scratch> [<csv>]    -> read (exit 3 if unset) or write the ingested reply ids
 #   fetch-replies <owner> <repo> <n> [<since>] -> non-bot PR comments, newest-last, bounded
 #   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
 set -uo pipefail
@@ -807,7 +808,7 @@ REPLIES_MAX_CHARS="${MULTI_REVIEW_REPLY_CHARS:-2000}"
 # every later round, silently and permanently. That is strictly worse than the clock it replaced,
 # and it put author-influenced text into the sidecar this design deliberately keeps it out of.
 _select_replies() {
-  local o="${1:?owner}" r="${2:?repo}" n="${3:?number}" since="${4-}"
+  local o="${1:?owner}" r="${2:?repo}" n="${3:?number}" since="${4-}" seen="${5:-[]}"
   {
     gh api "repos/${o}/${r}/issues/${n}/comments" --paginate \
       --jq '[.[] | . + {kind: "conversation"}]' 2>/dev/null || echo '[]'
@@ -815,8 +816,8 @@ _select_replies() {
       --jq '[.[] | . + {kind: ("inline on " + (.path // "?"))}]' 2>/dev/null || echo '[]'
   } | jq -s \
       --arg since "$since" \
-      --argjson maxn "$REPLIES_MAX_COMMENTS" \
-      --argjson maxc "$REPLIES_MAX_CHARS" '
+      --argjson seen "$seen" \
+      --argjson maxn "$REPLIES_MAX_COMMENTS" '
     (add // [])
     | map(select(.user.type != "Bot"))
     | map(select(.body != null and (.body | length) > 0))
@@ -846,8 +847,18 @@ _select_replies() {
     # `>=`, not `>` (fable-rd2-r4). GitHub stamps `created_at` to the second and one submitted
     # review carries several inline comments, so a cap that cuts inside a same-second batch left
     # the next reply failing a strict `>` in every later round -- the overflow the data-derived
-    # mark exists to DEFER, lost anyway. `>=` costs at most one reply re-shown in the section
-    # the following round writes, which is replaced wholesale each round and cannot compound.
+    # mark exists to DEFER, lost anyway.
+    #
+    # The ids ALREADY INGESTED carry the rest of the weight (fable-rd3-r2, fable-rd3-r3). With
+    # `>=` alone the boundary reply re-qualifies forever, so a round with nothing new still
+    # rendered one reply, passed the content gate, and REPLACED a section that carried the whole
+    # of the previous round -- destroying exactly what `fable-rd1-r2` was fixed to protect. And a
+    # same-second batch larger than the cap never advanced the mark at all, so its overflow was
+    # deferred indefinitely rather than to the next round. Excluding the ids settles all three:
+    # an already-shown reply cannot re-qualify, a genuinely new same-second reply still can, and a
+    # round with nothing new selects nothing, which leaves the section untouched. Ids are
+    # GitHub-assigned integers, never author text, so the sidecar stays free of what it keeps out.
+    | map(select(.id as $i | ($seen | index($i)) == null))
     | map(select($since == "" or .created_at >= $since))
     | sort_by(.created_at)
     | { total: length, shown: .[0:$maxn] }'
@@ -875,6 +886,11 @@ _render_replies() {
 # _mark_of_replies <selection-json> -> the newest SHOWN reply's created_at, from the data.
 _mark_of_replies() {
   jq -r '[.shown[].created_at] | max // ""' <<< "$1"
+}
+
+# _ids_of_replies <selection-json> -> the SHOWN replies' GitHub ids, comma-joined.
+_ids_of_replies() {
+  jq -r '[.shown[].id] | map(tostring) | join(",")' <<< "$1"
 }
 
 # _fetch_replies <owner> <repo> <n> [<since>] -> the rendered replies (the documented surface).
@@ -917,7 +933,17 @@ cmd_replace_replies() { # <scratch> <replies-file> <round>
   # inside a reply was worse: the splice cut inside our old fence and left it unclosed.
   pstart="$(awk -v stop="$rstart" -v re="$REPLIES_SECTION_RE" '
     NR >= stop { next }
-    /^`{3,}/ { fence = !fence; next }
+    # LENGTH-AWARE, and with no interval expression (fable-rd3-r1, fable-rd3-r4). A blind toggle
+    # on any backtick run is flipped by a run INSIDE a reply -- and `_compose_replies` widens the
+    # section fence to longest-run+1 precisely because reply bodies carry them, so the inner run
+    # is the common case, not the exotic one. Only a run at least as long as the one that opened
+    # the fence closes it, which is also how CommonMark reads it. `/^`+/` needs no `{3,}`, which
+    # older mawk treats literally and would make this whole rule inert.
+    match($0, /^`+/) {
+      if (!fence) { if (RLENGTH >= 3) { fence = 1; flen = RLENGTH } }
+      else if (RLENGTH >= flen) { fence = 0 }
+      next
+    }
     fence { next }
     /^## / { last = NR; line = $0 }
     END { if (line ~ re) print last + 0; else print 0 }
@@ -961,9 +987,11 @@ _has_content() { grep -q '[^[:space:]]' "$1" 2>/dev/null; }
 # that wedges the document is worse.
 _ingest_replies() { # <scratch> <owner> <repo> <number> <round>
   local scratch="${1:?scratch}" o="${2:?owner}" r="${3:?repo}" n="${4:?number}" round="${5:?round}"
-  local since="" sel wm tmpf
+  local since="" seen_csv="" seen="[]" sel wm ids tmpf
   since="$(cmd_replies_record "$scratch" 2>/dev/null || true)"
-  sel="$(_select_replies "$o" "$r" "$n" "$since")" || return 1
+  seen_csv="$(cmd_replies_ids "$scratch" 2>/dev/null || true)"
+  [[ -n "$seen_csv" ]] && seen="[${seen_csv}]"
+  sel="$(_select_replies "$o" "$r" "$n" "$since" "$seen")" || return 1
   tmpf="$(mktemp)" || return 1
   # No content gate here: `cmd_replace_replies` refuses an empty body itself (exit 3), which is
   # the layer that would otherwise overwrite a real section.
@@ -974,6 +1002,8 @@ _ingest_replies() { # <scratch> <owner> <repo> <number> <round>
     # It is read off the SELECTION, never off the rendered text (fable-rd2-r2).
     wm="$(_mark_of_replies "$sel")"
     [[ -n "$wm" ]] && { cmd_replies_record "$scratch" "$wm" || true; }
+    ids="$(_ids_of_replies "$sel")"
+    [[ -n "$ids" ]] && { cmd_replies_ids "$scratch" "$ids" || true; }
     rm -f "$tmpf"
     return 0
   fi
@@ -1000,6 +1030,31 @@ cmd_replies_record() { # <scratch> [<iso>]
   local tmp; tmp="$(mktemp "${rec}.tmp.XXXXXX")" || die "mktemp failed" 1
   { [[ -f "$rec" ]] && grep -v -E '^<!-- multi-review-pr-replies: ' "$rec"
     printf '<!-- multi-review-pr-replies: %s -->\n' "$iso"; } > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$rec" || { rm -f "$tmp"; die "cannot update the records sidecar: $rec" 1; }
+}
+
+# cmd_replies_ids <scratch> [<csv>] -> read, or write, the ids already ingested.
+#
+# Beside the watermark and for the same reasons (fable-rd3-r2, fable-rd3-r3): it is this tool's
+# bookkeeping, not part of the document a reviewer reads. GitHub-assigned integers only, so
+# nothing an author writes reaches the sidecar. Bounded by `REPLIES_MAX_COMMENTS`, because only
+# the replies SHOWN in the last ingest need excluding -- anything older is already behind the
+# mark.
+cmd_replies_ids() { # <scratch> [<csv>]
+  local scratch="${1:?scratch}" csv="${2-}" rec
+  rec="$(_records_path "$scratch")"
+  if [[ -z "$csv" ]]; then
+    [[ -f "$rec" ]] || return 3
+    local line
+    line="$(grep -m1 -E '^<!-- multi-review-pr-replies-ids: ' "$rec" 2>/dev/null)" || return 3
+    [[ -n "$line" ]] || return 3
+    printf '%s\n' "$line" | sed -E 's/^<!-- multi-review-pr-replies-ids: (.*) -->$/\1/'
+    return 0
+  fi
+  local tmp; tmp="$(mktemp "${rec}.tmp.XXXXXX")" || die "mktemp failed" 1
+  { [[ -f "$rec" ]] && grep -v -E '^<!-- multi-review-pr-replies-ids: ' "$rec"
+    printf '<!-- multi-review-pr-replies-ids: %s -->\n' "$csv"; } > "$tmp"
   chmod 600 "$tmp" 2>/dev/null || true
   mv "$tmp" "$rec" || { rm -f "$tmp"; die "cannot update the records sidecar: $rec" 1; }
 }
@@ -1170,6 +1225,7 @@ main() {
     replace-desc) cmd_replace_desc "$@" ;;
     replace-replies) cmd_replace_replies "$@" ;;
     replies-record)  cmd_replies_record "$@" ;;
+    replies-ids)     cmd_replies_ids "$@" ;;
     select-replies)  _select_replies "$@" ;;
     fetch-replies)   _fetch_replies "$@" ;;
     fence)        cmd_fence "$@" ;;
