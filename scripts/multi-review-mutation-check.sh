@@ -637,7 +637,7 @@ mutations() {
   # Dropped, the round comes from the caller again rather than the document, so a mistyped or
   # stale argument silently decides which commit the comparison is made against.
   mutate 'pr/carried-round-from-marker' 'scripts/multi-review-pr.sh' replace \
-    'stale call site passing a round' 'multi-review-pr.test.sh' \
+    'still accepts a round argument' 'multi-review-pr.test.sh' \
     '  [[ $# -le 1 ]] || die "carried takes only <scratch>: the round is read from the document marker" 2' \
     '  true'
 
