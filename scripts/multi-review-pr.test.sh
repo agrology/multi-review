@@ -2058,15 +2058,18 @@ next="$(PATH="${WORK}/bin:$PATH" MULTI_REVIEW_REPLIES_MAX=1 bash "$SUT" select-r
 # the longest run in the replies precisely because reply bodies carry backtick runs, so a blind
 # toggle is flipped by the inner one and the rd2-r3 failure returns.
 IF="$(mkscratch inner-fence.md)"
+# The heading sits INSIDE the quoted block, between the inner runs. That placement is what
+# exercises the length comparison: with a blind toggle the first inner run un-fences the scan and
+# the heading is recorded, whereas a heading AFTER the block is re-fenced by the second run and
+# passes either way -- the first version of this fixture had it there and the mutant SURVIVED.
 cat > "${WORK}/inner-fence-reply.txt" <<'RP'
 kevin-agrology · 2026-10-09T10:00:00Z · conversation
 Here is the generator output:
 
 ```
+## Why this is by design
 some code
 ```
-
-## Why this is by design
 
 plan Task 5 adds the refs
 RP
