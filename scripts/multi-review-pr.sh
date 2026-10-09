@@ -811,13 +811,18 @@ REPLIES_MAX_CHARS="${MULTI_REVIEW_REPLY_CHARS:-2000}"
 # every later round, silently and permanently. That is strictly worse than the clock it replaced,
 # and it put author-influenced text into the sidecar this design deliberately keeps it out of.
 _select_replies() {
-  local o="${1:?owner}" r="${2:?repo}" n="${3:?number}" since="${4-}" seen="${5:-[]}"
-  {
-    gh api "repos/${o}/${r}/issues/${n}/comments" --paginate \
-      --jq '[.[] | . + {kind: "conversation"}]' 2>/dev/null || echo '[]'
-    gh api "repos/${o}/${r}/pulls/${n}/comments" --paginate \
-      --jq '[.[] | . + {kind: ("inline on " + (.path // "?"))}]' 2>/dev/null || echo '[]'
-  } | jq -s \
+  local o="${1:?owner}" r="${2:?repo}" n="${3:?number}" since="${4-}" seen="${5:-[]}" conv inline
+  # FAIL, never substitute an empty channel. `|| echo '[]'` made a failed endpoint
+  # indistinguishable from one with no comments, so a transient error on the conversation channel
+  # produced a PARTIAL result that spliced anyway and advanced the watermark past the replies it
+  # never read -- losing them permanently, which is the one outcome this feature exists to
+  # prevent. A round that ingests nothing is the old behaviour and is recoverable; a round that
+  # ingests half and marks the rest as seen is not.
+  conv="$(gh api "repos/${o}/${r}/issues/${n}/comments" --paginate \
+            --jq '[.[] | . + {kind: "conversation"}]' 2>/dev/null)" || return 1
+  inline="$(gh api "repos/${o}/${r}/pulls/${n}/comments" --paginate \
+            --jq '[.[] | . + {kind: ("inline on " + (.path // "?"))}]' 2>/dev/null)" || return 1
+  printf '%s\n%s\n' "$conv" "$inline" | jq -s \
       --arg since "$since" \
       --argjson seen "$seen" \
       --argjson maxn "$REPLIES_MAX_COMMENTS" '
@@ -1112,8 +1117,20 @@ cmd_replies_ids() { # <scratch> [<csv>]
 # the finding then reads `reply:unnamed` and keeps standing, which is the safe direction.
 _replies_text() { # <scratch>
   awk '
+    function run(l) { return match(l, /^`+/) ? RLENGTH : 0 }
     /^## Author replies/ { grab = 1; next }
-    grab && /^## / { grab = 0 }
+    # FENCE-AWARE, on the same terms as the splice scan. The replies live inside a fence whose
+    # width `_compose_replies` computes from the replies themselves, and a bare `/^## /` bound
+    # stopped at the first column-1 heading a REPLY happened to contain -- discarding that reply
+    # and every one after it, so a finding the author did answer read `reply:unnamed` and kept its
+    # "not re-checked" label. Only a run at least as long as the one that opened the fence closes
+    # it, so an inner run inside a quoted block cannot un-fence the scan either.
+    grab && run($0) {
+      if (!fence) { if (run($0) >= 3) { fence = 1; flen = run($0) } }
+      else if (run($0) >= flen) { fence = 0 }
+      print; next
+    }
+    grab && !fence && /^## / { grab = 0 }
     grab { print }
   ' "$1" 2>/dev/null
 }
