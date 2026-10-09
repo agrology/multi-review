@@ -20,7 +20,7 @@
 #   select-replies <owner> <repo> <n> [<since>] [<seen-ids-json>] -> {total, shown} as JSON
 #   replies-ids <scratch> [<csv>]    -> read (exit 3 if unset) or write the ingested reply ids
 #   fetch-replies <owner> <repo> <n> [<since>] -> non-bot PR comments, newest-last, bounded
-#   carried <scratch> [<round>]      -> the step-4 worklist, RE-CHECKED: resolve-candidates' rows
+#   carried <scratch> <round>        -> the step-4 worklist, RE-CHECKED: resolve-candidates' rows
 #                                    plus whether the anchored file changed since the finding's
 #                                    round and whether an author reply names it
 #   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
@@ -1118,15 +1118,38 @@ _replies_text() { # <scratch>
   ' "$1" 2>/dev/null
 }
 
+# _names_id <text> <ns-id> -> 0 when the text names that id as a WHOLE token.
+#
+# Literal AND boundary-checked (fable-rd1-r1). `grep -F` was literal, which keeps a
+# metacharacter in an id from becoming a pattern, but it says nothing about boundaries -- and
+# ns-ids are a prefix family: any round where one provider raises ten findings makes
+# `<p>-rd1-r1` a prefix of `<p>-rd1-r10`, so a reply naming r10 reported r1 as answered too.
+# Reproduced through `carried` itself before this existed. The same class as pr-watch's
+# `\bpublic-api\b` matching inside `public-api-docs`.
+#
+# The neighbours are judged against the ns-id charset itself, so the test cannot drift from what
+# an id may contain the way a `\b` or a hand-written separator list does.
+_names_id() { # <text> <ns-id>
+  awk -v id="$2" '
+    function bare(c) { return c !~ /[A-Za-z0-9_-]/ }
+    {
+      s = $0; n = length(id); p = index(s, id)
+      while (p > 0) {
+        if (bare((p == 1) ? " " : substr(s, p - 1, 1)) && bare(substr(s, p + n, 1))) {
+          found = 1; exit
+        }
+        s = substr(s, p + 1); p = index(s, id)
+      }
+    }
+    END { exit !found }
+  ' <<< "$1"
+}
+
 # _reply_token <replies-text> <ns-id> -> no-replies | reply:named | reply:unnamed
-# Literal matching (`grep -F`), like every other id match in this protocol: an ns-id is
-# `[A-Za-z0-9_-]+` so this is belt-and-braces, but the id comes from the document.
 _reply_token() {
   local text="$1" id="$2"
   [[ -n "$text" ]] || { echo "no-replies"; return 0; }
-  # A HERESTRING, not a pipe: `grep -q` exits at its first match, and under `pipefail` the
-  # writer's SIGPIPE (141) would become this function's status (#110).
-  if grep -qF -e "$id" <<<"$text"; then echo "reply:named"; else echo "reply:unnamed"; fi
+  if _names_id "$text" "$id"; then echo "reply:named"; else echo "reply:unnamed"; fi
 }
 
 # _anchor_path <scratch> <ns-id> -> the path this finding's `> — at` anchor names, else empty.
@@ -1178,14 +1201,19 @@ _touched_token() {
   if [[ -n "$out" ]]; then printf 'touched:%s\n' "$path"; else printf 'untouched:%s\n' "$path"; fi
 }
 
-# cmd_carried <scratch> [<round>] -> the step-4 worklist, re-checked:
+# cmd_carried <scratch> <round> -> the step-4 worklist, re-checked:
 #   "ns-id\tround\tsev\ttrace\ttouched\treply\tconcern"
-# The first four columns are `resolve-candidates`' own, unchanged. `<round>` names the round being
-# reviewed now, whose recorded head is the "current" side of the comparison; without it the
-# worktree's HEAD is used, which is the same commit in the ordinary case and the only answer
-# available before this round's head is recorded. `concern` stays LAST: it is free text.
+# The first four columns are `resolve-candidates`' own, unchanged. `<round>` is REQUIRED and its
+# recorded head is the "current" side of the comparison. `concern` stays LAST: it is free text.
+#
+# The worktree is never consulted for that side (fable-rd1-r2). It used to fall back to
+# `git rev-parse HEAD`, silently -- so a checkout left at an earlier round's head, or a round
+# whose head is not recorded, printed `untouched:` for a file the branch had rewritten. That is
+# the one token licensing "not re-checked at this head", issued from a comparison against the
+# wrong commit, with nothing in the row to say so. Both sides now come from the sidecar this
+# layer owns, and an unrecorded round degrades to `no-base`.
 cmd_carried() {
-  local scratch="${1:?scratch}" round="${2-}" dir rows replies cur id rd sev trace concern
+  local scratch="${1:?scratch}" round="${2:?round}" dir rows replies cur id rd sev trace concern
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
   dir="$(cd "$(dirname "$0")" && pwd)"
   # A contract violation in the document is star.sh's to report, and it is fatal there; propagate
@@ -1194,9 +1222,8 @@ cmd_carried() {
     || die "cannot build the carried worklist: resolve-candidates failed on $scratch" 1
   [[ -n "$rows" ]] || return 0
   replies="$(_replies_text "$scratch")"
-  cur=""
-  [[ -n "$round" ]] && cur="$(cmd_head_record "$scratch" "$round" 2>/dev/null | cut -d'|' -f1)"
-  [[ -n "$cur" ]] || cur="$(git rev-parse HEAD 2>/dev/null || true)"
+  cur="$(cmd_head_record "$scratch" "$round" 2>/dev/null || true)"
+  cur="${cur%%|*}"
   while IFS=$'\t' read -r id rd sev trace concern; do
     [[ -n "$id" ]] || continue
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$rd" "$sev" "$trace" \

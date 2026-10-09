@@ -610,6 +610,22 @@ mutations() {
     '    grab && /^## / { grab = 0 }' \
     '    grab && /^## never-matches/ { grab = 0 }'
 
+  # Dropped, the ns-id match has no boundary and ns-ids are a PREFIX FAMILY: a reply naming
+  # `<p>-rd1-r10` marks `<p>-rd1-r1` answered too, so a finding the author never addressed is
+  # reported as addressed. The same class as pr-watch's `\bpublic-api\b` inside `public-api-docs`.
+  mutate 'pr/carried-id-boundary' 'scripts/multi-review-pr.sh' replace \
+    'id match has no boundary' 'multi-review-pr.test.sh' \
+    '        if (bare((p == 1) ? " " : substr(s, p - 1, 1)) && bare(substr(s, p + n, 1))) {' \
+    '        if (1) {'
+
+  # Dropped, the current head falls back to the WORKTREE again: a checkout at an earlier round,
+  # or a round with no head record, prints `untouched:` for a file the branch rewrote -- the one
+  # token that licenses "not re-checked at this head", from a comparison against the wrong commit.
+  mutate 'pr/carried-head-from-record' 'scripts/multi-review-pr.sh' replace \
+    'fell back to the worktree HEAD' 'multi-review-pr.test.sh' \
+    '  cur="$(cmd_head_record "$scratch" "$round" 2>/dev/null || true)"' \
+    '  cur="$(git rev-parse HEAD 2>/dev/null || true)"'
+
   # --- the head trace (pr-watch#17, round 2) -------------------------------------------------
   # Dropped, an anchored file that no longer exists at head traces cited-present, and the primary
   # is told the code it cited is still there -- the exact false reassurance the refreshed diff

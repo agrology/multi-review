@@ -1164,10 +1164,12 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      a re-check is owed whatever the trace says — `untouched:<path>`, `no-anchor`, or
      `no-base`/`no-repo` when the two heads cannot both be resolved here.
    - `<reply>` is whether the `## Author replies` section names this finding: `reply:named`,
-     `reply:unnamed` (replies arrived, none named it) or `no-replies`.
+     `reply:unnamed` (replies arrived, none named it) or `no-replies`. Only `reply:named` is an
+     answer to THIS finding — `reply:unnamed` and `no-replies` both mean nobody addressed it, and
+     neither blocks the label below.
 
    **A carried finding may keep the "not re-checked at this head" label only when it is
-   `cited-present`, `untouched:` and has no reply.** Every other row you decide this round:
+   `cited-present`, `untouched:` and not `reply:named`.** Every other row you decide this round:
    `[resolved:]` if the defect is gone, or an `[observation]` saying in one line why it still
    stands. A `reply:named` row always needs one of the two — an author who answered and was
    never answered re-reads the same finding next round, which on public-api#24 happened four

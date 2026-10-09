@@ -107,7 +107,10 @@ if [[ -f "$f" ]]; then
   # Issue #148 part 3: on a PR the carried worklist is RE-CHECKED, and the condition for keeping
   # the "not re-checked" label has to be stated or the primary keeps republishing on the old
   # terms -- which is the whole defect, not a nicety.
-  if grep -q 'multi-review-pr.sh carried' "$f" && grep -q 'not re-checked at this head" label only when' "$f"; then
+  # The label condition must name the TOKEN, not "has no reply": the column has two no-name
+  # tokens and a primary reading `reply:unnamed` as an answer re-publishes under the label
+  # (fable-rd1-r1 on #150).
+  if grep -q 'multi-review-pr.sh carried' "$f" && grep -q 'not `reply:named`' "$f"; then
     ok "step 4 names the re-checked carried worklist and when the label may stand (#148)"
   else
     bad "step 4 lacks the 'carried' worklist or the condition for keeping the not-re-checked label (#148)"

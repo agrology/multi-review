@@ -2247,6 +2247,52 @@ bash "$SUT" replace-replies "$CSC" "${CR}/replies.txt" 2 >/dev/null 2>&1 \
   && ok "carried: the #147 head trace is passed through unchanged" \
   || bad "carried: trace column lost — got '$(carried_row 2 fable-rd1-r1 | cut -f4)'"
 
+# --- #150's own review: the id match needs a boundary, the head must come from the record ---
+
+C2="${CR}/pr-150.md"
+{ printf '# PR review: t\n\n'
+  printf -- '- **PR:** https://github.com/agrology/multi-review/pull/150\n'
+  printf -- '- **Author:** kevin\n- **Branch:** b\n\n'
+  printf '## PR description\nhi\n\n## Diff\n```diff\n+x\n```\n\n## Review\n\n'
+  printf '> [finding:fable-rd1-r1|high] `parse_params` is unvalidated\n'
+  printf '> — via claude-fable-5\n> — risk: r\n> — evidence: e\n> — at src/a.py:1\n'
+  printf '> [agree:fable-rd1-r1] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd1-r10|med] the tenth finding of the round\n'
+  printf '> — via claude-fable-5\n> — risk: r\n> — evidence: e\n> — at src/a.py:1\n'
+  printf '> [agree:fable-rd1-r10] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd2-r1|low] this round\n'
+  printf '> — via claude-fable-5\n> — risk: r\n'; } > "$C2"
+bash "$SUT" record-head "$C2" 1 "$BASE_SHA" "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$C2" 2 "$MID_SHA"  "$BASE_SHA" 2>/dev/null
+cat > "${CR}/r10-only.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+about fable-rd1-r10 only — the other one I have not answered
+RP
+bash "$SUT" replace-replies "$C2" "${CR}/r10-only.txt" 2 >/dev/null 2>&1 \
+  || bad "setup: could not splice the r10 reply"
+row2() { ( cd "$CR" && bash "$SUT" carried "$C2" "$1" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'; }
+
+# fable-rd1-r1 (#150): ns-ids are a PREFIX FAMILY — r1 is a prefix of r10 — so a bare substring
+# match reported a finding the author never answered as answered. Same class as pr-watch's
+# `\bpublic-api\b` matching inside `public-api-docs`.
+[[ "$(row2 2 fable-rd1-r1 | cut -f6)" == "reply:unnamed" ]] \
+  && ok "carried: a reply naming r10 does not mark r1 answered (ns-ids are a prefix family)" \
+  || bad "carried: the id match has no boundary — r1 read '$(row2 2 fable-rd1-r1 | cut -f6)'"
+[[ "$(row2 2 fable-rd1-r10 | cut -f6)" == "reply:named" ]] \
+  && ok "carried: the finding the reply actually names is still reported" \
+  || bad "carried: lost the real named reply — got '$(row2 2 fable-rd1-r10 | cut -f6)'"
+
+# fable-rd1-r2 (#150): the current head comes from the RECORD, never the worktree. Round 3 has no
+# head record here, and the worktree is at a commit that rewrote the cited file, so a fallback to
+# HEAD would answer the comparison with the wrong commit. `untouched:` is the one token that
+# licenses the "not re-checked at this head" label, so a wrong answer here is a confident label.
+[[ "$(row2 3 fable-rd1-r1 | cut -f5)" == "no-base" ]] \
+  && ok "carried: an unrecorded round says no-base rather than comparing against the worktree" \
+  || bad "carried: fell back to the worktree HEAD — got '$(row2 3 fable-rd1-r1 | cut -f5)'"
+( cd "$CR" && bash "$SUT" carried "$C2" >/dev/null 2>&1 ) \
+  && bad "carried: ran with no round argument, so the compared head was a guess" \
+  || ok "carried: the round argument is required, not optional"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
