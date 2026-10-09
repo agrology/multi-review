@@ -1244,16 +1244,39 @@ cmd_codex_report() { # <copy>
   # append. ONLY under /tmp, on purpose -- a provider that cannot write its copy writes to its
   # sandbox's temp dir, and following any absolute path named in provider text would make this
   # recovery read arbitrary files on the strength of text the protocol does not trust.
+  local block
   while IFS= read -r f; do
     [[ -n "$f" && -r "$f" ]] || continue
-    if grep -q '^> \[finding:\|^> \[no-findings\]' "$f" 2>/dev/null; then cat "$f"; return 0; fi
+    block="$(_secondary_blocks < "$f")" || true
+    [[ -n "$block" ]] && { printf '%s\n' "$block"; return 0; }
   done < <(printf '%s\n' "$texts" | grep -oE '(/private)?/tmp/[A-Za-z0-9._/-]+' | sort -u)
   # Otherwise the protocol lines as recorded in the thread.
-  local inline
-  inline="$(printf '%s\n' "$texts" | grep -E '^> ' || true)"
-  [[ -n "$inline" ]] || return 3
-  grep -q '^> \[finding:\|^> \[no-findings\]' <<<"$inline" || return 3
-  printf '%s\n' "$inline"
+  block="$(printf '%s\n' "$texts" | _secondary_blocks)" || true
+  [[ -n "$block" ]] || return 3
+  printf '%s\n' "$block"
+}
+
+# _secondary_blocks < text -> only what a SECONDARY may say: finding and `[no-findings]` blocks
+# with their `> — ` continuation lines. Everything else is dropped, and a RESPONSE verb
+# (`[agree:]`, `[dispute:]`, `[resolved:]`, `[observation]`) is dropped with it.
+#
+# This is the whole safety argument for the recovery. The provider reads its copy, which carries
+# the review channel, so quoting the primary's own records back is the ORDINARY case -- and a
+# courier that delivers them verbatim would splice `[agree:]` and `[resolved:]` lines disclosed
+# under the primary's model id into the document. That is what issue #103 forbids and what #149's
+# "the section goes above `## Review`" argument exists to prevent, reintroduced from the other
+# direction by the fix for #151. Nothing downstream catches it: `verify-vendor` only checks that a
+# disclosure matches its vendor, and `channel-check` is satisfied because the lines ARE in the
+# channel.
+#
+# Keep the filter here, in the only function that produces text for delivery, rather than at the
+# call site: a second recovery path added later would otherwise have to remember.
+_secondary_blocks() {
+  awk '
+    /^> \[finding:/ || /^> \[no-findings\]/ { keep = 1; print; next }
+    keep && /^> — / { print; next }
+    { keep = 0 }
+  '
 }
 
 codex_workspace_root() { # -> path, or empty

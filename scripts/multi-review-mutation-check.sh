@@ -1370,10 +1370,19 @@ mutations() {
     # Dropped, a recovered report is accepted on the strength of any text in the thread: the helper
   # must find the protocol's own grammar, or it would deliver a provider's prose -- or an empty
   # turn -- as findings. #151's recovery is only safe because it refuses what it cannot read.
+  # Dropped, the recovery delivers whatever `> ` lines it found -- including the primary's own
+  # `[agree:]`/`[resolved:]` records, which the provider quotes as a matter of course because it
+  # reads the copy. The courier would then forge the records issue #103 reserves for the primary,
+  # and neither verify-vendor nor channel-check can tell.
+  mutate 'reviewer/codex-report-secondary-only' 'scripts/multi-review-reviewer.sh' replace \
+    'delivered a PRIMARY response record' 'multi-review-reviewer.test.sh' \
+    '    { keep = 0 }' \
+    '    { print }'
+
   mutate 'reviewer/codex-report-needs-grammar' 'scripts/multi-review-reviewer.sh' replace \
     'delivered quoted prose as findings' 'multi-review-reviewer.test.sh' \
-    "  grep -q '^> \\[finding:\\|^> \\[no-findings\\]' <<<\"\$inline\" || return 3" \
-    '  true'
+    '    /^> \[finding:/ || /^> \[no-findings\]/ { keep = 1; print; next }' \
+    '    /^> / { keep = 1; print; next }'
 
   # Dropped, the recovery follows ANY absolute path the provider names rather than only its
   # sandbox temp dir, so a line of provider text decides which file this helper reads out.
