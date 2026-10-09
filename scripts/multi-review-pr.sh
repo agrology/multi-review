@@ -20,7 +20,7 @@
 #   select-replies <owner> <repo> <n> [<since>] [<seen-ids-json>] -> {total, shown} as JSON
 #   replies-ids <scratch> [<csv>]    -> read (exit 3 if unset) or write the ingested reply ids
 #   fetch-replies <owner> <repo> <n> [<since>] -> non-bot PR comments, newest-last, bounded
-#   carried <scratch> <round>        -> the step-4 worklist, RE-CHECKED: resolve-candidates' rows
+#   carried <scratch>                -> the step-4 worklist, RE-CHECKED: resolve-candidates' rows
 #                                    plus whether the anchored file changed since the finding's
 #                                    round and whether an author reply names it
 #   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
@@ -1186,7 +1186,13 @@ _anchor_path() {
 # file did not change". That reading would licence exactly the "not re-checked" label this part of
 # #148 exists to take away.
 _touched_token() {
-  local scratch="$1" id="$2" rd="$3" cur="$4" path base root out rc
+  local scratch="$1" id="$2" rd="$3" cur="$4" round="$5" path base root out rc
+  # The compared round must be strictly LATER than the round that raised the finding, or the two
+  # sides are the same commit and `git diff B..B` is empty -- `untouched:` from a comparison that
+  # could not have found anything (fable-rd2-r1). `resolve-candidates` derives "carried" from the
+  # ids while this reads the marker, so the two can disagree on a hand-edited document; when they
+  # do, say so rather than answer.
+  (( rd < round )) || { echo "no-base"; return 0; }
   path="$(_anchor_path "$scratch" "$id")"
   [[ -n "$path" ]] || { echo "no-anchor"; return 0; }
   root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
@@ -1201,20 +1207,33 @@ _touched_token() {
   if [[ -n "$out" ]]; then printf 'touched:%s\n' "$path"; else printf 'untouched:%s\n' "$path"; fi
 }
 
-# cmd_carried <scratch> <round> -> the step-4 worklist, re-checked:
+# _doc_round <scratch> -> the round the document itself says it is in, else empty.
+# Read from the marker, the way `cmd_resolved` reads it, rather than taken as an argument.
+_doc_round() {
+  sed -n -E 's/^<!-- multi-review:[^>]*round ([0-9]+)\/[0-9]+ -->$/\1/p' "$1" 2>/dev/null | head -1
+}
+
+# cmd_carried <scratch> -> the step-4 worklist, re-checked:
 #   "ns-id\tround\tsev\ttrace\ttouched\treply\tconcern"
-# The first four columns are `resolve-candidates`' own, unchanged. `<round>` is REQUIRED and its
-# recorded head is the "current" side of the comparison. `concern` stays LAST: it is free text.
+# The first four columns are `resolve-candidates`' own, unchanged. `concern` stays LAST: it is
+# free text.
 #
-# The worktree is never consulted for that side (fable-rd1-r2). It used to fall back to
-# `git rev-parse HEAD`, silently -- so a checkout left at an earlier round's head, or a round
-# whose head is not recorded, printed `untouched:` for a file the branch had rewritten. That is
-# the one token licensing "not re-checked at this head", issued from a comparison against the
-# wrong commit, with nothing in the row to say so. Both sides now come from the sidecar this
-# layer owns, and an unrecorded round degrades to `no-base`.
+# NEITHER side of the comparison is supplied by the caller or the worktree. It first fell back to
+# `git rev-parse HEAD` (fable-rd1-r2), so a checkout left at an earlier round printed `untouched:`
+# for a file the branch had rewritten; requiring the round as an argument then moved the same
+# hazard one step out (fable-rd2-r1), because the PREVIOUS round's number makes base and cur the
+# same commit and `git diff B..B` is empty -- `untouched:` again, from a comparison that could not
+# have found anything, and `untouched:` is the one token licensing the "not re-checked at this
+# head" label. So the round comes from the document's own marker, which is the same source the
+# round every other step works in comes from, and cannot be mistyped. An unrecorded round still
+# degrades to `no-base`.
 cmd_carried() {
-  local scratch="${1:?scratch}" round="${2:?round}" dir rows replies cur id rd sev trace concern
+  local scratch="${1:?scratch}" dir rows replies round cur id rd sev trace concern
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  # A stale call site that still passes the round must fail loudly rather than be ignored.
+  [[ $# -le 1 ]] || die "carried takes only <scratch>: the round is read from the document marker" 2
+  round="$(_doc_round "$scratch")"
+  [[ -n "$round" ]] || die "no multi-review round marker in: $scratch" 1
   dir="$(cd "$(dirname "$0")" && pwd)"
   # A contract violation in the document is star.sh's to report, and it is fatal there; propagate
   # rather than printing a worklist that silently omits findings.
@@ -1227,7 +1246,7 @@ cmd_carried() {
   while IFS=$'\t' read -r id rd sev trace concern; do
     [[ -n "$id" ]] || continue
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$rd" "$sev" "$trace" \
-      "$(_touched_token "$scratch" "$id" "$rd" "$cur")" \
+      "$(_touched_token "$scratch" "$id" "$rd" "$cur" "$round")" \
       "$(_reply_token "$replies" "$id")" "$concern"
   done <<< "$rows"
 }

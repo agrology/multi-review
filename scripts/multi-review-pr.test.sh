@@ -2170,8 +2170,16 @@ CR="${WORK}/carried"; mkdir -p "$CR"
 ) >/dev/null 2>&1
 BASE_SHA="$(cat "${CR}/base.sha")"; MID_SHA="$(cat "${CR}/mid.sha")"; TIP_SHA="$(cat "${CR}/tip.sha")"
 
+# `carried` reads the round from the document marker rather than an argument, so the fixtures
+# carry one and this helper moves it. awk + mv, not `sed -i`, which is not portable.
+set_round() { # <doc> <n>
+  awk -v n="$2" '/^<!-- multi-review: / { sub(/round [0-9]+\//, "round " n "/") } { print }' \
+    "$1" > "$1.round.tmp" && mv "$1.round.tmp" "$1"
+}
 CSC="${CR}/pr-24.md"
-{ printf '# PR review: t\n\n'
+{ printf '# PR review: t\n'
+  printf '<!-- multi-review: awaiting-primary \u00b7 round 2/5 -->\n'
+  printf '<!-- multi-review-mode: star \u00b7 reviewers: fable -->\n\n'
   printf -- '- **PR:** https://github.com/agrology/public-api/pull/24\n'
   printf -- '- **Author:** kevin\n- **Branch:** b\n\n'
   printf '## PR description\nhi\n\n## Diff\n```diff\n+x\n```\n\n## Review\n\n'
@@ -2188,10 +2196,12 @@ bash "$SUT" record-head "$CSC" 2 "$MID_SHA"  "$BASE_SHA" 2>/dev/null
 bash "$SUT" record-head "$CSC" 3 "$TIP_SHA"  "$BASE_SHA" 2>/dev/null
 bash "$SUT" record-head "$CSC" 4 "$(printf '%040d' 9)" "$BASE_SHA" 2>/dev/null
 
-carried_row() { # <round> <ns-id> -> that finding's row
-  ( cd "$CR" && bash "$SUT" carried "$CSC" "$1" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'
+carried_row() { # <round> <ns-id> -> that finding's row with the marker set to <round>
+  set_round "$CSC" "$1"
+  ( cd "$CR" && bash "$SUT" carried "$CSC" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'
 }
-out="$( cd "$CR" && bash "$SUT" carried "$CSC" 2 2>/dev/null )"; rc=$?
+set_round "$CSC" 2
+out="$( cd "$CR" && bash "$SUT" carried "$CSC" 2>/dev/null )"; rc=$?
 (( rc == 0 )) || bad "carried: exited $rc (it REPORTS, it must never block)"
 [[ "$(awk -F'\t' 'END{print NF}' <<<"$out")" == 7 ]] \
   && ok "carried: seven columns — resolve-candidates' four plus touched, reply, concern" \
@@ -2219,7 +2229,8 @@ grep -q 'fable-rd2-r1' <<<"$out" \
   && ok "carried: a finding with no anchor says so rather than guessing a file" \
   || bad "carried: unanchored finding misreported — got '$(carried_row 2 fable-rd1-r2 | cut -f5)'"
 # Outside a checkout there is nothing to compare, and that must not be fatal either.
-[[ "$( cd "$WORK" && bash "$SUT" carried "$CSC" 2 2>/dev/null | awk -F'\t' '$1=="fable-rd1-r1"{print $5}' )" == "no-repo" ]] \
+set_round "$CSC" 2
+[[ "$( cd "$WORK" && bash "$SUT" carried "$CSC" 2>/dev/null | awk -F'\t' '$1=="fable-rd1-r1"{print $5}' )" == "no-repo" ]] \
   && ok "carried: outside a checkout the comparison degrades to no-repo" \
   || bad "carried: no-repo not reported outside a checkout"
 
@@ -2250,7 +2261,9 @@ bash "$SUT" replace-replies "$CSC" "${CR}/replies.txt" 2 >/dev/null 2>&1 \
 # --- #150's own review: the id match needs a boundary, the head must come from the record ---
 
 C2="${CR}/pr-150.md"
-{ printf '# PR review: t\n\n'
+{ printf '# PR review: t\n'
+  printf '<!-- multi-review: awaiting-primary \u00b7 round 2/5 -->\n'
+  printf '<!-- multi-review-mode: star \u00b7 reviewers: fable -->\n\n'
   printf -- '- **PR:** https://github.com/agrology/multi-review/pull/150\n'
   printf -- '- **Author:** kevin\n- **Branch:** b\n\n'
   printf '## PR description\nhi\n\n## Diff\n```diff\n+x\n```\n\n## Review\n\n'
@@ -2270,7 +2283,7 @@ about fable-rd1-r10 only — the other one I have not answered
 RP
 bash "$SUT" replace-replies "$C2" "${CR}/r10-only.txt" 2 >/dev/null 2>&1 \
   || bad "setup: could not splice the r10 reply"
-row2() { ( cd "$CR" && bash "$SUT" carried "$C2" "$1" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'; }
+row2() { set_round "$C2" "$1"; ( cd "$CR" && bash "$SUT" carried "$C2" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'; }
 
 # fable-rd1-r1 (#150): ns-ids are a PREFIX FAMILY — r1 is a prefix of r10 — so a bare substring
 # match reported a finding the author never answered as answered. Same class as pr-watch's
@@ -2289,9 +2302,21 @@ row2() { ( cd "$CR" && bash "$SUT" carried "$C2" "$1" 2>/dev/null ) | awk -F'\t'
 [[ "$(row2 3 fable-rd1-r1 | cut -f5)" == "no-base" ]] \
   && ok "carried: an unrecorded round says no-base rather than comparing against the worktree" \
   || bad "carried: fell back to the worktree HEAD — got '$(row2 3 fable-rd1-r1 | cut -f5)'"
-( cd "$CR" && bash "$SUT" carried "$C2" >/dev/null 2>&1 ) \
-  && bad "carried: ran with no round argument, so the compared head was a guess" \
-  || ok "carried: the round argument is required, not optional"
+# fable-rd2-r1 (#150): requiring the round moved the hazard one step out rather than closing
+# it -- the PREVIOUS round's number makes base and cur the same commit, `git diff B..B` is empty,
+# and `untouched:` is issued by a comparison that could not have found anything. The round is read
+# from the document marker now, so there is no argument to get wrong.
+[[ "$(row2 1 fable-rd1-r1 | cut -f5)" == "no-base" ]] \
+  && ok "carried: a round that is not later than the finding's own cannot be compared (no B..B)" \
+  || bad "carried: compared a finding against its own round's head — got '$(row2 1 fable-rd1-r1 | cut -f5)'"
+set_round "$C2" 2
+( cd "$CR" && bash "$SUT" carried "$C2" 2 >/dev/null 2>&1 ) \
+  && bad "carried: still accepts a round argument, which can disagree with the document" \
+  || ok "carried: a stale call site passing a round fails loudly"
+NOMARK="${CR}/no-marker.md"; grep -v '^<!-- multi-review: ' "$C2" > "$NOMARK"
+( cd "$CR" && bash "$SUT" carried "$NOMARK" >/dev/null 2>&1 ) \
+  && bad "carried: ran on a document with no round marker" \
+  || ok "carried: a document with no round marker fails loudly rather than guessing"
 
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi

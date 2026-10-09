@@ -626,6 +626,21 @@ mutations() {
     '  cur="$(cmd_head_record "$scratch" "$round" 2>/dev/null || true)"' \
     '  cur="$(git rev-parse HEAD 2>/dev/null || true)"'
 
+  # Dropped, a round that is NOT later than the finding's own is compared anyway: base and cur are
+  # the same commit, `git diff B..B` is empty, and `untouched:` is issued by a comparison that
+  # could not have found anything (fable-rd2-r1) -- the one token licensing the label.
+  mutate 'pr/carried-round-is-later' 'scripts/multi-review-pr.sh' replace \
+    'compared a finding against its own round' 'multi-review-pr.test.sh' \
+    '  (( rd < round )) || { echo "no-base"; return 0; }' \
+    '  true'
+
+  # Dropped, the round comes from the caller again rather than the document, so a mistyped or
+  # stale argument silently decides which commit the comparison is made against.
+  mutate 'pr/carried-round-from-marker' 'scripts/multi-review-pr.sh' replace \
+    'stale call site passing a round' 'multi-review-pr.test.sh' \
+    '  [[ $# -le 1 ]] || die "carried takes only <scratch>: the round is read from the document marker" 2' \
+    '  true'
+
   # --- the head trace (pr-watch#17, round 2) -------------------------------------------------
   # Dropped, an anchored file that no longer exists at head traces cited-present, and the primary
   # is told the code it cited is still there -- the exact false reassurance the refreshed diff

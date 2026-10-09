@@ -1155,7 +1155,7 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
 
    **On a PR scratch, run the re-checked form instead** — the same rows, two more columns:
 
-       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh carried "<doc>" <N>
+       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh carried "<doc>"
 
    printed as `<ns-id>  <round>  <sev>  <trace>  <touched>  <reply>  <concern>`.
 
