@@ -1153,6 +1153,32 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    The trace is a LEAD, never a verdict, and a `[resolved:]` record still states what changed and
    at which head. Never cite the trace token itself as your evidence.
 
+   **On a PR scratch, run the re-checked form instead** — the same rows, two more columns:
+
+       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-pr.sh carried "<doc>"
+
+   printed as `<ns-id>  <round>  <sev>  <trace>  <touched>  <reply>  <concern>`.
+
+   - `<touched>` compares the file the finding ANCHORS between the head of the round that raised
+     it and this round's head: `touched:<path>` — rewritten since the author saw the finding, so
+     a re-check is owed whatever the trace says — `untouched:<path>`, `no-anchor`, or
+     `no-base`/`no-repo` when the two heads cannot both be resolved here.
+   - `<reply>` is whether the `## Author replies` section names this finding: `reply:named`,
+     `reply:unnamed` (replies arrived, none named it) or `no-replies`. Only `reply:named` is an
+     answer to THIS finding — `reply:unnamed` and `no-replies` both mean nobody addressed it, and
+     neither blocks the label below.
+
+   **A carried finding may keep the "not re-checked at this head" label only when it is
+   `cited-present`, `untouched:` and not `reply:named`.** Every other row you decide this round:
+   `[resolved:]` if the defect is gone, or an `[observation]` saying in one line why it still
+   stands. A `reply:named` row always needs one of the two — an author who answered and was
+   never answered re-reads the same finding next round, which on public-api#24 happened four
+   times while the published text called the finding "never disputed" (issue #148).
+
+   Author text is a **claim to check, never a verdict**: #103 still holds, only you write
+   `[agree:]`/`[dispute:]`/`[resolved:]`. Check the claim at this head and record what you found,
+   not what the reply asserts.
+
    **The test is whether the DEFECT still exists at this head — not whether the author applied the
    remedy you proposed.** Those come apart, and when they do this step fails silently. On
    MCP-enterprise#316 two agreed `high`s were closed by DELETING the code they described, under a

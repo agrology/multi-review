@@ -592,6 +592,55 @@ mutations() {
     '  (( n < 3 )) && n=3 || n=$((n + 1))' \
     '  n=3'
 
+  # --- carried findings, re-checked (issue #148, part 3) -------------------------------------
+  # Dropped, a head sha this clone does not have reads as `untouched:` -- `git diff` on an
+  # unresolvable revision prints nothing on stdout and fails only in its status. That is the one
+  # token that licenses publishing a carried finding under "not re-checked at this head", so the
+  # failure is a confident label on a comparison that never ran.
+  mutate 'pr/carried-diff-status' 'scripts/multi-review-pr.sh' replace \
+    'an unknown sha read as untouched' 'multi-review-pr.test.sh' \
+    '  (( rc == 0 )) || { echo "no-base"; return 0; }' \
+    '  rc=0'
+
+  # Dropped, `_replies_text` runs past the next heading into `## Review`, where every finding
+  # block names its own id -- so EVERY carried finding reads `reply:named` and the column stops
+  # distinguishing anything.
+  mutate 'pr/carried-replies-bounded' 'scripts/multi-review-pr.sh' replace \
+    'reply column read the review channel' 'multi-review-pr.test.sh' \
+    '    grab && /^## / { grab = 0 }' \
+    '    grab && /^## never-matches/ { grab = 0 }'
+
+  # Dropped, the ns-id match has no boundary and ns-ids are a PREFIX FAMILY: a reply naming
+  # `<p>-rd1-r10` marks `<p>-rd1-r1` answered too, so a finding the author never addressed is
+  # reported as addressed. The same class as pr-watch's `\bpublic-api\b` inside `public-api-docs`.
+  mutate 'pr/carried-id-boundary' 'scripts/multi-review-pr.sh' replace \
+    'id match has no boundary' 'multi-review-pr.test.sh' \
+    '        if (bare((p == 1) ? " " : substr(s, p - 1, 1)) && bare(substr(s, p + n, 1))) {' \
+    '        if (1) {'
+
+  # Dropped, the current head falls back to the WORKTREE again: a checkout at an earlier round,
+  # or a round with no head record, prints `untouched:` for a file the branch rewrote -- the one
+  # token that licenses "not re-checked at this head", from a comparison against the wrong commit.
+  mutate 'pr/carried-head-from-record' 'scripts/multi-review-pr.sh' replace \
+    'fell back to the worktree HEAD' 'multi-review-pr.test.sh' \
+    '  cur="$(cmd_head_record "$scratch" "$round" 2>/dev/null || true)"' \
+    '  cur="$(git rev-parse HEAD 2>/dev/null || true)"'
+
+  # Dropped, a round that is NOT later than the finding's own is compared anyway: base and cur are
+  # the same commit, `git diff B..B` is empty, and `untouched:` is issued by a comparison that
+  # could not have found anything (fable-rd2-r1) -- the one token licensing the label.
+  mutate 'pr/carried-round-is-later' 'scripts/multi-review-pr.sh' replace \
+    'compared a finding against its own round' 'multi-review-pr.test.sh' \
+    '  (( rd < round )) || { echo "no-base"; return 0; }' \
+    '  true'
+
+  # Dropped, the round comes from the caller again rather than the document, so a mistyped or
+  # stale argument silently decides which commit the comparison is made against.
+  mutate 'pr/carried-round-from-marker' 'scripts/multi-review-pr.sh' replace \
+    'still accepts a round argument' 'multi-review-pr.test.sh' \
+    '  [[ $# -le 1 ]] || die "carried takes only <scratch>: the round is read from the document marker" 2' \
+    '  true'
+
   # --- the head trace (pr-watch#17, round 2) -------------------------------------------------
   # Dropped, an anchored file that no longer exists at head traces cited-present, and the primary
   # is told the code it cited is still there -- the exact false reassurance the refreshed diff

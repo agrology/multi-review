@@ -2146,6 +2146,178 @@ grep -q 'reply B shares the second' "$I3" \
   && ok "replies: the quiet third round left the previous section in place" \
   || bad "replies: the third round replaced a section it had nothing new for"
 
+# --- carried: the step-4 worklist, RE-CHECKED (issue #148, part 3) ----------------------
+# `resolve-candidates` traces whether the cited code still EXISTS. Two questions it cannot
+# answer live outside the document's grammar: did the author answer this finding (part 1 puts
+# replies outside the review channel on purpose), and has the cited file changed since the round
+# that raised it. Without the second, every carried finding is published under "not re-checked at
+# this head" -- which is what public-api#24 did to a finding the author had rebutted four times.
+CR="${WORK}/carried"; mkdir -p "$CR"
+(
+  cd "$CR" || exit 1
+  git init -q . && git config user.email t@t && git config user.name t
+  mkdir -p src
+  printf 'def parse_params():\n    return 1\n' > src/a.py
+  printf 'other\n' > src/b.py
+  git add -A && git commit -qm base
+  git rev-parse HEAD > base.sha
+  printf 'other2\n' > src/b.py
+  git add -A && git commit -qm untouched-a
+  git rev-parse HEAD > mid.sha
+  printf 'def parse_params():\n    return 2\n' > src/a.py
+  git add -A && git commit -qm touched-a
+  git rev-parse HEAD > tip.sha
+) >/dev/null 2>&1
+BASE_SHA="$(cat "${CR}/base.sha")"; MID_SHA="$(cat "${CR}/mid.sha")"; TIP_SHA="$(cat "${CR}/tip.sha")"
+
+# `carried` reads the round from the document marker rather than an argument, so the fixtures
+# carry one and this helper moves it. awk + mv, not `sed -i`, which is not portable.
+set_round() { # <doc> <n>
+  awk -v n="$2" '/^<!-- multi-review: / { sub(/round [0-9]+\//, "round " n "/") } { print }' \
+    "$1" > "$1.round.tmp" && mv "$1.round.tmp" "$1"
+}
+CSC="${CR}/pr-24.md"
+{ printf '# PR review: t\n'
+  printf '<!-- multi-review: awaiting-primary \u00b7 round 2/5 -->\n'
+  printf '<!-- multi-review-mode: star \u00b7 reviewers: fable -->\n\n'
+  printf -- '- **PR:** https://github.com/agrology/public-api/pull/24\n'
+  printf -- '- **Author:** kevin\n- **Branch:** b\n\n'
+  printf '## PR description\nhi\n\n## Diff\n```diff\n+x\n```\n\n## Review\n\n'
+  printf '> [finding:fable-rd1-r1|high] `parse_params` returns an unvalidated count\n'
+  printf '> — via claude-fable-5\n> — risk: r\n> — evidence: e\n> — at src/a.py:1\n'
+  printf '> [agree:fable-rd1-r1] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd1-r2|low] no anchor on this one\n'
+  printf '> — via claude-fable-5\n> — risk: r\n'
+  printf '> [agree:fable-rd1-r2] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd2-r1|med] this round, not carried\n'
+  printf '> — via claude-fable-5\n> — risk: r\n'; } > "$CSC"
+bash "$SUT" record-head "$CSC" 1 "$BASE_SHA" "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$CSC" 2 "$MID_SHA"  "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$CSC" 3 "$TIP_SHA"  "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$CSC" 4 "$(printf '%040d' 9)" "$BASE_SHA" 2>/dev/null
+
+carried_row() { # <round> <ns-id> -> that finding's row with the marker set to <round>
+  set_round "$CSC" "$1"
+  ( cd "$CR" && bash "$SUT" carried "$CSC" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'
+}
+set_round "$CSC" 2
+out="$( cd "$CR" && bash "$SUT" carried "$CSC" 2>/dev/null )"; rc=$?
+(( rc == 0 )) || bad "carried: exited $rc (it REPORTS, it must never block)"
+[[ "$(awk -F'\t' 'END{print NF}' <<<"$out")" == 7 ]] \
+  && ok "carried: seven columns — resolve-candidates' four plus touched, reply, concern" \
+  || bad "carried: wrong column count — got '$out'"
+grep -q 'fable-rd2-r1' <<<"$out" \
+  && bad "carried: listed THIS round's finding, which the author has not seen" \
+  || ok "carried: this round's findings stay off the worklist"
+
+# The file the finding cites is untouched between round 1's head and round 2's: the one case
+# where "not re-checked at this head" is an honest thing to publish.
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f5)" == "untouched:src/a.py" ]] \
+  && ok "carried: an unchanged cited file reads untouched" \
+  || bad "carried: untouched file misreported — got '$(carried_row 2 fable-rd1-r1 | cut -f5)'"
+# Round 3's head rewrote it, so the primary owes a re-check rather than a re-publication.
+[[ "$(carried_row 3 fable-rd1-r1 | cut -f5)" == "touched:src/a.py" ]] \
+  && ok "carried: a cited file rewritten since the finding's round reads touched" \
+  || bad "carried: a rewritten file was not reported — got '$(carried_row 3 fable-rd1-r1 | cut -f5)'"
+# THE GUARD. `git diff` against a sha this clone does not have prints NOTHING on stdout, which is
+# byte-identical to "the file did not change" -- and that reading licenses the very label this
+# exists to take away. Round 4's record names a sha that is not in the repo.
+[[ "$(carried_row 4 fable-rd1-r1 | cut -f5)" == "no-base" ]] \
+  && ok "carried: an unresolvable head says no-base instead of claiming untouched" \
+  || bad "carried: an unknown sha read as untouched — got '$(carried_row 4 fable-rd1-r1 | cut -f5)'"
+[[ "$(carried_row 2 fable-rd1-r2 | cut -f5)" == "no-anchor" ]] \
+  && ok "carried: a finding with no anchor says so rather than guessing a file" \
+  || bad "carried: unanchored finding misreported — got '$(carried_row 2 fable-rd1-r2 | cut -f5)'"
+# Outside a checkout there is nothing to compare, and that must not be fatal either.
+set_round "$CSC" 2
+[[ "$( cd "$WORK" && bash "$SUT" carried "$CSC" 2>/dev/null | awk -F'\t' '$1=="fable-rd1-r1"{print $5}' )" == "no-repo" ]] \
+  && ok "carried: outside a checkout the comparison degrades to no-repo" \
+  || bad "carried: no-repo not reported outside a checkout"
+
+# Replies. No section yet, so no reply can name anything.
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f6)" == "no-replies" ]] \
+  && ok "carried: with no ingested replies the column says no-replies" \
+  || bad "carried: reply column wrong with no section — got '$(carried_row 2 fable-rd1-r1 | cut -f6)'"
+cat > "${CR}/replies.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+fable-rd1-r1 is by design — plan Task 5 adds the $refs before anything is published.
+RP
+bash "$SUT" replace-replies "$CSC" "${CR}/replies.txt" 2 >/dev/null 2>&1 \
+  || bad "carried: could not splice the replies fixture"
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f6)" == "reply:named" ]] \
+  && ok "carried: a reply naming the finding is reported, so it cannot be carried silently" \
+  || bad "carried: a named reply was missed — got '$(carried_row 2 fable-rd1-r1 | cut -f6)'"
+# THE SECOND GUARD. `_replies_text` is bounded by the next `## ` heading. Unbounded it would run
+# into `## Review`, where every finding block names its own id, and EVERY finding would read
+# reply:named -- the signal would be constant and mean nothing.
+[[ "$(carried_row 2 fable-rd1-r2 | cut -f6)" == "reply:unnamed" ]] \
+  && ok "carried: the replies section stops at the next heading, so the review channel is not read as a reply" \
+  || bad "carried: reply column read the review channel — got '$(carried_row 2 fable-rd1-r2 | cut -f6)'"
+# The trace column is resolve-candidates' own and must come through untouched.
+[[ "$(carried_row 2 fable-rd1-r1 | cut -f4)" == cited-* ]] \
+  && ok "carried: the #147 head trace is passed through unchanged" \
+  || bad "carried: trace column lost — got '$(carried_row 2 fable-rd1-r1 | cut -f4)'"
+
+# --- #150's own review: the id match needs a boundary, the head must come from the record ---
+
+C2="${CR}/pr-150.md"
+{ printf '# PR review: t\n'
+  printf '<!-- multi-review: awaiting-primary \u00b7 round 2/5 -->\n'
+  printf '<!-- multi-review-mode: star \u00b7 reviewers: fable -->\n\n'
+  printf -- '- **PR:** https://github.com/agrology/multi-review/pull/150\n'
+  printf -- '- **Author:** kevin\n- **Branch:** b\n\n'
+  printf '## PR description\nhi\n\n## Diff\n```diff\n+x\n```\n\n## Review\n\n'
+  printf '> [finding:fable-rd1-r1|high] `parse_params` is unvalidated\n'
+  printf '> — via claude-fable-5\n> — risk: r\n> — evidence: e\n> — at src/a.py:1\n'
+  printf '> [agree:fable-rd1-r1] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd1-r10|med] the tenth finding of the round\n'
+  printf '> — via claude-fable-5\n> — risk: r\n> — evidence: e\n> — at src/a.py:1\n'
+  printf '> [agree:fable-rd1-r10] confirmed\n> — via claude-opus-5\n'
+  printf '> [finding:fable-rd2-r1|low] this round\n'
+  printf '> — via claude-fable-5\n> — risk: r\n'; } > "$C2"
+bash "$SUT" record-head "$C2" 1 "$BASE_SHA" "$BASE_SHA" 2>/dev/null
+bash "$SUT" record-head "$C2" 2 "$MID_SHA"  "$BASE_SHA" 2>/dev/null
+cat > "${CR}/r10-only.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+about fable-rd1-r10 only — the other one I have not answered
+RP
+bash "$SUT" replace-replies "$C2" "${CR}/r10-only.txt" 2 >/dev/null 2>&1 \
+  || bad "setup: could not splice the r10 reply"
+row2() { set_round "$C2" "$1"; ( cd "$CR" && bash "$SUT" carried "$C2" 2>/dev/null ) | awk -F'\t' -v id="$2" '$1 == id'; }
+
+# fable-rd1-r1 (#150): ns-ids are a PREFIX FAMILY — r1 is a prefix of r10 — so a bare substring
+# match reported a finding the author never answered as answered. Same class as pr-watch's
+# `\bpublic-api\b` matching inside `public-api-docs`.
+[[ "$(row2 2 fable-rd1-r1 | cut -f6)" == "reply:unnamed" ]] \
+  && ok "carried: a reply naming r10 does not mark r1 answered (ns-ids are a prefix family)" \
+  || bad "carried: the id match has no boundary — r1 read '$(row2 2 fable-rd1-r1 | cut -f6)'"
+[[ "$(row2 2 fable-rd1-r10 | cut -f6)" == "reply:named" ]] \
+  && ok "carried: the finding the reply actually names is still reported" \
+  || bad "carried: lost the real named reply — got '$(row2 2 fable-rd1-r10 | cut -f6)'"
+
+# fable-rd1-r2 (#150): the current head comes from the RECORD, never the worktree. Round 3 has no
+# head record here, and the worktree is at a commit that rewrote the cited file, so a fallback to
+# HEAD would answer the comparison with the wrong commit. `untouched:` is the one token that
+# licenses the "not re-checked at this head" label, so a wrong answer here is a confident label.
+[[ "$(row2 3 fable-rd1-r1 | cut -f5)" == "no-base" ]] \
+  && ok "carried: an unrecorded round says no-base rather than comparing against the worktree" \
+  || bad "carried: fell back to the worktree HEAD — got '$(row2 3 fable-rd1-r1 | cut -f5)'"
+# fable-rd2-r1 (#150): requiring the round moved the hazard one step out rather than closing
+# it -- the PREVIOUS round's number makes base and cur the same commit, `git diff B..B` is empty,
+# and `untouched:` is issued by a comparison that could not have found anything. The round is read
+# from the document marker now, so there is no argument to get wrong.
+[[ "$(row2 1 fable-rd1-r1 | cut -f5)" == "no-base" ]] \
+  && ok "carried: a round that is not later than the finding's own cannot be compared (no B..B)" \
+  || bad "carried: compared a finding against its own round's head — got '$(row2 1 fable-rd1-r1 | cut -f5)'"
+set_round "$C2" 2
+( cd "$CR" && bash "$SUT" carried "$C2" 2 >/dev/null 2>&1 ) \
+  && bad "carried: still accepts a round argument, which can disagree with the document" \
+  || ok "carried: a stale call site passing a round fails loudly"
+NOMARK="${CR}/no-marker.md"; grep -v '^<!-- multi-review: ' "$C2" > "$NOMARK"
+( cd "$CR" && bash "$SUT" carried "$NOMARK" >/dev/null 2>&1 ) \
+  && bad "carried: ran on a document with no round marker" \
+  || ok "carried: a document with no round marker fails loudly rather than guessing"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

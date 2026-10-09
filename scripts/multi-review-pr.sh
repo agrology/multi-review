@@ -20,6 +20,9 @@
 #   select-replies <owner> <repo> <n> [<since>] [<seen-ids-json>] -> {total, shown} as JSON
 #   replies-ids <scratch> [<csv>]    -> read (exit 3 if unset) or write the ingested reply ids
 #   fetch-replies <owner> <repo> <n> [<since>] -> non-bot PR comments, newest-last, bounded
+#   carried <scratch>                -> the step-4 worklist, RE-CHECKED: resolve-candidates' rows
+#                                    plus whether the anchored file changed since the finding's
+#                                    round and whether an author reply names it
 #   diff-span <scratch>              -> "<body-start> <body-end>" of the VERIFIED diff window; exit 3 if unverifiable
 set -uo pipefail
 
@@ -1079,6 +1082,175 @@ cmd_replies_ids() { # <scratch> [<csv>]
   mv "$tmp" "$rec" || { rm -f "$tmp"; die "cannot update the records sidecar: $rec" 1; }
 }
 
+# ---- Carried findings: RE-CHECKED, not just re-published (issue #148, part 3) -------------
+# `multi-review-star.sh resolve-candidates` already lists what the primary owes a decision on and
+# traces whether the code each finding CITES is still in the tree (#147). Two things it cannot
+# see, because both live outside the protocol document's own grammar:
+#
+#   - whether the author ANSWERED the finding. Part 1 ingests replies into `## Author replies`,
+#     which sits deliberately OUTSIDE the review channel, so no star reader looks at it. On
+#     public-api#24 a finding the author rebutted four times -- three of them in this protocol's
+#     own grammar -- was re-published as standing in four consecutive rounds.
+#   - whether the cited FILE has changed since the round that raised the finding. Existence is the
+#     weaker question: a file still present and untouched since the author first saw the finding
+#     is the one case where "not re-checked at this head" is an honest label. One rewritten since
+#     is a re-check the primary owes, and `cited-present` says nothing either way about it.
+#
+# This lives in pr.sh rather than star.sh because both answers need things only the PR layer owns:
+# the replies section it splices, and the per-round head records in its own `.records` sidecar.
+# star.sh stays a reader of the document alone.
+#
+# REPORTS, NEVER BLOCKS, like the worklist it wraps. Every unanswerable column degrades to a token
+# that says so, and the exit status is 0 with an empty list and 0 with a full one.
+
+# _replies_text <scratch> -> the ingested replies section, empty when there is none.
+#
+# Bounded by the next `## ` heading, which matters: the section is spliced ABOVE `## Review`, and
+# `review_section` emits everything from the last `## Review` to EOF. Without the bound this would
+# read the review channel itself and report `reply:named` for every finding, since a finding block
+# names its own id. An author who plants a `## ` line of their own TRUNCATES their own section --
+# the finding then reads `reply:unnamed` and keeps standing, which is the safe direction.
+_replies_text() { # <scratch>
+  awk '
+    /^## Author replies/ { grab = 1; next }
+    grab && /^## / { grab = 0 }
+    grab { print }
+  ' "$1" 2>/dev/null
+}
+
+# _names_id <text> <ns-id> -> 0 when the text names that id as a WHOLE token.
+#
+# Literal AND boundary-checked (fable-rd1-r1). `grep -F` was literal, which keeps a
+# metacharacter in an id from becoming a pattern, but it says nothing about boundaries -- and
+# ns-ids are a prefix family: any round where one provider raises ten findings makes
+# `<p>-rd1-r1` a prefix of `<p>-rd1-r10`, so a reply naming r10 reported r1 as answered too.
+# Reproduced through `carried` itself before this existed. The same class as pr-watch's
+# `\bpublic-api\b` matching inside `public-api-docs`.
+#
+# The neighbours are judged against the ns-id charset itself, so the test cannot drift from what
+# an id may contain the way a `\b` or a hand-written separator list does.
+_names_id() { # <text> <ns-id>
+  awk -v id="$2" '
+    function bare(c) { return c !~ /[A-Za-z0-9_-]/ }
+    {
+      s = $0; n = length(id); p = index(s, id)
+      while (p > 0) {
+        if (bare((p == 1) ? " " : substr(s, p - 1, 1)) && bare(substr(s, p + n, 1))) {
+          found = 1; exit
+        }
+        s = substr(s, p + 1); p = index(s, id)
+      }
+    }
+    END { exit !found }
+  ' <<< "$1"
+}
+
+# _reply_token <replies-text> <ns-id> -> no-replies | reply:named | reply:unnamed
+_reply_token() {
+  local text="$1" id="$2"
+  [[ -n "$text" ]] || { echo "no-replies"; return 0; }
+  if _names_id "$text" "$id"; then echo "reply:named"; else echo "reply:unnamed"; fi
+}
+
+# _anchor_path <scratch> <ns-id> -> the path this finding's `> — at` anchor names, else empty.
+# Block-scoped to the review channel on the same terms as `record-anchors`: the PR description is
+# untrusted text and must not be able to name a path on a finding's behalf.
+_anchor_path() {
+  awk -v id="$2" '
+    { a[NR] = $0 } /^## Review[[:space:]]*$/ { last = NR }
+    END {
+      for (i = last + 1; i <= NR; i++) {
+        if (index(a[i], "> [finding:" id "|") == 1 || index(a[i], "> [finding:" id "]") == 1) { g = 1; continue }
+        if (!g) continue
+        if (a[i] ~ /^> — at /) {
+          p = a[i]
+          sub(/^> — at[ \t]*/, "", p)
+          sub(/:[0-9]+(-[0-9]+)?[ \t]*$/, "", p)
+          print p; exit
+        }
+        if (a[i] ~ /^> — /) continue
+        g = 0
+      }
+    }' "$1" 2>/dev/null
+}
+
+# _touched_token <scratch> <ns-id> <finding-round> <current-head>
+#   touched:<path>    the anchored file changed between the round that raised it and this head
+#   untouched:<path>  it did not -- the only case where "not re-checked" is honest
+#   no-anchor         the finding anchors no file, so there is nothing to compare
+#   no-repo / no-base not run in a checkout, or the two heads cannot both be resolved here
+#
+# `no-base` rather than a silent `untouched` is the whole point of the status checks below. A
+# recorded sha can be absent from this clone (a force-push, a shallow fetch, a pruned branch), and
+# `git diff` on an unknown revision prints nothing on stdout -- which is byte-identical to "this
+# file did not change". That reading would licence exactly the "not re-checked" label this part of
+# #148 exists to take away.
+_touched_token() {
+  local scratch="$1" id="$2" rd="$3" cur="$4" round="$5" path base root out rc
+  # The compared round must be strictly LATER than the round that raised the finding, or the two
+  # sides are the same commit and `git diff B..B` is empty -- `untouched:` from a comparison that
+  # could not have found anything (fable-rd2-r1). `resolve-candidates` derives "carried" from the
+  # ids while this reads the marker, so the two can disagree on a hand-edited document; when they
+  # do, say so rather than answer.
+  (( rd < round )) || { echo "no-base"; return 0; }
+  path="$(_anchor_path "$scratch" "$id")"
+  [[ -n "$path" ]] || { echo "no-anchor"; return 0; }
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+  [[ -n "$root" ]] || { echo "no-repo"; return 0; }
+  base="$(cmd_head_record "$scratch" "$rd" 2>/dev/null | cut -d'|' -f1)" || base=""
+  [[ -n "$base" && -n "$cur" ]] || { echo "no-base"; return 0; }
+  # Capture the STATUS, do not test the output: an unresolvable revision makes `git diff` fail
+  # (128) while printing nothing on stdout, and empty output is what "the file did not change"
+  # also looks like.
+  out="$(git -C "$root" diff --name-only "${base}..${cur}" -- "$path" 2>/dev/null)"; rc=$?
+  (( rc == 0 )) || { echo "no-base"; return 0; }
+  if [[ -n "$out" ]]; then printf 'touched:%s\n' "$path"; else printf 'untouched:%s\n' "$path"; fi
+}
+
+# _doc_round <scratch> -> the round the document itself says it is in, else empty.
+# Read from the marker, the way `cmd_resolved` reads it, rather than taken as an argument.
+_doc_round() {
+  sed -n -E 's/^<!-- multi-review:[^>]*round ([0-9]+)\/[0-9]+ -->$/\1/p' "$1" 2>/dev/null | head -1
+}
+
+# cmd_carried <scratch> -> the step-4 worklist, re-checked:
+#   "ns-id\tround\tsev\ttrace\ttouched\treply\tconcern"
+# The first four columns are `resolve-candidates`' own, unchanged. `concern` stays LAST: it is
+# free text.
+#
+# NEITHER side of the comparison is supplied by the caller or the worktree. It first fell back to
+# `git rev-parse HEAD` (fable-rd1-r2), so a checkout left at an earlier round printed `untouched:`
+# for a file the branch had rewritten; requiring the round as an argument then moved the same
+# hazard one step out (fable-rd2-r1), because the PREVIOUS round's number makes base and cur the
+# same commit and `git diff B..B` is empty -- `untouched:` again, from a comparison that could not
+# have found anything, and `untouched:` is the one token licensing the "not re-checked at this
+# head" label. So the round comes from the document's own marker, which is the same source the
+# round every other step works in comes from, and cannot be mistyped. An unrecorded round still
+# degrades to `no-base`.
+cmd_carried() {
+  local scratch="${1:?scratch}" dir rows replies round cur id rd sev trace concern
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  # A stale call site that still passes the round must fail loudly rather than be ignored.
+  [[ $# -le 1 ]] || die "carried takes only <scratch>: the round is read from the document marker" 2
+  round="$(_doc_round "$scratch")"
+  [[ -n "$round" ]] || die "no multi-review round marker in: $scratch" 1
+  dir="$(cd "$(dirname "$0")" && pwd)"
+  # A contract violation in the document is star.sh's to report, and it is fatal there; propagate
+  # rather than printing a worklist that silently omits findings.
+  rows="$("${dir}/multi-review-star.sh" resolve-candidates "$scratch")" \
+    || die "cannot build the carried worklist: resolve-candidates failed on $scratch" 1
+  [[ -n "$rows" ]] || return 0
+  replies="$(_replies_text "$scratch")"
+  cur="$(cmd_head_record "$scratch" "$round" 2>/dev/null || true)"
+  cur="${cur%%|*}"
+  while IFS=$'\t' read -r id rd sev trace concern; do
+    [[ -n "$id" ]] || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$rd" "$sev" "$trace" \
+      "$(_touched_token "$scratch" "$id" "$rd" "$cur" "$round")" \
+      "$(_reply_token "$replies" "$id")" "$concern"
+  done <<< "$rows"
+}
+
 # ---- Phase B: anchor survival across a refresh -------------------------------------------
 # `refresh` replaces ## Diff under findings that were anchored against the OLD one, so their
 # RIGHT-side line numbers stop meaning anything. Left alone, a stale number either lands on no
@@ -1248,6 +1420,7 @@ main() {
     replies-ids)     cmd_replies_ids "$@" ;;
     select-replies)  _select_replies "$@" ;;
     fetch-replies)   _fetch_replies "$@" ;;
+    carried)         cmd_carried "$@" ;;
     fence)        cmd_fence "$@" ;;
     seed)         cmd_seed "$@" ;;
     ingest)       cmd_ingest "$@" ;;
