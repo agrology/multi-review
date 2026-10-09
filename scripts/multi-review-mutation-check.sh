@@ -616,8 +616,8 @@ mutations() {
   # finding into its own copy; recovered from the companion thread afterwards.
   mutate 'pr/carried-replies-fenced' 'scripts/multi-review-pr.sh' replace \
     'heading inside a reply truncated the section' 'multi-review-pr.test.sh' \
-    '      else if (run($0) >= flen) { fence = 0 }' \
-    '      else { fence = 0; grab = 0 }'
+    '    grab && run($0) {' \
+    '    grab && 0 {'
 
   # Dropped, a FAILED comment endpoint reads as an empty one again: the fetch returns a partial
   # result built from the surviving channel, splices it, and advances the watermark past replies
