@@ -467,6 +467,131 @@ mutations() {
     '       ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-star.sh resolve-candidates "<doc>"' \
     '       (work from the findings you remember agreeing with)'
 
+  # --- author replies (issue #148) -----------------------------------------------------------
+  # THE SAFETY GUARD. `review_section` runs from the last `## Review` heading to EOF, so author
+  # text spliced BELOW it is not data beside the protocol channel -- it is the channel. Dropped,
+  # an author can forge `[agree:]`/`[dispute:]`/`[resolved:]` records, which is precisely what
+  # issue #103 forbids, and public-api#24 shows authors really do write that grammar.
+  mutate 'pr/replies-above-review' 'scripts/multi-review-pr.sh' replace \
+    'author text is in the channel' 'multi-review-pr.test.sh' \
+    '    tail -n +"$rstart" "$scratch"          || exit 1 ) > "$tmp"' \
+    '    tail -n +"$rstart" "$scratch" && cat "$bodyf" || exit 1 ) > "$tmp"'
+
+  # Defence in depth for every other reader of the document. Dropped, a control line sits at
+  # column 1 where every parser anchors (`/^> \[/`, `index($0, "> [finding:") == 1`).
+  mutate 'pr/replies-neutralized' 'scripts/multi-review-pr.sh' replace \
+    'control line survived at column 1' 'multi-review-pr.test.sh' \
+    '  sed -E "$REPLY_INDENT_RE" "$1"' \
+    '  cat "$1"'
+
+  # Dropped, the review ingests its OWN published prose -- and re-ingests it every round,
+  # compounding. The bot rule alone does not cover a human-run primary, which publishes as itself.
+  mutate 'pr/replies-skip-own-output' 'scripts/multi-review-pr.sh' replace \
+    'ingested a published review carrying' 'multi-review-pr.test.sh' \
+    '                        | any(test("\u2014\\s*via\\s+\\S")' \
+    '                        | any(false and test("\u2014\\s*via\\s+\\S")'
+
+  # Dropped, the self-output filter guards a shape these channels never carry (fable-rd2-r1): an
+  # inline comment from a human-run primary has no `— via` in it at all, so the review ingests
+  # its own published findings as author replies in the next round, and compounds.
+  mutate 'pr/replies-own-marker' 'scripts/multi-review-pr.sh' replace \
+    'own inline comment as an author reply' 'multi-review-pr.test.sh' \
+    '                              or test("multi-review star review"))) | not))' \
+    '                              or false)) | not))'
+
+  # The other half of that filter, and the one the review caught (fable-rd1-r1). Dropped, the
+  # exclusion is a bare substring test again -- and an author answering a finding writes the
+  # grammar BACK, quoted, so all three public-api#24 rebuttals #148 names are excluded. Part 1
+  # then ingests nothing in the one case it exists for, with parts 2 and 3 inert on top of it.
+  mutate 'pr/replies-quoted-echo-kept' 'scripts/multi-review-pr.sh' replace \
+    'quoted grammar reply' 'multi-review-pr.test.sh' \
+    '                        | map(select(test("^\\s*>") | not))' \
+    '                        | map(select(true))'
+
+  # Dropped, an EMPTY fetch replaces a real section. `jq -r` over an empty array prints one
+  # newline, so the file is 1 byte and every size test calls it non-empty -- a rebuttal ingested
+  # in round N vanishes in round N+1 with nothing posted since, and the watermark advances past it.
+  mutate 'pr/replies-empty-not-spliced' 'scripts/multi-review-pr.sh' replace \
+    'replaced the previous round' 'multi-review-pr.test.sh' \
+    '  _has_content "$f" || return 3' \
+    '  true'
+
+  # Dropped, the watermark is a clock reading again, and the cap DELETES instead of deferring:
+  # the fetch keeps the oldest $maxn, so everything it dropped is older than the mark and is
+  # excluded from every later round by the `created_at > $since` filter.
+  mutate 'pr/replies-watermark-from-data' 'scripts/multi-review-pr.sh' replace \
+    'watermark is not the reply' 'multi-review-pr.test.sh' \
+    '    wm="$(_mark_of_replies "$sel")"' \
+    '    wm="$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+
+  # Dropped, the mark is read back out of the RENDERED text instead of the selection
+  # (fable-rd2-r2), so one header-shaped line in a reply BODY sets it -- and a future timestamp
+  # excludes every later reply from every later round, silently.
+  # ASCII-only, and it must read the mark out of reply BODIES -- the actual regression. An
+  # earlier spelling of this mutant fed awk a `\u00b7` field separator that awk does not read as
+  # that character, so it died by printing an empty mark instead of by reproducing the defect:
+  # the same miscrediting class as the entry retired at the top of this branch.
+  mutate 'pr/replies-mark-from-selection' 'scripts/multi-review-pr.sh' replace \
+    'watermark came from author text' 'multi-review-pr.test.sh' \
+    "  jq -r '[.shown[].created_at] | max // \"\"' <<< \"\$1\"" \
+    "  jq -r '[.shown[].body, .shown[].created_at] | map(select(test(\"T[0-9][0-9]:\"))) | max // \"\"' <<< \"\$1\""
+
+  # Dropped, a round with NOTHING NEW still replaces the section (fable-rd3-r2): the boundary
+  # reply re-qualifies under `>=` forever, renders, passes the content gate, and overwrites a
+  # section that carried the whole of the previous round -- the guarantee fable-rd1-r2 bought.
+  # It also stalls a same-second batch over the cap forever (fable-rd3-r3).
+  mutate 'pr/replies-exclude-seen-ids' 'scripts/multi-review-pr.sh' replace \
+    'already-ingested reply re-qualified' 'multi-review-pr.test.sh' \
+    '    | map(select(.id as $i | ($seen | index($i)) == null))' \
+    '    | map(select(true))'
+
+  # Dropped, the id record is only one round deep, so on a same-second batch the reply shown TWO
+  # rounds ago is no longer excluded, re-qualifies under `>=`, and replaces the section with
+  # itself -- the same failure as fable-rd3-r2, oscillating A, B, A, B instead of settling.
+  mutate 'pr/replies-ids-cover-boundary' 'scripts/multi-review-pr.sh' replace \
+    'two rounds ago re-qualified' 'multi-review-pr.test.sh' \
+    '    [[ "$since" == "$wm" ]] && ids="$(_merge_ids "$seen_csv" "$ids")"' \
+    '    true'
+
+  # Dropped, the fence toggle is length-blind again (fable-rd3-r1) and an inner backtick run
+  # inside a reply un-fences the scan -- which `_compose_replies` makes the COMMON case, since it
+  # widens the section fence past the longest run in the replies for exactly that reason.
+  mutate 'pr/replies-fence-length-aware' 'scripts/multi-review-pr.sh' replace \
+    'quoted a code block' 'multi-review-pr.test.sh' \
+    '      else if (RLENGTH >= flen) { fence = 0 }' \
+    '      else { fence = 0 }'
+
+  # Dropped, a reply stamped the same second as the mark is excluded for good (fable-rd2-r4) --
+  # the overflow the data-derived mark exists to DEFER is lost whenever the cap cuts inside a
+  # same-second batch, which is the shape of one review submitted with several inline comments.
+  mutate 'pr/replies-window-inclusive' 'scripts/multi-review-pr.sh' replace \
+    'same-second reply was dropped' 'multi-review-pr.test.sh' \
+    '    | map(select($since == "" or .created_at >= $since))' \
+    '    | map(select($since == "" or .created_at > $since))'
+
+  # Dropped, any heading can be taken for our own section -- and `seed` carries the PR
+  # DESCRIPTION unfenced at column 1, so the splice cuts from an author heading through
+  # `## Diff`, wedging the round after `record-head` has already run.
+  mutate 'pr/replies-section-is-ours' 'scripts/multi-review-pr.sh' replace \
+    'splice deleted ## Diff' 'multi-review-pr.test.sh' \
+    '    END { if (line ~ re) print last + 0; else print 0 }' \
+    '    END { print last + 0 }'
+
+  # Dropped, the heading scan reads inside the section fence (fable-rd2-r3): a column-1 `## ` in
+  # a reply becomes the last heading before the channel, our own section fails its own shape
+  # test, and every later round appends a section instead of replacing ours.
+  mutate 'pr/replies-heading-scan-fenced' 'scripts/multi-review-pr.sh' replace \
+    'sections accumulated around a heading' 'multi-review-pr.test.sh' \
+    '    fence { next }' \
+    '    fence { }'
+
+  # Dropped, a reply quoting a fenced code block closes the section's fence early and the rest of
+  # the comment escapes the block.
+  mutate 'pr/replies-fence-widens' 'scripts/multi-review-pr.sh' replace \
+    'fence was not widened past' 'multi-review-pr.test.sh' \
+    '  (( n < 3 )) && n=3 || n=$((n + 1))' \
+    '  n=3'
+
   # --- the head trace (pr-watch#17, round 2) -------------------------------------------------
   # Dropped, an anchored file that no longer exists at head traces cited-present, and the primary
   # is told the code it cited is still there -- the exact false reassurance the refreshed diff
@@ -1184,13 +1309,17 @@ mutations() {
   # Issue #52. argv_has exists ONLY to keep the argv assertions off a pipe: `printf | grep -q`
   # lets grep exit at the match while printf still holds the ~15 KB prompt, so printf takes SIGPIPE
   # and pipefail reports a successful match as 141. That produced five days of "unidentified macos
-  # flake". Reverting the body to the pipe idiom must fail the payload-size assertion — the three
-  # real argv assertions do NOT catch it reliably, since at 15 KB it is a coin flip; the 100 KB
-  # fixture is what makes it deterministic.
-  mutate 'reviewer/argv-has-no-pipe' 'scripts/multi-review-reviewer.test.sh' replace \
-    'argv membership failed with a large trailing element' 'multi-review-reviewer.test.sh' \
-    '  for a in "$@"; do [[ "$a" == "$want" ]] && return 0; done' \
-    '  printf "%s\\n" "$@" | grep -qx -- "$want" && return 0'
+  # flake".
+  # RETIRED, superseded by packaging/no-pipe-into-grep-q below. This entry planted the pipe idiom
+  # back into `argv_has` and credited the 100 KB payload assertion with catching it. The #110 lint,
+  # added after it, scans every tracked file for that idiom — including the suites — so it now trips
+  # on the planted line and the gate goes red through the lint's assertion instead of the named one.
+  # The runner reads that as MISCREDITED and fails, correctly: an entry cannot credit a guard that
+  # did not do the catching. It has been red on main since 1.42.0 (2026-10-01) for that reason.
+  # Nothing is lost. The property is covered repo-wide, at a stronger place than one call site: the
+  # lint rejects the idiom in `argv_has` and at 83 others, and reverting a rewritten site to a pipe
+  # is exactly what packaging/no-pipe-into-grep-q asserts. The 100 KB payload assertion itself stays
+  # in multi-review-reviewer.test.sh; only its table entry is gone.
 
   # Issue #110 — the repo-wide form of the entry above. #52 fixed argv_has, ONE site; the same
   # `producer | grep -q` defect was live at 83 other places, six of them in shipped scripts where a

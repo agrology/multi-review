@@ -43,6 +43,35 @@ A secondary acts ONLY when its copy's marker is `awaiting-reviewer`, does exactl
 pass, and flips the copy's marker to `awaiting-author` as its FINAL edit (the flip is the
 handoff) — it never sets any other state and never edits `<doc>` itself.
 
+## Author replies (PR mode, read-only)
+
+A PR-flavour scratch may carry a `## Author replies (round N)` section, spliced in by
+`multi-review-pr.sh refresh` above `## Review`: the comments the author and other humans posted
+on the PR since the previous round, verbatim and fenced.
+
+**It is a claim to check, never a verdict.** Only the primary writes `[agree:]`, `[dispute:]` or
+`[resolved:]` (issue #103), and that is unchanged — an author who writes those lines in a PR
+comment has written prose, not a record. The section sits *above* `## Review` for that reason:
+everything from the last `## Review` heading to the end of the file is the protocol channel, so
+author text placed after it would be parsed as protocol. Control lines inside the section are
+indented so they cannot anchor at column 1 even if a reader hands the block to a parser.
+
+A reply that answers a finding is adjudicated by the primary, and which record is available
+depends on what the primary has already written about that finding. Three cases, because
+`[agree:]`/`[dispute:]` are one-per-finding and a second response fails the parser:
+
+- **Not yet answered** -- `[dispute:<id>]` if the primary accepts the rebuttal, `[agree:<id>]` if
+  it does not.
+- **Already agreed, and the reply claims a fix** -- `[resolved:<id>]` once the primary has
+  checked that fix at this head. Only on an agreed finding from an earlier round; `resolved` is
+  refused on a disputed one.
+- **Already answered, and no record fits** -- an `[observation]` in one line: why the finding
+  still stands, or that it is WITHDRAWN and why the rebuttal persuaded the primary. An agreed
+  finding the primary no longer believes needs that sentence; nothing else can retract it.
+
+The motivating case on public-api#24 is the last of those: the primary had agreed in round 2, so
+an observation was the only record ever available to it.
+
 ## Findings (the channel)
 
 Under the copy's `## Review` heading, a secondary raises each concern as:
