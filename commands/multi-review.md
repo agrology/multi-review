@@ -630,8 +630,8 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
        step 5's "wrote something and died" path instead: `channel-check` what it wrote, admit the
        turn if the findings are readable, and only otherwise quarantine with `died mid-turn after
        writing`.
-     This is NOT `no turn taken`: that reason is reserved for
-     a reviewer that ran and wrote nothing, and the two mean opposite things to the author reading
+     This is NOT `copy untouched; no provider report found`: that reason is for a copy nothing can
+     account for, and the two mean opposite things to the author reading
      the published review (issue #124: three 529 deaths in one round were recorded as a reviewer
      that declined). For the two-consecutive-rounds stop rule below, a harness error that recurs
      next round is the same reason — stop paying for it the same way.
@@ -706,8 +706,9 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      downstream reads it for you. Do not dispatch that reviewer this round and record
      `--quarantined <id>:could not build reviewer command` for the merge — the same path a step-3
      non-zero exit uses. Left unrecorded, the provider is simply absent: step 5 then waits on a
-     copy nobody launched and returns exit 9, which you would report as `no turn taken` — the
-     reason for a reviewer that declined, not one that was never started.
+     copy nobody launched and returns exit 9, which you would report as `copy untouched; no
+     provider report found` — a reviewer whose silence is unexplained, not one that was never
+     started.
 
    All same-turn subagent dispatches go in the SAME response block as each other.
 
@@ -783,8 +784,8 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
      demonstrably alive and still writing, so do NOT quarantine on the first 8: that throws away a
      turn that is actively being written. **Re-run the same wait, at most 3 more times.** If the
      4th wait still returns 8, quarantine with the reason **`still writing at the retry cap`** —
-     distinct from `no turn taken`, because the two describe opposite states and the gate renders
-     reasons as free text.
+     distinct from `copy untouched; no provider report found`, because the two describe opposite
+     states and the gate renders reasons as free text.
 
      The cap is a number rather than your judgement because this command is **autonomous by
      default**: a primary running with nobody watching has no patience to run out, and a copy that changes on every
@@ -795,11 +796,35 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    - **Exit 9** — the copy is byte-identical to its seed: no turn taken *yet*. Re-run the wait
      **once** as grace before recording anything. A reviewer 82 seconds past the bound is not a
      reviewer that failed (issue #71: a bound-hit copy completed with 11 findings, one `high`).
-     If the second wait also returns 9, quarantine with the reason **`no turn taken`** — the one
-     state that proves the reviewer contributed nothing, as opposed to finishing late. **Only when
-     the dispatch itself succeeded:** a copy that is pristine because the Agent tool died before
-     the reviewer ran is step 4's transient case, reason `dispatch failed: <error class>`, and this
-     wait's exit 9 is merely the expected shape of that — never its reason.
+     If the second wait also returns 9, **ASK THE PROVIDER BEFORE RECORDING ANYTHING** (issue
+     #151). A pristine copy has two causes that look identical from here: a reviewer that never
+     took a turn, and one that reviewed and could not WRITE the copy. For `codex`:
+
+         ${CLAUDE_PLUGIN_ROOT}/scripts/multi-review-reviewer.sh codex-report "<doc>.<id>"
+
+     - **Exit 0** → it reviewed. The output is that reviewer's own findings, recovered from the
+       companion's thread. **Deliver them verbatim** into `<doc>.<id>` under its `## Review`
+       heading — you are a courier here, so copy the text and change nothing, not the ids, not the
+       `> — via` disclosure, not the wording. Then verify the copy as usual (step 6) and merge it;
+       it is a real turn by that provider, which `verify-vendor` confirms from the disclosure. Say
+       at the gate that the findings were recovered rather than written by the reviewer, and that
+       the provider cannot write its copy on this machine.
+     - **Exit 3** → no report. Quarantine with **`copy untouched; no provider report found`** —
+       which is all the protocol knows. The older reason, `no turn taken`, asserted that the
+       reviewer contributed nothing, and on seven consecutive rounds across three PRs that was
+       false: codex had reviewed every time and one of its findings was found by nobody else. A
+       gate summary that says a provider declined, when it reviewed and was silenced, is worse
+       than one that says the protocol could not tell.
+
+     **Only when the dispatch itself succeeded:** a copy that is pristine because the Agent tool
+     died before the reviewer ran is step 4's transient case, reason `dispatch failed: <error
+     class>`, and this wait's exit 9 is merely the expected shape of that — never its reason.
+
+     **A silent arm-time `check` does not prove the reviewer can write the copy.** The basis for
+     that check has now been corrected twice (#60, #66) and was wrong a third time: the codex
+     companion holds its own session root, independent of the cwd a dispatched subagent inherits,
+     so no cwd-derived value predicts what it will accept. Treat the check's silence as "nothing
+     known against it", and this recovery as the thing that catches the rest.
    - **Exit 10** — a terminal state preempted the wait. Stop and surface it; this is not a
      quarantine.
    - **Exit 2** — a usage error on your side (bad path, missing seed). Fix the invocation.
@@ -833,8 +858,9 @@ re-resolve later (a mutable env var could otherwise swap providers mid-review un
    time is the ordinary "alive and still writing" case — keep waiting, and count the RETRIES
    against the bound, not the calls.
 
-   Use the two reasons **verbatim** when you do quarantine here — `no turn taken` for exit 9, and
-   the wait's own message for anything else. `gate-summary` renders quarantine reasons as free
+   Use the two reasons **verbatim** when you do quarantine here — `copy untouched; no provider
+   report found` for exit 9 (after `codex-report` came back empty), and the wait's own message for
+   anything else. `gate-summary` renders quarantine reasons as free
    text, so two different failures worded two different ways read alike to whoever reads the gate.
 
    A hung secondary must never stall the others or the round: these waits are per-copy and a

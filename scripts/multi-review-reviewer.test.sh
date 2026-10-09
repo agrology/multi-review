@@ -1837,6 +1837,67 @@ err="$(bash "$SUT" prompt "$D" --reviewer codex --out 2>&1 >/dev/null)"; rc=$?
   && ok "prompt --out with no value is an error, not a silent default" \
   || bad "prompt --out with no value gave rc=$rc err='$err'"
 
+# --- codex-report: recovering a turn the reviewer took but could not deliver (#151) --------
+# codex reviewed seven consecutive rounds across three PRs and was recorded `no turn taken` in
+# every one, because its sandbox refuses to write the assigned copy. The findings were real and
+# recoverable from the companion's own thread store the whole time.
+CXH="${WORK}/codexhome"; mkdir -p "$CXH" "${WORK}/cxbin"
+: > "${CXH}/thread_history_1.sqlite"            # presence is all the helper needs; sqlite3 is stubbed
+COPY="${WORK}/reviews/pr-999.md.codex"; mkdir -p "$(dirname "$COPY")"; : > "$COPY"
+
+# The item that carries the findings names the file the provider wrote them TO, not the copy it
+# could not write — so the helper must select the THREAD by the copy and then read all of it.
+cat > "${WORK}/cxbin/sqlite3" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"thread_id in (select distinct thread_id"*)
+    printf '%s\n' '[{"item_json":"{\"type\":\"commandExecution\",\"command\":\"cat > /tmp/ignored\",\"aggregatedOutput\":\"> [finding:r1|med] a defect the sandbox would not let me write\\n> — via gpt-6-astra\\n> — risk: it is lost\\n\"}"}]' ;;
+  *) printf '%s\n' '[]' ;;
+esac
+STUB
+chmod +x "${WORK}/cxbin/sqlite3"
+rep="$(PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" 2>/dev/null)"; rc=$?
+(( rc == 0 )) && grep -q 'the sandbox would not let me write' <<<"$rep" \
+  && ok "codex-report: recovers findings the provider could not write into its copy" \
+  || bad "codex-report: did not recover the thread findings (rc=$rc) — got '$rep'"
+
+# A file the provider names is preferred: it is the verbatim block it meant to append.
+# A /tmp path, because the helper deliberately follows ONLY those: a provider that cannot write
+# its copy writes to its sandbox's temp dir, and catting any absolute path named in provider text
+# would be a far wider trust surface than this recovery needs.
+CXF="/tmp/mr-codex-report-test-$$.md"; trap 'rm -f "$CXF"' EXIT
+printf '> [finding:r9|high] the verbatim block\n> \xe2\x80\x94 via gpt-6-astra\n' > "$CXF"
+cat > "${WORK}/cxbin/sqlite3" <<STUB
+#!/bin/sh
+case "\$*" in
+  *"thread_id in (select distinct thread_id"*)
+    printf '%s\n' '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"saved them in ${CXF}\"}"}]' ;;
+  *) printf '%s\n' '[]' ;;
+esac
+STUB
+chmod +x "${WORK}/cxbin/sqlite3"
+rep2="$(PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" 2>/dev/null)"
+grep -q 'the verbatim block' <<<"$rep2" \
+  && ok "codex-report: prefers the findings file the provider names" \
+  || bad "codex-report: ignored the named findings file — got '$rep2'"
+
+# NEVER fatal, and never a false positive: no report, no store, no sqlite3 all exit 3 so the
+# caller stays on its existing path.
+cat > "${WORK}/cxbin/sqlite3" <<'STUB'
+#!/bin/sh
+printf '%s\n' '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"I read the document and have nothing to say about it\"}"}]'
+STUB
+chmod +x "${WORK}/cxbin/sqlite3"
+( PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" >/dev/null 2>&1 ) \
+  && bad "codex-report: reported success on a thread with no protocol lines in it" \
+  || ok "codex-report: a thread with no findings exits 3 rather than inventing a turn"
+( PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="${WORK}/nosuchhome" bash "$SUT" codex-report "$COPY" >/dev/null 2>&1 ) \
+  && bad "codex-report: succeeded with no thread store present" \
+  || ok "codex-report: an absent thread store exits 3, never fatally"
+( PATH="${WORK}/empty-bin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" >/dev/null 2>&1 ) \
+  && bad "codex-report: claimed a report with no sqlite3 available" \
+  || ok "codex-report: no sqlite3 exits 3 (the store belongs to codex, not to this protocol)"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

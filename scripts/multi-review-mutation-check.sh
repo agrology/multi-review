@@ -1367,7 +1367,22 @@ mutations() {
 
   # Dropping the non-empty root guard makes an UNKNOWN root hint on everything — every machine
   # without the codex plugin would print a warning at every arm.
-  mutate 'reviewer/check-doc-unknown-root-silent' 'scripts/multi-review-reviewer.sh' replace \
+    # Dropped, a recovered report is accepted on the strength of any text in the thread: the helper
+  # must find the protocol's own grammar, or it would deliver a provider's prose -- or an empty
+  # turn -- as findings. #151's recovery is only safe because it refuses what it cannot read.
+  mutate 'reviewer/codex-report-needs-grammar' 'scripts/multi-review-reviewer.sh' replace \
+    'reported success on a thread with no protocol lines' 'multi-review-reviewer.test.sh' \
+    "  grep -q '^> \\[finding:\\|^> \\[no-findings\\]' <<<\"\$inline\" || return 3" \
+    '  true'
+
+  # Dropped, the recovery follows ANY absolute path the provider names rather than only its
+  # sandbox temp dir, so a line of provider text decides which file this helper reads out.
+  mutate 'reviewer/codex-report-tmp-only' 'scripts/multi-review-reviewer.sh' replace \
+    'prefers the findings file the provider names' 'multi-review-reviewer.test.sh' \
+    "  done < <(printf '%s\\n' \"\$texts\" | grep -oE '(/private)?/tmp/[A-Za-z0-9._/-]+' | sort -u)" \
+    "  done < <(printf '%s\\n' \"\$texts\" | grep -oE '/[A-Za-z0-9._/-]+' | sort -u)"
+
+mutate 'reviewer/check-doc-unknown-root-silent' 'scripts/multi-review-reviewer.sh' replace \
     "check hinted with no companion installed" 'multi-review-reviewer.test.sh' \
     '        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then' \
     '        if ! path_contains "$cws_c" "$ddir"; then'
@@ -2645,8 +2660,8 @@ mutations() {
     '       a reason of your choosing, naming the retry'"'"'s error class — e.g. `dispatch'
   mutate 'command/exit-9-not-a-failed-dispatch' 'commands/multi-review.md' replace \
     'exit 9 still reports a failed dispatch as no turn taken' 'multi-review-packaging.test.sh' \
-    '     the reviewer ran is step 4'"'"'s transient case, reason `dispatch failed: <error class>`, and this' \
-    '     the reviewer ran is step 4'"'"'s transient case, and this'
+    '     died before the reviewer ran is step 4'"'"'s transient case, reason `dispatch failed: <error' \
+    '     died before the reviewer ran is step 4'"'"'s transient case, and the reason is the same'
   mutate 'command/mid-turn-death-not-redispatched' 'commands/multi-review.md' replace \
     'a mid-turn harness death is re-dispatched onto a written copy' 'multi-review-packaging.test.sh' \
     '     - **Changed** → the reviewer ran and the harness died mid-turn. Do NOT re-dispatch: a second' \
@@ -2669,8 +2684,8 @@ mutations() {
     '     Any other 4xx (`401` auth, `400` malformed) is usually deterministic; use judgement on the paragraph'
   mutate 'protocol/quarantine-reason-vocabulary' 'docs/multi-review.md' replace \
     'quarantine reasons never distinguish a failed dispatch' 'multi-review-packaging.test.sh' \
-    '  ran and wrote nothing; `dispatch failed: <error class>` is a reviewer the harness never reached' \
-    '  ran and wrote nothing; the other is a reviewer the harness never reached'
+    '  `dispatch failed: <error class>` is a reviewer the harness never reached' \
+    '  the other reason is a reviewer the harness never reached'
   # Issue #137: the fable slot falls back to opus. Every rule is primary-instruction prose, so each
   # needs its own entry — losing any one of them leaves the rest reading as a complete rule.
   mutate 'command/fable-fallback-any-class' 'commands/multi-review.md' replace \

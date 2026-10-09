@@ -1190,6 +1190,72 @@ codex_dispatch_agent() { # -> path, or empty + exit 1
   return 1
 }
 
+# ---- Recovering a turn the reviewer took but could not deliver (issue #151) ---------------
+# `codex` reviewed seven consecutive rounds across three PRs and was recorded `no turn taken` in
+# every one. Its sandbox refuses to write the assigned copy -- "the assigned copy is outside this
+# session's writable directories" -- so it wrote its findings to a temp file and reported them in
+# the companion thread, and the copy stayed byte-identical to its seed. Two of the findings were
+# real, one of them found by no other reviewer, and three gate summaries told a human the provider
+# had declined.
+#
+# Nothing cwd-derived can predict this. The check's basis has been corrected twice already (#60,
+# then #66) and was wrong a third time: the companion holds its OWN session root, independent of
+# the cwd a dispatched subagent inherits, so a silent arm-time check does NOT prove the reviewer
+# can write the copy. What IS reliable is that the companion records what it did -- so when a copy
+# comes back pristine, ask it, before recording the one reason that asserts the reviewer
+# contributed nothing.
+#
+# Read-only, best-effort, and never fatal: a missing `sqlite3`, a missing or unreadable database,
+# a layout change in a third-party tool, or simply no report all exit 3 and leave the caller on
+# its existing path. The thread store belongs to codex, not to this protocol.
+
+CODEX_HOME_DEFAULT="${HOME:-}/.codex"
+
+# cmd_codex_report <copy> -> the findings the companion recorded for that copy, else exit 3.
+#
+# Two shapes, because the provider used both: a temp file it names in its report (preferred -- it
+# is the text it meant to append, verbatim), and failing that the `> `-prefixed protocol lines
+# inside the thread items themselves.
+cmd_codex_report() { # <copy>
+  local copy="${1:?copy}" base db rows texts f
+  base="$(basename "$copy")"
+  db="${MULTI_REVIEW_CODEX_HOME:-$CODEX_HOME_DEFAULT}/thread_history_1.sqlite"
+  command -v sqlite3 >/dev/null 2>&1 || return 3
+  [[ -r "$db" ]] || return 3
+  # Find the THREAD by the copy's basename, then read the whole thread -- not just the matching
+  # items. The item that holds the findings names the file the provider wrote them TO
+  # (`pr-150.codex-findings.md`), not the copy it could not write, so an item-level filter misses
+  # exactly the row worth recovering. The basename rather than the path because the thread records
+  # the path as the provider typed it, which may canonicalize differently.
+  # `-json`, not the default line-per-row output: an item carries embedded newlines, so a
+  # row-per-line read splits one record across many and parses none of them. This is how the first
+  # version of this helper found 12 matching rows and reported nothing.
+  rows="$(sqlite3 -readonly -json "$db" \
+    "select item_json from thread_items where thread_id in (select distinct thread_id from thread_items where instr(item_json, '${base//\'/\'\'}') > 0) order by rollout_ordinal desc limit 400;" \
+    2>/dev/null)" || return 3
+  [[ -n "$rows" ]] || return 3
+  # `aggregatedOutput` too: a provider that cannot write the copy tends to print its findings, so
+  # the command's OUTPUT is as likely to carry them as the command itself.
+  texts="$(printf '%s\n' "$rows" \
+    | jq -r '.[] | (.item_json | fromjson? | [.text?, .command?, .aggregatedOutput?] | map(select(. != null)) | join("\n"))' \
+    2>/dev/null)"
+  [[ -n "$texts" ]] || return 3
+  # A file it named, if that file is still there. Preferred: it is the verbatim block it meant to
+  # append. ONLY under /tmp, on purpose -- a provider that cannot write its copy writes to its
+  # sandbox's temp dir, and following any absolute path named in provider text would make this
+  # recovery read arbitrary files on the strength of text the protocol does not trust.
+  while IFS= read -r f; do
+    [[ -n "$f" && -r "$f" ]] || continue
+    if grep -q '^> \[finding:\|^> \[no-findings\]' "$f" 2>/dev/null; then cat "$f"; return 0; fi
+  done < <(printf '%s\n' "$texts" | grep -oE '(/private)?/tmp/[A-Za-z0-9._/-]+' | sort -u)
+  # Otherwise the protocol lines as recorded in the thread.
+  local inline
+  inline="$(printf '%s\n' "$texts" | grep -E '^> ' || true)"
+  [[ -n "$inline" ]] || return 3
+  grep -q '^> \[finding:\|^> \[no-findings\]' <<<"$inline" || return 3
+  printf '%s\n' "$inline"
+}
+
 codex_workspace_root() { # -> path, or empty
   local comp="" g
   for g in "${HOME:-}"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do
@@ -1280,6 +1346,7 @@ shift
 case "$sub" in
   resolve) cmd_resolve "$@" ;;
   check)   cmd_check "$@" ;;
+  codex-report) cmd_codex_report "$@" ;;
   prompt)  cmd_prompt "$@" ;;
   command) cmd_command "$@" ;;
   ensure-skill) cmd_ensure_skill "$@" ;;
