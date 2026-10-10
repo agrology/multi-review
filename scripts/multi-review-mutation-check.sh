@@ -1133,9 +1133,12 @@ mutations() {
     '    elif _id_listed "$rid" "$refuted"; then' \
     '    elif false; then'
 
-  # The id list must come from the REVIEW CHANNEL. Read the whole file and the replies section --
-  # which is author-controlled and quotes ids by nature -- supplies the very list the marker is
-  # checked against, so an author can declare a finding and retire it in the same comment.
+  # The id list must come from the REVIEW CHANNEL. Everything above it is author-influenced text
+  # that quotes finding ids by nature, so a whole-file read supplies the very list the marker is
+  # checked against. The PR DESCRIPTION is the reachable path: it is spliced verbatim, with no
+  # neutralising pass, while `_neutralize_replies` indents every control line in the replies
+  # section. A fixture built on the replies section asserts nothing -- this entry is what
+  # established that, by surviving one.
   mutate 'pr/refute-ids-from-review-channel' 'scripts/multi-review-pr.sh' replace \
     'a finding declared inside a reply was accepted as refutable' 'multi-review-pr.test.sh' \
     '  chan="$(_review_channel "$scratch")"' \
