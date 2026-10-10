@@ -788,6 +788,10 @@ _compose_replies() {
 # dropped rebuttal is the exact failure this feature exists to remove.
 REPLIES_MAX_COMMENTS="${MULTI_REVIEW_REPLIES_MAX:-20}"
 REPLIES_MAX_CHARS="${MULTI_REVIEW_REPLY_CHARS:-2000}"
+# Spec I3: the reason is flattened to one line and capped. One line is the boundary itself --
+# a control line is only read at the start of a line -- and the cap keeps a published record
+# readable rather than carrying a whole comment body.
+REFUTE_REASON_MAX="${MULTI_REVIEW_REFUTE_REASON_MAX:-240}"
 
 # _fetch_replies <owner> <repo> <n> <since> -> "<login> · <iso> · <kind>\n<body>" per comment
 #
@@ -880,7 +884,12 @@ _render_replies() {
         # `.kind` is added by the per-channel --jq above; `// "comment"` keeps the header
         # sane if a gh version ever drops it rather than printing a literal "null" at the
         # primary.
-        "\(.user.login) \u00b7 \(.created_at) \u00b7 \(.kind // "comment")\n"
+        # `author_association` rides in the header because the REFUTATION GUARD reads it from
+        # here. GitHub is the only authority on who has write access, and this is the one place
+        # that answer is captured; re-deriving it later from a login would mean trusting a name
+        # in text the author controls. `// "NONE"` fails CLOSED -- a gh version that drops the
+        # field grants nobody authority rather than everybody.
+        "\(.user.login) \u00b7 \(.author_association // "NONE") \u00b7 \(.created_at) \u00b7 \(.kind // "comment")\n"
         + (if (.body | length) > $maxc
            then (.body[0:$maxc] + "\n[... reply truncated at \($maxc) characters ...]")
            else .body end)
@@ -1244,6 +1253,125 @@ _doc_round() {
 # head" label. So the round comes from the document's own marker, which is the same source the
 # round every other step works in comes from, and cannot be mistyped. An unrecorded round still
 # degrades to `no-base`.
+# _review_channel <scratch> -> everything after the LAST `## Review` heading.
+#
+# A standalone function so the SCOPE is one quote-free call site that the mutation table can
+# target. The scope is the guard: the replies section sits above `## Review` and quotes finding
+# ids by nature, so a refutation checked against the whole file would let the author supply the
+# very id list their own marker is validated against.
+_review_channel() {
+  awk '{ a[NR] = $0 } /^## Review[[:space:]]*$/ { last = NR }
+       END { for (i = last + 1; i <= NR; i++) print a[i] }' "$1" 2>/dev/null
+}
+
+# cmd_refute <scratch> -- author `[refuted:<id>]` records from the ingested author replies.
+#
+# This is spec I1 made mechanical: a finding refuted by someone with WRITE ACCESS is retired
+# permanently, with no model adjudicating the refutation. Three guards stand between a PR comment
+# and a record carrying that authority.
+#
+# 1. WRITE ACCESS, from GitHub rather than from the text. `_render_replies` captured
+#    `author_association` into each reply header at fetch time, and only OWNER, MEMBER and
+#    COLLABORATOR may refute. Without this a drive-by comment on a public repo retires findings by
+#    typing the right string -- and autopost now runs on public repos, so that is not theoretical.
+# 2. A KNOWN finding id. An unmatched id would produce a record that fails the table parse with
+#    "response to unknown finding id", breaking every later consumer of a doc the author cannot
+#    edit.
+# 3. ONE LINE (spec I3). The reason is flattened and capped, which IS the trust boundary: the
+#    table only ever reads a control line at the start of a line, so a reason that cannot contain
+#    a newline cannot forge a second record however it is written.
+#
+# Idempotent: a finding that already carries any response is skipped, so re-running after a
+# refresh cannot write a second record and trip "multiple responses to finding".
+cmd_refute() { # <scratch> -> writes records; prints one line per record, exit 3 = nothing to do
+  local scratch="${1:?scratch}" replies ids wrote=0 tmp
+  [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
+  replies="$(_replies_text "$scratch")"
+  [[ -n "$replies" ]] || { echo "multi-review-pr: no author replies section to read" >&2; return 3; }
+
+  # Every finding id the doc knows, and every id that already carries a response. Both come from
+  # the review channel, never from the replies.
+  # Scoped to the review channel with the same last-heading idiom `_anchor_path` uses -- pr.sh
+  # does not source core.sh, and the scope matters twice over here: the replies section sits ABOVE
+  # `## Review` and quotes finding ids by nature, so reading the whole file would let the author
+  # supply the very id list their marker is checked against.
+  local chan
+  chan="$(_review_channel "$scratch")"
+  ids="$(printf '%s\n' "$chan" | sed -n -E 's/^> \[finding:([A-Za-z0-9_-]+)[]|].*/\1/p' | sort -u)"
+  local answered
+  answered="$(printf '%s\n' "$chan" | sed -n -E 's/^> \[(agree|dispute|refuted):([A-Za-z0-9_-]+)].*/\2/p' | sort -u)"
+
+  tmp="$(mktemp)" || die "cannot create temp file" 1
+  # Through ENVIRON, never `-v`: these values are newline-separated lists, and `-v` can carry
+  # neither a newline nor a backslash intact -- it processes escapes in the value, which has
+  # already cost this repo one silent guard (the replies-section regex arriving as a capture
+  # group). ENVIRON hands awk the bytes.
+  REFUTE_KNOWN="$ids" REFUTE_ANSWERED="$answered" REFUTE_MAX="$REFUTE_REASON_MAX" \
+  awk '
+    BEGIN {
+      max = ENVIRON["REFUTE_MAX"] + 0
+      n = split(ENVIRON["REFUTE_KNOWN"], k, "\n");    for (i = 1; i <= n; i++) if (k[i] != "") ok[k[i]] = 1
+      n = split(ENVIRON["REFUTE_ANSWERED"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") done[a[i]] = 1
+      split("OWNER MEMBER COLLABORATOR", w, " ");  for (i in w) writer[w[i]] = 1
+    }
+    # A reply header, as _render_replies writes it: login MIDDOT assoc MIDDOT ts MIDDOT kind.
+    # Splitting on the middot keeps this independent of what a login or a timestamp contains.
+    index($0, " \xc2\xb7 ") > 0 {
+      n = split($0, f, " \xc2\xb7 ")
+      if (n >= 4) { login = f[1]; assoc = f[2]; next }
+    }
+    # The marker the author types. A leading quote is ALLOWED and expected: an author answering a
+    # finding quotes the grammar back, which is how all three public-api#24 rebuttals were written.
+    match($0, /\[refuted:[A-Za-z0-9_-]+\]/) {
+      marker = substr($0, RSTART, RLENGTH)
+      id = marker; sub(/^\[refuted:/, "", id); sub(/\]$/, "", id)
+      reason = substr($0, RSTART + RLENGTH)
+      gsub(/^[ \t:-]+|[ \t]+$/, "", reason)
+      if (login == "")        { print "skip " id ": no reply header seen before the marker" > "/dev/stderr"; next }
+      if (!(assoc in writer)) { print "skip " id ": " login " is " assoc ", not a writer" > "/dev/stderr"; next }
+      if (!(id in ok))        { print "skip " id ": names no finding in this review" > "/dev/stderr"; next }
+      if (id in done)         { print "skip " id ": already answered in this review" > "/dev/stderr"; next }
+      if (reason == "")       { print "skip " id ": the marker carries no reason" > "/dev/stderr"; next }
+      if (length(reason) > max) reason = substr(reason, 1, max) " [... truncated ...]"
+      done[id] = 1                      # one record per id even if the author repeats the marker
+      printf "%s\t%s\t%s\n", id, login, reason
+    }
+  ' <<< "$replies" > "$tmp"
+
+  if [[ ! -s "$tmp" ]]; then
+    rm -f "$tmp"
+    echo "multi-review-pr: no refutation markers to act on" >&2
+    return 3
+  fi
+
+  # Append under the LAST `## Review`, which is where merge and the table both read. Written with
+  # a single awk pass so a failure cannot leave a half-written record behind.
+  local out; out="$(mktemp)" || die "cannot create temp file" 1
+  awk -v recs="$tmp" '
+    { lines[NR] = $0 }
+    END {
+      last = 0
+      for (i = 1; i <= NR; i++) {
+        if (lines[i] ~ /^```/) fence = !fence
+        else if (!fence && lines[i] == "## Review") last = i
+      }
+      for (i = 1; i <= NR; i++) print lines[i]
+      while ((getline r < recs) > 0) {
+        split(r, f, "\t")
+        print ""
+        print "> [refuted:" f[1] "] " f[3]
+        print "> — via human:" f[2]
+      }
+    }
+  ' "$scratch" > "$out" || { rm -f "$tmp" "$out"; die "could not write refutation records" 1; }
+  mv "$out" "$scratch"
+  wrote="$(wc -l < "$tmp" | tr -d ' ')"
+  cut -f1,2 "$tmp"
+  rm -f "$tmp"
+  echo "multi-review-pr: wrote ${wrote} refutation record(s)" >&2
+  return 0
+}
+
 cmd_carried() {
   local scratch="${1:?scratch}" dir rows replies round cur id rd sev trace concern
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
@@ -1438,6 +1566,7 @@ main() {
     select-replies)  _select_replies "$@" ;;
     fetch-replies)   _fetch_replies "$@" ;;
     carried)         cmd_carried "$@" ;;
+    refute)          cmd_refute "$@" ;;
     fence)        cmd_fence "$@" ;;
     seed)         cmd_seed "$@" ;;
     ingest)       cmd_ingest "$@" ;;

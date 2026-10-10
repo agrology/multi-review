@@ -49,16 +49,40 @@ A PR-flavour scratch may carry a `## Author replies (round N)` section, spliced 
 `multi-review-pr.sh refresh` above `## Review`: the comments the author and other humans posted
 on the PR since the previous round, verbatim and fenced.
 
-**It is a claim to check, never a verdict.** Only the primary writes `[agree:]`, `[dispute:]` or
-`[resolved:]` (issue #103), and that is unchanged — an author who writes those lines in a PR
-comment has written prose, not a record. The section sits *above* `## Review` for that reason:
-everything from the last `## Review` heading to the end of the file is the protocol channel, so
-author text placed after it would be parsed as protocol. Control lines inside the section are
-indented so they cannot anchor at column 1 even if a reader hands the block to a parser.
+**Ordinary reply text is a claim to check, never a verdict.** Only the primary writes `[agree:]`,
+`[dispute:]` or `[resolved:]` (issue #103), and that is unchanged — an author who writes those
+lines in a PR comment has written prose, not a record. The section sits *above* `## Review` for
+that reason: everything from the last `## Review` heading to the end of the file is the protocol
+channel, so author text placed after it would be parsed as protocol. Control lines inside the
+section are indented so they cannot anchor at column 1 even if a reader hands the block to a
+parser.
 
-A reply that answers a finding is adjudicated by the primary, and which record is available
-depends on what the primary has already written about that finding. Three cases, because
-`[agree:]`/`[dispute:]` are one-per-finding and a second response fails the parser:
+**One marker is the exception, and it binds.** A reply carrying `[refuted:<ns-id>] <reason>` from
+someone with write access retires that finding, mechanically, with no model adjudicating the
+refutation (spec I1). `multi-review-pr.sh refute` authors the record:
+
+    > [refuted:<ns-id>] <reason, flattened to one line>
+    > — via human:<login>
+
+It is the only record disclosed under a human identity, and `_table` enforces that in both
+directions: a `[refuted:]` not disclosed as `human:<login>` is parse-fatal, and so is a `human:`
+disclosure on any other verb. A refuted finding is neither open nor standing — it does not block
+convergence, and the `human:` responder is excluded from the single-primary check, so retiring a
+finding clears the gate instead of blocking it. Ids are per-round, so a record retires *that id*:
+if a later push genuinely reintroduces the defect, the next round mints a new id and reviews it on
+the merits.
+
+Three guards stand between a comment and that authority. Write access comes from GitHub's own
+`author_association` (`OWNER`, `MEMBER`, `COLLABORATOR`), captured into the reply header at fetch
+time rather than re-derived from a login in text the author controls — this is what stops a
+drive-by comment on a public repo from retiring findings. The id must name a finding in the review
+channel, never one the replies section merely mentions. And the reason is flattened to one line
+(spec I3), which *is* the trust boundary: a control line is only ever read at the start of a line,
+so a reason that cannot contain a newline cannot forge a second record however it is written.
+
+Everything else in a reply the primary adjudicates, and which record is available depends on what
+it has already written about that finding. Three cases, because `[agree:]`/`[dispute:]` are
+one-per-finding and a second response fails the parser:
 
 - **Not yet answered** -- `[dispute:<id>]` if the primary accepts the rebuttal, `[agree:<id>]` if
   it does not.
@@ -67,7 +91,8 @@ depends on what the primary has already written about that finding. Three cases,
   refused on a disputed one.
 - **Already answered, and no record fits** -- an `[observation]` in one line: why the finding
   still stands, or that it is WITHDRAWN and why the rebuttal persuaded the primary. An agreed
-  finding the primary no longer believes needs that sentence; nothing else can retract it.
+  finding the primary no longer believes needs that sentence; nothing else a MODEL can write
+  retracts it. The author can, with the marker above.
 
 The motivating case on public-api#24 is the last of those: the primary had agreed in round 2, so
 an observation was the only record ever available to it.

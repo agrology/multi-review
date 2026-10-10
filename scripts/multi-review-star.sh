@@ -519,7 +519,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
   review_section "$doc" | strip_fences /dev/stdin | awk '
     function fail(m){ print "multi-review-star: " m > "/dev/stderr"; exit 2 }
     function parse(line,   s, c, rest, b, p) {
-      if (line !~ /^> \[(finding|agree|dispute):[A-Za-z0-9_-]+([|][^]]*)?]/) return 0
+      if (line !~ /^> \[(finding|agree|dispute|refuted):[A-Za-z0-9_-]+([|][^]]*)?]/) return 0
       s = substr(line, 4)
       c = index(s, ":"); V = substr(s, 1, c-1)
       rest = substr(s, c+1)
@@ -535,6 +535,16 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
         if (line ~ /^> — via /) {
           m = line; sub(/^> — via[ ]*/, "", m); gsub(/^[ \t]+|[ \t]+$/, "", m)
           if (m == "") fail("missing model id after " pv ":" pi)
+          # A refuted record makes the engineer authority mechanical (spec I1), so it is the ONE
+          # record disclosed under a human identity. Both directions are fatal: a model-authored
+          # refutation would retire a finding nobody with write access ever refuted, and a human
+          # disclosure on any other verb would launder author text into a primary verdict, which
+          # is what issue 103 forbids.
+          if (pv == "refuted") {
+            if (m !~ /^human:.+/) fail("refuted:" pi " must be disclosed as \"human:<login>\", not " m)
+          } else if (m ~ /^human:/) {
+            fail(pv ":" pi " must not be disclosed under a human identity: " m)
+          }
           if (pv == "finding") {
             if (psev != "high" && psev != "med" && psev != "low") fail("finding " pi " needs a |high, |med, or |low severity tag")
             if (pi in raiser) fail("duplicate finding id: " pi)
@@ -596,6 +606,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
         state = "open"
         if (rverb[id] == "agree") state = "agreed"
         else if (rverb[id] == "dispute") state = "dissent"
+        else if (rverb[id] == "refuted") state = "refuted"
         resp = (id in rmodel) ? rmodel[id] : ""
         printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id], rwit[id]
       }
@@ -1219,8 +1230,8 @@ cmd_channel_check() {
   # id-bearing markers use. It carries no id, so under that class a malformed `[observation: …]`
   # beside real findings would refuse a turn that must be admitted: fable-rd2-r4 harm, the same way
   # it bit `[no-findings]` (see star/channel-check-signal-strict).
-  review_section "$base" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$sprim" || true
-  review_section "$copy" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$cprim" || true
+  review_section "$base" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved|refuted):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$sprim" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved|refuted):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$cprim" || true
 
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
@@ -1344,7 +1355,7 @@ cmd_blind_check() { # <copy> -> 0 blind, 1 carries a prior round (offenders on s
   # responses/observations/resolutions. Any one of them means this copy is not blind. A leaked
   # `[resolved:]` is strictly worse than a bare `[agree:]` — it names a defect AND tells the
   # secondary the primary already closed it (issue #88).
-  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)"
+  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|resolved|refuted|no-findings)[]:]' || true)"
   # The footer mirrors the merged manifest, so its presence alone proves the copy was merged into.
   # ANCHORED to the footer's real shape — a whole line, opening at column 1 and closing on the same
   # line — the way merge and _structural_consistency already count it. An unanchored substring also
@@ -1739,6 +1750,17 @@ cmd_merge() {
     || die "merge: staged doc committed but its manifest did not — run: $(basename "$0") verify '$doc'" 1
 }
 
+# _model_responders < table -> the responder id of every finding answered by a MODEL.
+#
+# A standalone function so the human exclusion is one quote-free call site the mutation table can
+# target. `human:<login>` is excluded because it is not a primary identity: the refutation record
+# is authored by the ingester on the engineer behalf (spec I1), so counting it would make every
+# refuted finding a second responder and no review carrying one could converge -- retiring a
+# finding would block the gate instead of clearing it.
+_model_responders() {
+  awk -F'\t' 'NF>=4 && $4!="" && $4 !~ /^human:/ {print $4}'
+}
+
 cmd_check_converged() {
   local doc="${1:?doc}" mstate t
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
@@ -1769,7 +1791,11 @@ cmd_check_converged() {
   #     non-empty responder ids (column 4) across all findings; more than one -> not converged.
   #     Zero is fine (zero findings -> zero responders; coverage already forbids a partial mix).
   local distinct_responders
-  distinct_responders="$(printf '%s\n' "$t" | awk -F'\t' 'NF>=4 && $4!="" {print $4}' | sort -u | grep -c .)"
+  #     A `human:<login>` responder is EXCLUDED here. It is not a primary identity: the refutation
+  #     record is authored by the ingester on the engineer's behalf (spec I1), so counting it would
+  #     make every refuted finding a second responder and no review carrying one could ever
+  #     converge -- retiring a finding would block the gate instead of clearing it.
+  distinct_responders="$(_model_responders <<< "$t" | sort -u | grep -c .)"
   [[ "$distinct_responders" -le 1 ]] || exit 1
 
   exit 0
