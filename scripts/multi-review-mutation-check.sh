@@ -1200,10 +1200,14 @@ mutations() {
 
   # And the record must not count as a second primary identity, or a review carrying any
   # refutation can never converge: retiring a finding would block the gate instead of clearing it.
-  mutate 'star/converged-ignores-human-responder' 'scripts/multi-review-star.sh' replace \
+  # Pinned on the line that actually separates them -- column 4 comes from the agree/dispute
+  # record alone, and the refuter has a column of its own. The earlier entry pointed at a
+  # `human:` filter in `_model_responders`, which this change made unreachable: with no refuter in
+  # column 4 there is nothing for it to exclude, and it survived its own sweep.
+  mutate 'star/refuted-is-not-a-responder' 'scripts/multi-review-star.sh' replace \
     'a doc carrying a refutation could not converge' 'multi-review-star.test.sh' \
-    '  awk -F'"'"'\t'"'"' '"'"'NF>=4 && $4!="" && $4 !~ /^human:/ {print $4}'"'"'' \
-    '  awk -F'"'"'\t'"'"' '"'"'NF>=4 && $4!="" {print $4}'"'"''
+    '        resp = (id in rmodel) ? rmodel[id] : ""' \
+    '        resp = (id in rmodel) ? rmodel[id] : refuter[id]'
 
   # The reason is captured so the AUTHOR can see why a finding is settled, and it reached nobody:
   # a retired finding was indistinguishable from one that never existed, and a review whose

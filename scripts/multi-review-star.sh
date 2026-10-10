@@ -1782,7 +1782,7 @@ cmd_merge() {
 # refuted finding a second responder and no review carrying one could converge -- retiring a
 # finding would block the gate instead of clearing it.
 _model_responders() {
-  awk -F'\t' 'NF>=4 && $4!="" && $4 !~ /^human:/ {print $4}'
+  awk -F'\t' 'NF>=4 && $4!="" {print $4}'
 }
 
 cmd_check_converged() {
@@ -1815,10 +1815,14 @@ cmd_check_converged() {
   #     non-empty responder ids (column 4) across all findings; more than one -> not converged.
   #     Zero is fine (zero findings -> zero responders; coverage already forbids a partial mix).
   local distinct_responders
-  #     A `human:<login>` responder is EXCLUDED here. It is not a primary identity: the refutation
-  #     record is authored by the ingester on the engineer's behalf (spec I1), so counting it would
-  #     make every refuted finding a second responder and no review carrying one could ever
-  #     converge -- retiring a finding would block the gate instead of clearing it.
+  #     A refutation contributes NO responder identity, and the separation is enforced where it
+  #     belongs -- in `_table`, which fills column 4 from the agree/dispute record only and carries
+  #     the refuter in a column of its own. This used to filter `human:` out here instead, which
+  #     stopped working the moment the refuter left column 4: the filter became unreachable, and a
+  #     mutation entry pointed at it proved nothing (it survived its own sweep). The invariant it
+  #     was defending still matters -- counting a refuter would make every refuted finding a second
+  #     responder, so no review carrying one could converge and retiring a finding would block the
+  #     gate instead of clearing it -- so it is pinned on `_table`'s own line now.
   distinct_responders="$(_model_responders <<< "$t" | sort -u | grep -c .)"
   [[ "$distinct_responders" -le 1 ]] || exit 1
 

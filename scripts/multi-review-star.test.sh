@@ -3988,9 +3988,14 @@ bash "$SUT" check-converged "$RC" >/dev/null 2>&1 \
 # names a finding from an earlier round and convergence requires that round to have answered it.
 # Treating it as a response made the feature unreachable and parse-fatal on the only real shape
 # (fable-rd1-r1), while every test passed against the one state that never occurs.
+# ANCHORED, deliberately. `compose-inline` only emits a finding that is agreed AND anchored, so
+# an unanchored fixture emits nothing whatever the state is -- the inline assertion below would
+# then pass with the override removed, which is exactly what the mutation sweep reported
+# (MISCREDITED: the gate went red, but via a different assertion).
 RFX="$(mktemp -d "${WORK}/rfx.XXXXXX")/d.md"
 { printf '%s\n' '# Doc' '' '## Review' ''
   printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+  printf '%s\n' '> — at scripts/x.sh:12'
   printf '%s\n' '' '> [agree:fable-rd1-r1] confirmed' '> — via claude-opus-5'
   printf '%s\n' '' '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology'
 } > "$RFX"
