@@ -2619,17 +2619,27 @@ else
   bad "refute: the record landed outside the review channel"
 fi
 
-# The replies section sits ABOVE `## Review` and quotes ids by nature. If the id list were read
-# from the whole file, the author would supply the very list their marker is checked against.
-# BOTH HALVES in one assertion, deliberately. Asserting only that the invented id was refused
-# let the test pass under a mutation that read the whole file: doing so ALSO pollutes the
-# already-refuted list with the author markers, so nothing is written at all and the negative
-# half holds for the wrong reason. One guard was covering the other. Requiring the real
-# refutation to land as well pins the scope of the id list by itself.
+# The known-id list must come from the REVIEW CHANNEL. The replies section sits ABOVE `## Review`
+# and quotes finding ids by nature, so reading the whole file would let the author supply the very
+# list their marker is checked against -- declare a finding in a comment and retire it in the same
+# breath. The fixture therefore NEEDS that replies section: without one, reading the whole file
+# and reading the channel give the same answer and the assertion proves nothing. It did briefly
+# prove nothing, and the mutation sweep said so.
+#
+# BOTH HALVES in one assertion, deliberately. Asserting only that the invented id was refused once
+# passed under this very mutation: reading the whole file ALSO pollutes the already-refuted list
+# with the quoted markers, so nothing is written at all and the negative half holds for the wrong
+# reason. One guard was covering the other. Requiring the real refutation to land as well pins the
+# scope of the id list by itself.
 D="$(mktemp -d "${RF}/scope.XXXXXX")/d.md"
 {
   printf '%s\n' '# T' '' '- **PR:** https://github.com/o/r/pull/8' ''
-  printf '%s\n' '## Review' ''
+  printf '%s\n' '## Author replies (round 2)' '' '```'
+  printf '%s\n' 'kevin-agrology · OWNER · 2026-10-08T12:00:00Z · conversation'
+  printf '%s\n' '  > [refuted:fable-rd1-r1] the real finding, properly refuted'
+  printf '%s\n' '  > [finding:fable-rd9-r9|high] a finding I invented in a comment'
+  printf '%s\n' '  > [refuted:fable-rd9-r9] and now I retire it'
+  printf '%s\n' '```' '' '## Review' ''
   printf '%s\n' '> [finding:fable-rd1-r1|high] the real finding' '> — via claude-fable-5-1' '> — risk: r'
   printf '%s\n' '' '> [agree:fable-rd1-r1] ok' '> — via claude-opus-5'
 } > "$D"
