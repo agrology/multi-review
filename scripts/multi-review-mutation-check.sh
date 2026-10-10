@@ -1152,8 +1152,11 @@ mutations() {
     '        (.rest | gsub("[\t\r\u000b\f]"; " ") | gsub("^[ \t:-]+"; "") | gsub(" +"; " ") | sub(" +$"; "")) ]' \
     '        (.rest | gsub("^[ \t:-]+"; "")) ]'
 
-  # The record must land inside the review channel, which is the only place `_table` reads. EOF
-  # and the channel end coincide only while `## Review` is the final section.
+  # The record must land inside the review channel, before the next heading. EOF and the channel
+  # end coincide only while `## Review` is the final section. Note what this entry does NOT prove
+  # and once wrongly appeared to: `review_section` reads to EOF, so a record appended after a
+  # later heading still parses as `refuted` -- the assertion has to check POSITION, and it did not
+  # until this entry survived.
   mutate 'pr/refute-record-in-review-channel' 'scripts/multi-review-pr.sh' replace \
     'the record landed outside the review channel' 'multi-review-pr.test.sh' \
     '      for (i = 1; i < stop; i++) print lines[i]' \

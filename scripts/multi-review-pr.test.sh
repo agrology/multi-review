@@ -2612,11 +2612,19 @@ RFE="$(mktemp -d "${RF}/eof.XXXXXX")/d.md"
 } > "$RFE"
 printf '<!-- multi-review-pr-refutation: kevin-agrology\tOWNER\tfable-rd1-r1\tby design -->\n' > "${RFE}.records"
 rf "$RFE" >/dev/null 2>&1
-if [[ "$( bash "$STAR" _table_for_test "$RFE" 2>/dev/null | awk -F'\t' '$1=="fable-rd1-r1"{print $3}' )" == "refuted" ]] \
-   && [[ "$( tail -1 "$RFE" )" == "trailing section" ]]; then
-  ok "refute: the record is written inside the review channel, not after the last section"
+# POSITION is the assertion, not merely presence. `review_section` reads from the last
+# `## Review` to EOF, so a record appended after `## Appendix` is still inside that span and
+# still parses as `refuted` — asserting the state alone passed with the guard removed, and the
+# mutation sweep is what caught it. What the guard actually provides is that the record lands
+# before the next heading, so it stays in the channel however the scratch grows.
+rec_ln="$( grep -n '^> \[refuted:fable-rd1-r1\]' "$RFE" | head -1 | cut -d: -f1 )"
+app_ln="$( grep -n '^## Appendix' "$RFE" | head -1 | cut -d: -f1 )"
+if [[ -n "$rec_ln" && -n "$app_ln" ]] && (( rec_ln < app_ln )) \
+   && [[ "$( grep -c '^## Appendix' "$RFE" )" == "1" ]] \
+   && [[ "$( bash "$STAR" _table_for_test "$RFE" 2>/dev/null | awk -F'\t' '$1=="fable-rd1-r1"{print $3}' )" == "refuted" ]]; then
+  ok "refute: the record is written inside the review channel, before the next section"
 else
-  bad "refute: the record landed outside the review channel"
+  bad "refute: the record landed outside the review channel (record line $rec_ln, appendix $app_ln)"
 fi
 
 # The known-id list must come from the REVIEW CHANNEL, because everything above it is
