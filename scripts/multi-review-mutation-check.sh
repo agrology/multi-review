@@ -1372,6 +1372,77 @@ mutations() {
     '        if [[ -n "$cws_c" ]] && ! path_contains "$cws_c" "$ddir"; then' \
     '        if ! path_contains "$cws_c" "$ddir"; then'
 
+  # --- recovering a turn the provider could not deliver (#151) -------------------------------
+  # Each entry removes one way the courier could deliver something that is NOT this provider's
+  # turn for THIS dispatch. The review of the recovery raised nine findings and codex's own
+  # recovered turn raised three more; these are the guards that came out of them.
+
+  # Dropped, the recovery delivers whatever `> ` lines it found -- including the primary's own
+  # `[agree:]`/`[resolved:]` records, which the provider quotes as a matter of course because it
+  # reads the copy. The courier would then forge the records issue #103 reserves for the primary,
+  # and neither verify-vendor nor channel-check can tell.
+  mutate 'reviewer/codex-report-secondary-only' 'scripts/multi-review-reviewer.sh' replace \
+    'delivered a PRIMARY response record' 'multi-review-reviewer.test.sh' \
+    '    { endblock() }' \
+    '    { print }'
+
+  # RETIRED: reviewer/codex-report-needs-grammar, superseded by codex-report-copy-scoped-ids.
+  # It mutated the block-opening pattern to `/^> /`, which does not loosen the grammar check --
+  # it makes every continuation line open a new block, so legitimate blocks break apart and the
+  # recovery delivers nothing. The gate went red through "did not recover the thread findings",
+  # which is a different guard, and the runner called it MISCREDITED. The property it meant to
+  # protect (a recovered block must carry the protocol's own grammar) is the `id != ""` clause of
+  # the id-shape line below: a prose line yields no id and is dropped there.
+
+  # Dropped, a finding the provider QUOTED from the live document is couriered as its own: either
+  # verify-vendor quarantines the whole recovered turn on a mixed disclosure, or that finding
+  # merges a second time under a doubly-namespaced id.
+  mutate 'reviewer/codex-report-own-disclosure' 'scripts/multi-review-reviewer.sh' replace \
+    'delivered a block disclosed under the wrong model' 'multi-review-reviewer.test.sh' \
+    '      if (substr($0, length("> \xe2\x80\x94 via ") + 1) == want) okvia = 1' \
+    '      okvia = 1'
+
+  # Dropped, a NAMESPACED id is accepted -- and a secondary never writes one, so it is by
+  # construction another reviewer's finding quoted out of the document. The `id != ""` clause in
+  # the same expression is what requires the protocol's grammar at all.
+  mutate 'reviewer/codex-report-copy-scoped-ids' 'scripts/multi-review-reviewer.sh' replace \
+    'couriered a namespaced finding this provider merely quoted' 'multi-review-reviewer.test.sh' \
+    '      okid = (id != "" && id !~ /-rd[0-9]+-/)' \
+    '      okid = 1'
+
+  # Dropped, the same block recorded two or three times is delivered that many times, and
+  # channel-check fails the copy on a duplicate finding id -- losing the turn one step later than
+  # #151 did. Its own entry because it was one expression with the id-shape rule, and a single
+  # mutation then went red through whichever assertion ran first (MISCREDITED).
+  mutate 'reviewer/codex-report-deliver-once' 'scripts/multi-review-reviewer.sh' replace \
+    'duplicate blocks would fail channel-check' 'multi-review-reviewer.test.sh' \
+    '      if (nb > 0 && okid && okvia && !(id in seen)) { for (i = 1; i <= nb; i++) print buf[i]; seen[id] = 1 }' \
+    '      if (nb > 0 && okid && okvia) { for (i = 1; i <= nb; i++) print buf[i]; seen[id] = 1 }'
+
+  # Dropped, the thread also yields the `userMessage` we SENT -- the brief, which quotes the
+  # finding grammar in full -- so the protocol's own example text comes back as the provider's
+  # turn with a correct disclosure and no reviewer output behind it.
+  mutate 'reviewer/codex-report-authored-items' 'scripts/multi-review-reviewer.sh' replace \
+    'delivered our own brief as a recovered turn' 'multi-review-reviewer.test.sh' \
+    '                     | select(.type == "agentMessage" or .type == "commandExecution" or .type == "fileChange")' \
+    '                     | select(true)'
+
+  # Dropped, nothing bounds the select to THIS dispatch: the copy basename repeats every round, so
+  # a round where the provider did nothing recovers the previous round's findings as a fresh turn.
+  # The FLOOR in the query, not the seed file's presence: removing the file check alone leaves
+  # `date -r` failing on the missing file, so the helper still exits 3 and that mutant SURVIVED.
+  mutate 'reviewer/codex-report-round-bound' 'scripts/multi-review-reviewer.sh' replace \
+    'no dispatch floor in the query' 'multi-review-reviewer.test.sh' \
+    '    "select item_json from thread_items where thread_id in (select distinct thread_id from thread_items where instr(item_json, '"'"'${base//\'"'"'/\'"'"'\'"'"'}'"'"') > 0) and created_at_ms >= ${since}000 order by rollout_ordinal desc limit 400;" \' \
+    '    "select item_json from thread_items where thread_id in (select distinct thread_id from thread_items where instr(item_json, '"'"'${base//\'"'"'/\'"'"'\'"'"'}'"'"') > 0) order by rollout_ordinal desc limit 400;" \'
+
+  # Dropped, the temp-dir restriction is a pattern match again, and the pattern admits `..` -- so
+  # provider text names a path that resolves anywhere and the helper reads it out.
+  mutate 'reviewer/codex-report-tmp-only' 'scripts/multi-review-reviewer.sh' replace \
+    'dot-dot path reached outside /tmp' 'multi-review-reviewer.test.sh' \
+    '    _tmp_path_ok "$f" || continue' \
+    '    true'
+
   # Issue #52. argv_has exists ONLY to keep the argv assertions off a pipe: `printf | grep -q`
   # lets grep exit at the match while printf still holds the ~15 KB prompt, so printf takes SIGPIPE
   # and pipefail reports a successful match as 141. That produced five days of "unidentified macos
@@ -2645,8 +2716,8 @@ mutations() {
     '       a reason of your choosing, naming the retry'"'"'s error class — e.g. `dispatch'
   mutate 'command/exit-9-not-a-failed-dispatch' 'commands/multi-review.md' replace \
     'exit 9 still reports a failed dispatch as no turn taken' 'multi-review-packaging.test.sh' \
-    '     the reviewer ran is step 4'"'"'s transient case, reason `dispatch failed: <error class>`, and this' \
-    '     the reviewer ran is step 4'"'"'s transient case, and this'
+    '     died before the reviewer ran is step 4'"'"'s transient case, reason `dispatch failed: <error' \
+    '     died before the reviewer ran is step 4'"'"'s transient case, and the reason is the same'
   mutate 'command/mid-turn-death-not-redispatched' 'commands/multi-review.md' replace \
     'a mid-turn harness death is re-dispatched onto a written copy' 'multi-review-packaging.test.sh' \
     '     - **Changed** → the reviewer ran and the harness died mid-turn. Do NOT re-dispatch: a second' \
@@ -2669,8 +2740,8 @@ mutations() {
     '     Any other 4xx (`401` auth, `400` malformed) is usually deterministic; use judgement on the paragraph'
   mutate 'protocol/quarantine-reason-vocabulary' 'docs/multi-review.md' replace \
     'quarantine reasons never distinguish a failed dispatch' 'multi-review-packaging.test.sh' \
-    '  ran and wrote nothing; `dispatch failed: <error class>` is a reviewer the harness never reached' \
-    '  ran and wrote nothing; the other is a reviewer the harness never reached'
+    '  `dispatch failed: <error class>` is a reviewer the harness never reached' \
+    '  the other reason is a reviewer the harness never reached'
   # Issue #137: the fable slot falls back to opus. Every rule is primary-instruction prose, so each
   # needs its own entry — losing any one of them leaves the rest reading as a complete rule.
   mutate 'command/fable-fallback-any-class' 'commands/multi-review.md' replace \

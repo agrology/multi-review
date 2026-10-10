@@ -117,6 +117,24 @@ if [[ -f "$f" ]]; then
   fi
 fi
 
+# --- a pristine copy must be investigated, not assumed to be a declined turn (#151) ---
+# codex reviewed seven consecutive rounds across three PRs and was recorded `no turn taken` every
+# time, because its sandbox refuses to write the assigned copy. The command must send the primary
+# to the provider's own report before it records a reason that asserts the reviewer contributed
+# nothing — and must not use the old reason, which was false in the reassuring direction.
+if [[ -f "$f" ]]; then
+  if grep -q 'codex-report' "$f" && grep -q 'copy untouched; no provider report found' "$f"; then
+    ok "exit 9 consults the provider report before quarantining, with a reason that claims no more (#151)"
+  else
+    bad "exit 9 still assumes a pristine copy means a declined turn (#151)"
+  fi
+  if grep -q 'Deliver them verbatim' "$f"; then
+    ok "recovered findings are delivered verbatim (the primary is a courier, not an author)"
+  else
+    bad "no courier rule for recovered findings — the primary could paraphrase another provider"
+  fi
+fi
+
 # --- step 4 must tell the primary that ## Diff hides a DELETION (pr-watch#17, round 2) ---
 # The refreshed diff is the branch's end state (base..head), so code removed between rounds is
 # simply absent from it -- never a `-` line. That is why #316's primary resolved the 21 findings
@@ -880,11 +898,15 @@ else
     && ok "command: a transient harness dispatch failure has a reason of its own" \
     || bad "command: a harness dispatch failure has no reason of its own (issue #124)"
 fi
-n="$(grep -n 'quarantine with the reason \*\*`no turn taken`\*\*' "$CMD" | head -1 | cut -d: -f1)"
+# The anchor moved with #151: the exit-9 reason is now `copy untouched; no provider report found`,
+# because the old one asserted the reviewer contributed nothing and was false on seven rounds.
+# The PROPERTY is unchanged — exit 9 must not lend its reason to a reviewer the harness never
+# reached — so this still reads the bullet for the `dispatch failed` distinction.
+n="$(grep -n 'Quarantine with \*\*`copy untouched' "$CMD" | head -1 | cut -d: -f1)"
 if [[ -z "$n" ]]; then
-  bad "command: exit-9 no-turn-taken anchor not found — the guard's anchor is gone"
+  bad "command: exit-9 reason anchor not found — the guard's anchor is gone"
 else
-  grep -q 'dispatch failed' <<<"$(sed -n "${n},$((n+6))p" "$CMD")" \
+  grep -q 'dispatch failed' <<<"$(sed -n "${n},$((n+14))p" "$CMD")" \
     && ok "command: exit 9 does not lend no-turn-taken to a failed dispatch" \
     || bad "command: exit 9 still reports a failed dispatch as no turn taken (issue #124)"
 fi

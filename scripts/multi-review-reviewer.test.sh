@@ -1837,6 +1837,157 @@ err="$(bash "$SUT" prompt "$D" --reviewer codex --out 2>&1 >/dev/null)"; rc=$?
   && ok "prompt --out with no value is an error, not a silent default" \
   || bad "prompt --out with no value gave rc=$rc err='$err'"
 
+# --- codex-report: recovering a turn the reviewer took but could not deliver (#151) --------
+# codex reviewed seven consecutive rounds across three PRs and was recorded `no turn taken` in
+# every one, because its sandbox refuses to write the assigned copy. The findings were real and
+# recoverable from the companion's own thread store the whole time. Everything below is a way the
+# recovery could deliver something that is NOT this provider's turn for THIS dispatch — the
+# review of the recovery itself raised nine, and codex's own recovered turn raised three more.
+CXH="${WORK}/codexhome"; mkdir -p "$CXH" "${WORK}/cxbin" "${WORK}/nosq"
+: > "${CXH}/thread_history_1.sqlite"            # presence is all the helper needs; sqlite3 is stubbed
+COPY="${WORK}/reviews/pr-999.md.codex"; mkdir -p "$(dirname "$COPY")"; : > "$COPY"
+: > "${COPY}.seed"                              # the dispatch floor: without it there is no round bound
+CXMODEL="$(bash "$SUT" resolve --reviewer codex | cut -d'|' -f4)"
+
+# mkstub <json> — a stubbed sqlite3 answering the helper's one query shape. The payload goes in a
+# FILE the stub cats: inlining it put the printf format and its argument on separate lines, so the
+# JSON ran as a command and every delivery assertion failed on an empty read. `CXMODEL` in the
+# payload is replaced with this provider's registry model.
+mkstub() {
+  printf '%s\n' "${1//CXMODEL/$CXMODEL}" > "${WORK}/cxbin/payload.json"
+  cat > "${WORK}/cxbin/sqlite3" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/queries.log"
+case "$*" in
+  *"thread_id in (select distinct thread_id"*) cat "$(dirname "$0")/payload.json" ;;
+  *) echo '[]' ;;
+esac
+STUB
+  chmod +x "${WORK}/cxbin/sqlite3"
+  : > "${WORK}/cxbin/queries.log"
+}
+cxrun() { PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" 2>/dev/null; }
+
+# The item that carries the findings names the file the provider wrote them TO, not the copy it
+# could not write — so the helper selects the THREAD by the copy and then reads all of it.
+mkstub '[{"item_json":"{\"type\":\"commandExecution\",\"command\":\"cat > /tmp/x\",\"aggregatedOutput\":\"> [finding:r1|med] a defect the sandbox would not let me write\\n> — via CXMODEL\\n> — risk: it is lost\\n\"}"}]'
+rep="$(cxrun)"; rc=$?
+(( rc == 0 )) && grep -q 'the sandbox would not let me write' <<<"$rep" \
+  && ok "codex-report: recovers findings the provider could not write into its copy" \
+  || bad "codex-report: did not recover the thread findings (rc=$rc) — got '$rep'"
+
+# THE COURIER'S SAFETY PROPERTY. The provider reads its copy, which carries the review channel, so
+# quoting the primary's own records back is the ORDINARY case — and a recovery that delivered them
+# would splice `[agree:]`/`[resolved:]` lines disclosed under the primary's model id into the
+# document. #103 forbids exactly that, and nothing downstream catches it: verify-vendor only checks
+# a disclosure against its vendor, and channel-check is satisfied because the lines ARE in the
+# channel.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"The copy already contains:\\n> [finding:r7|med] my own finding\\n> — via CXMODEL\\n> — risk: r\\n> [agree:fable-rd1-r1] looks right to me\\n> — via claude-opus-5\\n> [resolved:fable-rd1-r1] fixed at this head\\n> — via claude-opus-5\\n> [observation] a stray note\\n> — via claude-opus-5\\n\"}"}]'
+forged="$(cxrun)"
+grep -q 'my own finding' <<<"$forged" \
+  && ok "codex-report: a recovered finding block is delivered" \
+  || bad "codex-report: lost the finding while filtering — got '$forged'"
+grep -qE '^> \[(agree|dispute|resolved|observation)' <<<"$forged" \
+  && bad "codex-report: delivered a PRIMARY response record — the courier can forge #103 records" \
+  || ok "codex-report: response records quoted by the provider are dropped, not couriered"
+
+# fable-rd1-r4: a finding the provider QUOTES from the live document is another reviewer's. Two
+# discriminators, because either alone is a single point of failure on untrusted text: the
+# disclosure must be this provider's model, and a secondary's ids are copy-scoped, never
+# namespaced.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"The document says:\\n> [finding:fable-rd1-r1|high] someone elses finding\\n> — via claude-fable-5-1\\n> — risk: r\\n\"}"}]'
+quoted="$(cxrun)"
+[[ -z "$quoted" ]] \
+  && ok "codex-report: a finding quoted from another reviewer is not couriered as this provider's" \
+  || bad "codex-report: couriered a foreign finding — got '$quoted'"
+# The id rule has to stand on its own: a namespaced id disclosed under THIS provider's own model
+# is the round-2 shape, where codex reads a copy carrying its own earlier findings. With only the
+# foreign-disclosure fixture the model check covered for it and the id mutant SURVIVED.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"The copy already carries:\\n> [finding:codex-rd1-r1|med] my own finding from an earlier round\\n> \u2014 via CXMODEL\\n> \u2014 risk: r\\n\"}"}]'
+mine="$(cxrun)"
+[[ -z "$mine" ]] \
+  && ok "codex-report: a namespaced id is not couriered even under this provider's own disclosure" \
+  || bad "codex-report: couriered a namespaced finding this provider merely quoted — got '$mine'"
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"> [finding:r2|med] right id, wrong voice\\n> — via claude-opus-5\\n> — risk: r\\n\"}"}]'
+wrongvia="$(cxrun)"
+[[ -z "$wrongvia" ]] \
+  && ok "codex-report: a block disclosed under another model is not delivered" \
+  || bad "codex-report: delivered a block disclosed under the wrong model — got '$wrongvia'"
+
+# fable-rd1-r3: the ordinary shape of this failure records the same block two or three times (the
+# heredoc, the echo-back, the summary), and channel-check fails a copy on a duplicate finding id.
+mkstub '[{"item_json":"{\"type\":\"commandExecution\",\"command\":\"heredoc\",\"aggregatedOutput\":\"> [finding:r3|med] said twice\\n> — via CXMODEL\\n> — risk: r\\n> [finding:r3|med] said twice\\n> — via CXMODEL\\n> — risk: r\\n\"}"}]'
+dup="$(cxrun)"
+[[ "$(grep -c '^> \[finding:r3' <<<"$dup")" == 1 ]] \
+  && ok "codex-report: a block recorded more than once is delivered once" \
+  || bad "codex-report: duplicate blocks would fail channel-check on a duplicate id — got $(grep -c '^> \[finding:r3' <<<"$dup")"
+
+# codex-rd1-r2, recovered from this PR's own review: the thread also holds the brief we SENT, which
+# quotes the finding grammar in full. A valid disclosure says who a line claims to be from, never
+# that the provider authored it.
+mkstub '[{"item_json":"{\"type\":\"userMessage\",\"text\":\"append each as:\\n> [finding:r4|med] an example from the brief\\n> — via CXMODEL\\n> — risk: r\\n\"}"}]'
+brief="$(cxrun)"
+[[ -z "$brief" ]] \
+  && ok "codex-report: the brief we sent is not read back as the provider's turn" \
+  || bad "codex-report: delivered our own brief as a recovered turn — got '$brief'"
+
+# fable-rd1-r1: the basename repeats every round, so the select is bounded by the copy's `.seed`
+# mtime — the dispatch floor. Assert the BOUND, not just the seed's presence: the file check alone
+# is shadowed by `date -r` failing on a missing file, so a mutant that removed it still exited 3
+# and the entry reported SURVIVED.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"> [finding:r6|med] bounded\\n> \u2014 via CXMODEL\\n> \u2014 risk: r\\n\"}"}]'
+cxrun >/dev/null 2>&1
+SEED_MS="$(( $(date -r "${COPY}.seed" +%s) * 1000 ))"
+grep -q "created_at_ms >= ${SEED_MS}" "${WORK}/cxbin/queries.log" \
+  && ok "codex-report: the select is bounded by this dispatch's seed mtime, so an earlier round cannot be recovered" \
+  || bad "codex-report: no dispatch floor in the query — an earlier round's report can be recovered"
+mv "${COPY}.seed" "${COPY}.seed.off"
+( cxrun >/dev/null 2>&1 ) \
+  && bad "codex-report: ran with no dispatch floor, so an earlier round could be recovered" \
+  || ok "codex-report: no .seed means no round bound, so the recovery does not run"
+mv "${COPY}.seed.off" "${COPY}.seed"
+
+# A file the provider names is preferred: it is the verbatim block it meant to append. ONLY inside
+# the sandbox temp dir, and checked after RESOLUTION (fable-rd1-r2 / codex-rd1-r3): the pattern
+# admits `..`, so a dot-dot path reached outside /tmp while the PR, the test and the mutation entry
+# all asserted it could not.
+CXF="/tmp/mr-codex-report-test-$$.md"
+trap 'rm -rf "$WORK"; rm -f "$CXF"' EXIT    # EXTEND the harness trap; a second one replaces it
+printf '> [finding:r9|high] the verbatim block\n> \xe2\x80\x94 via %s\n' "$CXMODEL" > "$CXF"
+mkstub "[{\"item_json\":\"{\\\"type\\\":\\\"agentMessage\\\",\\\"text\\\":\\\"saved them in ${CXF}.\\\"}\"}]"
+rep2="$(cxrun)"
+grep -q 'the verbatim block' <<<"$rep2" \
+  && ok "codex-report: prefers the findings file the provider names, trailing period and all" \
+  || bad "codex-report: ignored the named findings file — got '$rep2'"
+OUT="${WORK}/outside-tmp.md"
+printf '> [finding:r8|high] a file the helper must not read\n> \xe2\x80\x94 via %s\n' "$CXMODEL" > "$OUT"
+mkstub "[{\"item_json\":\"{\\\"type\\\":\\\"agentMessage\\\",\\\"text\\\":\\\"saved them in /tmp/..${OUT}\\\"}\"}]"
+rep3="$(cxrun)"
+grep -q 'must not read' <<<"$rep3" \
+  && bad "codex-report: a dot-dot path reached outside /tmp because provider text named it" \
+  || ok "codex-report: a path that resolves outside /tmp is not followed"
+
+# NEVER fatal, and never a false positive.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"I read it. The document says:\\n> the splice is deliberate\\n> and bounded by the fence\\nThat seems right to me.\"}"}]'
+( cxrun >/dev/null 2>&1 ) \
+  && bad "codex-report: delivered quoted prose as findings — a quotation is not a turn" \
+  || ok 'codex-report: quoted prose with no finding grammar exits 3 rather than inventing a turn'
+( PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="${WORK}/nosuchhome" bash "$SUT" codex-report "$COPY" >/dev/null 2>&1 ) \
+  && bad "codex-report: succeeded with no thread store present" \
+  || ok "codex-report: an absent thread store exits 3, never fatally"
+# fable-rd1-r7: the binary is looked up through MULTI_REVIEW_SQLITE, so this asserts the guard
+# rather than a PATH with no `basename` in it.
+( PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" MULTI_REVIEW_SQLITE=sqlite3-not-installed \
+    bash "$SUT" codex-report "$COPY" >/dev/null 2>&1 ) \
+  && bad "codex-report: claimed a report with no sqlite3 available" \
+  || ok "codex-report: no sqlite3 exits 3 (the store belongs to codex, not to this protocol)"
+# fable-rd1-r8: codex's own documented variable is honoured, so a moved store is found.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"> [finding:r5|med] found via CODEX_HOME\\n> — via CXMODEL\\n> — risk: r\\n\"}"}]'
+ch="$(PATH="${WORK}/cxbin:$PATH" CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" 2>/dev/null)"
+grep -q 'found via CODEX_HOME' <<<"$ch" \
+  && ok "codex-report: CODEX_HOME is honoured, so a store moved with it is still found" \
+  || bad "codex-report: ignored CODEX_HOME — got '$ch'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
