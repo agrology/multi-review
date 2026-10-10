@@ -1094,26 +1094,44 @@ mutations() {
   # guard here protects an authority boundary rather than a behaviour. Each one is the difference
   # between the engineer own decision binding and anyone with a keyboard retiring findings.
 
-  # WRITE ACCESS. The one that matters on a public repo, and autopost reaches those now: without
-  # it a drive-by comment retires a finding by typing the right string.
+  # IDENTITY OUT OF BAND. The candidates come from the `.records` sidecar, written from GitHub own
+  # JSON where a body is structurally bound to the account that posted it. Read them from the
+  # rendered replies instead and a commenter with no write access puts a maintainer header in
+  # their own body and has a finding retired under that login -- a forgery and an impersonation,
+  # and no parsing rule closes it, because there the header and the body are the same bytes.
+  mutate 'pr/refute-identity-out-of-band' 'scripts/multi-review-pr.sh' replace \
+    'a forged body header was taken as the commenter identity' 'multi-review-pr.test.sh' \
+    '    | [ ($c.user.login // ""), ($c.author_association // "NONE"), .id,' \
+    '    | [ (($c.body // "") | split("\n")[0] | split(" ")[0]), "OWNER", .id,'
+
+  # WRITE ACCESS, asked of GitHub. The one that matters on a public repo, and autopost reaches
+  # those now. `author_association` cannot answer it: COLLABORATOR covers read and triage invites
+  # and MEMBER is organisation membership, so a triager retires findings without this query.
+  mutate 'pr/refute-github-write-access' 'scripts/multi-review-pr.sh' replace \
+    'triage permission was accepted as write access' 'multi-review-pr.test.sh' \
+    '    elif _has_write_access "$rf_host" "$rf_owner" "$rf_repo" "$rlogin"; then' \
+    '    elif true; then'
+
+  # The association pre-filter is reject-only, and it is what stops a NONE or CONTRIBUTOR
+  # commenter before any query runs.
   mutate 'pr/refute-requires-write-access' 'scripts/multi-review-pr.sh' replace \
     'CONTRIBUTOR is not write access but was allowed to refute' 'multi-review-pr.test.sh' \
-    '      if (!(assoc in writer)) { print "skip " id ": " login " is " assoc ", not a writer" > "/dev/stderr"; next }' \
-    '      if (0) { next }'
+    '      OWNER | MEMBER | COLLABORATOR) ;;' \
+    '      *) ;;'
 
-  # A record naming an unraised id fails the table parse with "response to unknown finding id",
+  # A record naming an unraised id fails the table parse with "refutation of unknown finding id",
   # and it lands in a document the author cannot edit -- so the review is stuck, not merely wrong.
   mutate 'pr/refute-known-id' 'scripts/multi-review-pr.sh' replace \
     'an unknown finding id was written as a record' 'multi-review-pr.test.sh' \
-    '      if (!(id in ok))        { print "skip " id ": names no finding in this review" > "/dev/stderr"; next }' \
-    '      if (0) { next }'
+    '    elif ! _id_listed "$rid" "$ids"; then' \
+    '    elif false; then'
 
-  # Idempotency. `refute` runs every round after `refresh`, and a second record for one finding is
-  # parse-fatal ("multiple responses to finding") -- again in a doc the author cannot repair.
+  # Idempotency. `refute` runs every round after `refresh`, and a second refutation of one finding
+  # is parse-fatal -- again in a doc the author cannot repair.
   mutate 'pr/refute-one-record-per-finding' 'scripts/multi-review-pr.sh' replace \
     're-running wrote' 'multi-review-pr.test.sh' \
-    '      if (id in done)         { print "skip " id ": already answered in this review" > "/dev/stderr"; next }' \
-    '      if (0) { next }'
+    '    elif _id_listed "$rid" "$refuted"; then' \
+    '    elif false; then'
 
   # The id list must come from the REVIEW CHANNEL. Read the whole file and the replies section --
   # which is author-controlled and quotes ids by nature -- supplies the very list the marker is
@@ -1122,6 +1140,21 @@ mutations() {
     'a finding declared inside a reply was accepted as refutable' 'multi-review-pr.test.sh' \
     '  chan="$(_review_channel "$scratch")"' \
     '  chan="$(cat "$scratch")"'
+
+  # The reason is published verbatim and travels through a tab-separated record, so a tab inside
+  # it ends the field and publishes a truncated version of what the human actually wrote. For a
+  # record that binds mechanically on a stated reason, that is a correctness defect.
+  mutate 'pr/refute-reason-flattened' 'scripts/multi-review-pr.sh' replace \
+    'the reason did not survive transport' 'multi-review-pr.test.sh' \
+    '        (.rest | gsub("[\t\r\u000b\f]"; " ") | gsub("^[ \t:-]+"; "") | gsub(" +"; " ") | sub(" +$"; "")) ]' \
+    '        (.rest | gsub("^[ \t:-]+"; "")) ]'
+
+  # The record must land inside the review channel, which is the only place `_table` reads. EOF
+  # and the channel end coincide only while `## Review` is the final section.
+  mutate 'pr/refute-record-in-review-channel' 'scripts/multi-review-pr.sh' replace \
+    'the record landed outside the review channel' 'multi-review-pr.test.sh' \
+    '      for (i = 1; i < stop; i++) print lines[i]' \
+    '      for (i = 1; i <= NR; i++) print lines[i]'
 
   # A model must not retire a finding nobody with write access refuted. Lose this and the primary
   # can close its own inconvenient findings under a record that claims human authority.
@@ -1137,12 +1170,49 @@ mutations() {
     '          } else if (m ~ /^human:/) {' \
     '          } else if (0) {'
 
+  # A refutation is a RETIREMENT, not a response, so it must not occupy the one response slot. It
+  # always arrives on a finding that already carries an agree -- a reply names an earlier round
+  # finding, and convergence required that round to answer it -- so folding the two together made
+  # the whole feature unreachable and parse-fatal on the only shape that actually occurs.
+  mutate 'star/refuted-coexists-with-response' 'scripts/multi-review-star.sh' replace \
+    'agree + refuted on one finding did not parse' 'multi-review-star.test.sh' \
+    '          } else if (pv == "refuted") {' \
+    '          } else if (0) {'
+
+  # Idempotency, in the grammar this time: two refutations of one finding is still an error.
+  mutate 'star/refuted-one-per-finding' 'scripts/multi-review-star.sh' replace \
+    'two refutations of one finding were accepted' 'multi-review-star.test.sh' \
+    '            if (pi in refuter) fail("multiple refutations of finding: " pi)' \
+    '            if (0) fail("unreachable")'
+
+  # The retirement OVERRIDES whatever the primary said, or an agreed-then-refuted finding keeps
+  # publishing as work the author still owes -- the republish loop #148 exists to close.
+  mutate 'star/refuted-overrides-response' 'scripts/multi-review-star.sh' replace \
+    'a retired finding was still posted inline' 'multi-review-star.test.sh' \
+    '        if (id in refuter) state = "refuted"' \
+    '        if (0) state = "refuted"'
+
   # And the record must not count as a second primary identity, or a review carrying any
   # refutation can never converge: retiring a finding would block the gate instead of clearing it.
   mutate 'star/converged-ignores-human-responder' 'scripts/multi-review-star.sh' replace \
     'a doc carrying a refutation could not converge' 'multi-review-star.test.sh' \
     '  awk -F'"'"'\t'"'"' '"'"'NF>=4 && $4!="" && $4 !~ /^human:/ {print $4}'"'"'' \
     '  awk -F'"'"'\t'"'"' '"'"'NF>=4 && $4!="" {print $4}'"'"''
+
+  # The reason is captured so the AUTHOR can see why a finding is settled, and it reached nobody:
+  # a retired finding was indistinguishable from one that never existed, and a review whose
+  # findings were all refuted published "No findings."
+  mutate 'star/refuted-reaches-the-author' 'scripts/multi-review-star.sh' replace \
+    'the published review does not mention the retirement' 'multi-review-star.test.sh' \
+    '        if (refuted_n > 0) { printf "**Retired by a refutation from someone with write access (%d)**\n", refuted_n; emit("refuted") }' \
+    '        if (0) { emit("refuted") }'
+
+  # The gate decides whether to publish, and a human having already retired findings changes that
+  # decision -- so the count and the reason are shown before the approval, not only after it.
+  mutate 'star/refuted-shown-at-the-gate' 'scripts/multi-review-star.sh' replace \
+    'the gate summary is silent about the retirement' 'multi-review-star.test.sh' \
+    '      if(rf>0){ printf "Retired by a human refutation (%d) — settled, not for the primary to re-open:\n", rf+0; emit("refuted"); print "" }' \
+    '      if(0){ emit("refuted") }'
 
   # --- blind-copy guard (#39) ---
   # Independence is the property the star model rests on, and seeding is the one step done by hand.
@@ -3001,7 +3071,7 @@ mutations() {
   # prints "No findings." above a section listing them — the same false message, inverted.
   mutate 'star/compose-review-no-findings-counts-fixed' 'scripts/multi-review-star.sh' replace \
     'compose-review said No findings. on a review that raised and fixed one' 'multi-review-star.test.sh' \
-    '      if (agreed_n == 0 && dissent_n == 0 && open_n == 0 && fixed_n == 0) {' \
+    '      if (agreed_n == 0 && dissent_n == 0 && open_n == 0 && fixed_n == 0 && refuted_n == 0) {' \
     '      if (agreed_n == 0 && dissent_n == 0 && open_n == 0) {'
 
   # The status check on the resolved read. The pipefail-vs-unchecked-status distinction #59 shipped:

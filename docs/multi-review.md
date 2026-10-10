@@ -66,19 +66,50 @@ refutation (spec I1). `multi-review-pr.sh refute` authors the record:
 
 It is the only record disclosed under a human identity, and `_table` enforces that in both
 directions: a `[refuted:]` not disclosed as `human:<login>` is parse-fatal, and so is a `human:`
-disclosure on any other verb. A refuted finding is neither open nor standing — it does not block
-convergence, and the `human:` responder is excluded from the single-primary check, so retiring a
-finding clears the gate instead of blocking it. Ids are per-round, so a record retires *that id*:
-if a later push genuinely reintroduces the defect, the next round mints a new id and reviews it on
-the merits.
+disclosure on any other verb.
 
-Three guards stand between a comment and that authority. Write access comes from GitHub's own
-`author_association` (`OWNER`, `MEMBER`, `COLLABORATOR`), captured into the reply header at fetch
-time rather than re-derived from a login in text the author controls — this is what stops a
-drive-by comment on a public repo from retiring findings. The id must name a finding in the review
-channel, never one the replies section merely mentions. And the reason is flattened to one line
-(spec I3), which *is* the trust boundary: a control line is only ever read at the start of a line,
-so a reason that cannot contain a newline cannot forge a second record however it is written.
+**The record is a retirement, not a response.** It does not occupy the one response slot, so it
+coexists with the `[agree:]` or `[dispute:]` the finding already carries — and it must, because
+that is the only state a reply can ever concern: a reply names a finding raised in an *earlier*
+round, and convergence required that round to answer every finding before the round that ingests
+replies ran at all. A refutation therefore always arrives on an already-answered finding. Treating
+it as a competing response made the whole feature unreachable, failing as a duplicate response on
+the one shape that actually occurs while every test passed against a shape that never happens.
+
+The retirement **overrides** whatever the primary said: a refuted finding is neither open nor
+standing, it does not block convergence, it leaves the resolve worklist, it is posted inline to
+nobody, and the `human:` responder is excluded from the single-primary check — so retiring a
+finding clears the gate instead of blocking it. It is still *reported*: `compose-review` publishes
+it under its own heading with the login and the reason, and `gate-summary` shows the same before a
+human approves the publish. Ids are per-round, so a record retires *that id*: if a later push
+genuinely reintroduces the defect, the next round mints a new id and reviews it on the merits.
+
+Four guards stand between a comment and that authority.
+
+**Identity comes from out of band.** The candidates are read from GitHub's JSON at fetch time —
+where a body is structurally bound to the account that posted it — and stored in the `.records`
+sidecar, which no author can write. They are never parsed back out of the rendered `## Author
+replies` section. Doing that was a real hole: a commenter with no write access put a maintainer's
+header line inside their *own* comment body and had a finding retired under that maintainer's
+login, a forgery and an impersonation at once. No parsing rule closes it, because in that section
+the header and the body are the same bytes — a column-1 rule, a field count and an all-caps
+association all accept a line the author typed.
+
+**Write access is asked of GitHub**, per login, through the repository permission endpoint, and
+only `admin`, `maintain` or `write` qualifies. `author_association` serves only as a reject-only
+pre-filter, because it does not carry permission at all: `COLLABORATOR` is *any* invited
+collaborator including read and triage, and `MEMBER` is organisation membership, which says
+nothing about this repository. The query **fails closed** — a 404, an auth failure or a dead
+network grants nobody authority.
+
+**The id must name a finding in the review channel**, never one the replies section merely
+mentions, or an author could declare a finding and retire it in the same comment.
+
+**And the reason is flattened to one line** (spec I3), which *is* the trust boundary: a control
+line is only ever read at the start of a line, so a reason that cannot contain a newline cannot
+forge a second record however it is written. Flattening happens where the reason is read, so a
+tab in it cannot truncate the published reason either — a record that binds mechanically on a
+stated reason must not quietly publish a different one.
 
 Everything else in a reply the primary adjudicates, and which record is available depends on what
 it has already written about that finding. Three cases, because `[agree:]`/`[dispute:]` are

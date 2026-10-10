@@ -890,9 +890,17 @@ _render_replies() {
         # in text the author controls. `// "NONE"` fails CLOSED -- a gh version that drops the
         # field grants nobody authority rather than everybody.
         "\(.user.login) \u00b7 \(.author_association // "NONE") \u00b7 \(.created_at) \u00b7 \(.kind // "comment")\n"
-        + (if (.body | length) > $maxc
+        + ((if (.body | length) > $maxc
            then (.body[0:$maxc] + "\n[... reply truncated at \($maxc) characters ...]")
            else .body end)
+          # A body line shaped like the header above is INDENTED, so it can never be read as one.
+          # The refutation guard takes the commenter identity from that header; left verbatim, a
+          # commenter with no write access could put a maintainer header in their own body and
+          # have a finding retired under that maintainer login (fable-rd1-r2). Indenting here and
+          # requiring column 0 in `cmd_refute` are one fix in two places -- change neither alone.
+          | split("\n")
+          | map(if test("^[^ \t\u00b7]+ \u00b7 [A-Z][A-Z_]* \u00b7 ") then "  " + . else . end)
+          | join("\n"))
         + "\n"
       ) | join("\n"))
     + (if .total > (.shown | length)
@@ -1038,11 +1046,83 @@ _ingest_replies() { # <scratch> <owner> <repo> <number> <round>
     # hand on a two-reply same-second thread with the cap at 1 before this line existed.
     [[ "$since" == "$wm" ]] && ids="$(_merge_ids "$seen_csv" "$ids")"
     [[ -n "$ids" ]] && { cmd_replies_ids "$scratch" "$ids" || true; }
+    # Refutation candidates, from the SELECTION rather than the text just spliced (fable-rd1-r2).
+    # Best-effort like the two records above: a round that fails to store them loses a refutation
+    # until the next fetch, while a round that dies here loses the replies as well.
+    local rfts; rfts="$(_refutations_of_replies "$sel" 2>/dev/null || true)"
+    [[ -n "$rfts" ]] && { cmd_refutations "$scratch" "$rfts" || true; }
     rm -f "$tmpf"
     return 0
   fi
   rm -f "$tmpf"
   return 1
+}
+
+# _id_listed <id> <newline-separated-list> -> 0 when the id is in the list, exactly.
+#
+# A helper only so the two guards that use it sit on lines the mutation table can target: an
+# entry is written as a shell single-quoted string, so a target line containing a single quote
+# cannot be expressed at all. Same reason `_review_channel` and `_model_responders` exist.
+_id_listed() {
+  # A here-string, not a pipeline: `grep -q` exits on the first match, and under `pipefail` the
+  # producer then dies of SIGPIPE and the whole check reports 141 (#110).
+  grep -qxF "${1:?id}" <<< "${2-}"
+}
+
+# _refutations_of_replies <selection-json> -> "<login>\t<assoc>\t<id>\t<reason>" per marker.
+#
+# Read from the JSON, where a body is STRUCTURALLY bound to the account that posted it -- never
+# from the rendered replies. Parsing identity out of the rendered text is what let a commenter
+# with no write access put a maintainer header in their own body and have a finding retired under
+# that login (fable-rd1-r2). No shape of parsing can close that: in the rendered section the
+# header and the body are the same bytes, so a column-0 rule, a field-count rule and an all-caps
+# rule all accept a line the author typed. Here they are different JSON fields and the question
+# cannot arise.
+#
+# The reason is FLATTENED here (spec I3), at the boundary it crosses, so everything downstream
+# can treat it as one tab-free line -- including the sidecar record below, which is plain TSV.
+_refutations_of_replies() {
+  jq -r '
+    .shown[]? | . as $c
+    | ($c.body // "")
+    | split("\n")[]
+    | select(test("\\[refuted:[A-Za-z0-9_-]+\\]"))
+    | capture("\\[refuted:(?<id>[A-Za-z0-9_-]+)\\](?<rest>.*)")
+    | [ ($c.user.login // ""), ($c.author_association // "NONE"), .id,
+        (.rest | gsub("[\t\r\u000b\f]"; " ") | gsub("^[ \t:-]+"; "") | gsub(" +"; " ") | sub(" +$"; "")) ]
+    | @tsv
+  ' <<< "$1"
+}
+
+# cmd_refutations <scratch> [<tsv>] -> read, or append, the refutation candidates GitHub reported.
+#
+# Beside the watermark and the ingested ids, and for the reason stated there: this is the tool's
+# own bookkeeping, not part of the document a reviewer reads, and the document is author-influenced
+# text. That distinction is the whole fix for fable-rd1-r2 -- authority now travels in a file no
+# author can write, rather than in a section composed from what they typed.
+#
+# Plain TSV is safe because `_refutations_of_replies` has already flattened the reason: no tabs,
+# no newlines. Appended and deduped rather than replaced, so a candidate fetched in one round but
+# not yet acted on is still there in the next; the `[refuted:]` records in the document itself are
+# what make writing idempotent.
+cmd_refutations() { # <scratch> [<tsv>]
+  local scratch="${1:?scratch}" tsv="${2-}" rec
+  rec="$(_records_path "$scratch")"
+  if [[ -z "$tsv" ]]; then
+    [[ -f "$rec" ]] || return 3
+    sed -n -E 's/^<!-- multi-review-pr-refutation: (.*) -->$/\1/p' "$rec" 2>/dev/null
+    return 0
+  fi
+  local tmp; tmp="$(mktemp "${rec}.tmp.XXXXXX")" || die "mktemp failed" 1
+  # Dedup is scoped to THIS record kind. Deduping the whole sidecar would silently collapse other
+  # kinds too -- the anchor records tolerate repeats by taking the first match, and nothing here
+  # should decide that for them.
+  { [[ -f "$rec" ]] && cat "$rec"
+    printf '%s\n' "$tsv" | while IFS= read -r line; do
+      [[ -n "$line" ]] && printf '<!-- multi-review-pr-refutation: %s -->\n' "$line"
+    done; } | awk '/^<!-- multi-review-pr-refutation: / { if (seen[$0]++) next } { print }' > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$rec" || { rm -f "$tmp"; die "cannot update the records sidecar: $rec" 1; }
 }
 
 # cmd_replies_record <scratch> [<iso>] -> read, or write, the ingest watermark.
@@ -1264,79 +1344,115 @@ _review_channel() {
        END { for (i = last + 1; i <= NR; i++) print a[i] }' "$1" 2>/dev/null
 }
 
+# _has_write_access <host> <owner> <repo> <login> -> 0 when GitHub says this login can write.
+#
+# GitHub is the authority and `author_association` is NOT it: COLLABORATOR is any invited
+# collaborator, read and triage included, and MEMBER is organisation membership, which says
+# nothing about this repository (fable-rd1-r3). The association cannot be mapped onto permission
+# because it does not carry permission, so this asks the question directly.
+#
+# FAILS CLOSED on every error. A 404 (the login is not a collaborator), an auth failure or a dead
+# network all grant nobody authority -- the cost of that is a refutation that does not bind until
+# the next round, against a finding retired by someone who never had write access.
+_has_write_access() {
+  local host="${1:?host}" owner="${2:?owner}" repo="${3:?repo}" login="${4:?login}" perm
+  perm="$(GH_HOST="$host" gh api "repos/${owner}/${repo}/collaborators/${login}/permission" \
+            --jq '.permission' 2>/dev/null)" || return 1
+  case "$perm" in
+    admin | maintain | write) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # cmd_refute <scratch> -- author `[refuted:<id>]` records from the ingested author replies.
 #
 # This is spec I1 made mechanical: a finding refuted by someone with WRITE ACCESS is retired
-# permanently, with no model adjudicating the refutation. Three guards stand between a PR comment
+# permanently, with no model adjudicating the refutation. Four guards stand between a PR comment
 # and a record carrying that authority.
 #
-# 1. WRITE ACCESS, from GitHub rather than from the text. `_render_replies` captured
-#    `author_association` into each reply header at fetch time, and only OWNER, MEMBER and
-#    COLLABORATOR may refute. Without this a drive-by comment on a public repo retires findings by
-#    typing the right string -- and autopost now runs on public repos, so that is not theoretical.
-# 2. A KNOWN finding id. An unmatched id would produce a record that fails the table parse with
-#    "response to unknown finding id", breaking every later consumer of a doc the author cannot
-#    edit.
-# 3. ONE LINE (spec I3). The reason is flattened and capped, which IS the trust boundary: the
-#    table only ever reads a control line at the start of a line, so a reason that cannot contain
-#    a newline cannot forge a second record however it is written.
+# 1. IDENTITY, out-of-band. The candidates come from the `.records` sidecar, which the reply fetch
+#    wrote from GitHub's own JSON where a body is structurally bound to the account that posted
+#    it. They are NOT parsed out of the rendered `## Author replies` section. Reading them there
+#    let a commenter with no write access put a maintainer header in their own body and have a
+#    finding retired under that login (fable-rd1-r2) -- header and body are the same bytes in that
+#    section, so no parsing rule can separate them.
+# 2. WRITE ACCESS, asked of GitHub. `_has_write_access` queries the repository permission for the
+#    stored login; `author_association` only serves as a reject-only pre-filter, because it does
+#    not carry permission at all (fable-rd1-r3). Without this a drive-by comment on a public repo
+#    retires findings -- and autopost now runs on public repos, so that is not theoretical.
+# 3. A KNOWN finding id, read from the REVIEW CHANNEL. An unmatched id would produce a record that
+#    fails the table parse with "refutation of unknown finding id", breaking every later consumer
+#    of a doc the author cannot edit. Taking the id list from the whole file would let the author
+#    supply the very list their marker is checked against.
+# 4. ONE LINE (spec I3). The reason is flattened at the fetch boundary and capped here, which IS
+#    the trust boundary: the table only ever reads a control line at the start of a line, so a
+#    reason that cannot contain a newline cannot forge a second record however it is written.
 #
-# Idempotent: a finding that already carries any response is skipped, so re-running after a
-# refresh cannot write a second record and trip "multiple responses to finding".
+# Idempotent: a finding that already carries a `[refuted:]` record is skipped. An `[agree:]` or
+# `[dispute:]` does NOT block one -- a refutation is a retirement that coexists with a response,
+# and treating it as a response made the whole feature unreachable (fable-rd1-r1).
 cmd_refute() { # <scratch> -> writes records; prints one line per record, exit 3 = nothing to do
-  local scratch="${1:?scratch}" replies ids wrote=0 tmp
+  local scratch="${1:?scratch}" cand ids wrote=0 tmp
   [[ -f "$scratch" ]] || die "scratch file not found: $scratch" 1
-  replies="$(_replies_text "$scratch")"
-  [[ -n "$replies" ]] || { echo "multi-review-pr: no author replies section to read" >&2; return 3; }
 
-  # Every finding id the doc knows, and every id that already carries a response. Both come from
-  # the review channel, never from the replies.
-  # Scoped to the review channel with the same last-heading idiom `_anchor_path` uses -- pr.sh
-  # does not source core.sh, and the scope matters twice over here: the replies section sits ABOVE
-  # `## Review` and quotes finding ids by nature, so reading the whole file would let the author
-  # supply the very id list their marker is checked against.
+  cand="$(cmd_refutations "$scratch" 2>/dev/null || true)"
+  [[ -n "$cand" ]] || { echo "multi-review-pr: no refutation candidates recorded for this review" >&2; return 3; }
+
+  # PR coordinates, for the write-access query below. From the scratch's own header, the same
+  # way `publish` reads it, so the real host is used rather than a reconstructed github.com.
+  local rf_url rf_host rf_owner rf_repo
+  rf_url="$(grep -m1 -E '^- \*\*PR:\*\* ' "$scratch" | sed -E 's/^- \*\*PR:\*\* //')"
+  if [[ "$rf_url" =~ ^https?://([^/]+)/([^/]+)/([^/]+)/pull/[0-9]+ ]]; then
+    rf_host="${BASH_REMATCH[1]}"; rf_owner="${BASH_REMATCH[2]}"; rf_repo="${BASH_REMATCH[3]}"
+  else
+    die "cannot parse PR url for the write-access check: ${rf_url:-<none>}" 1
+  fi
+
+  # Every finding id the doc knows, and every id that already carries a refutation. Both come from
+  # the review channel, with the same last-heading idiom `_anchor_path` uses -- pr.sh does not
+  # source core.sh.
   local chan
   chan="$(_review_channel "$scratch")"
   ids="$(printf '%s\n' "$chan" | sed -n -E 's/^> \[finding:([A-Za-z0-9_-]+)[]|].*/\1/p' | sort -u)"
-  local answered
-  answered="$(printf '%s\n' "$chan" | sed -n -E 's/^> \[(agree|dispute|refuted):([A-Za-z0-9_-]+)].*/\2/p' | sort -u)"
+  local refuted
+  refuted="$(printf '%s\n' "$chan" | sed -n -E 's/^> \[refuted:([A-Za-z0-9_-]+)].*/\1/p' | sort -u)"
 
   tmp="$(mktemp)" || die "cannot create temp file" 1
-  # Through ENVIRON, never `-v`: these values are newline-separated lists, and `-v` can carry
-  # neither a newline nor a backslash intact -- it processes escapes in the value, which has
-  # already cost this repo one silent guard (the replies-section regex arriving as a capture
-  # group). ENVIRON hands awk the bytes.
-  REFUTE_KNOWN="$ids" REFUTE_ANSWERED="$answered" REFUTE_MAX="$REFUTE_REASON_MAX" \
-  awk '
-    BEGIN {
-      max = ENVIRON["REFUTE_MAX"] + 0
-      n = split(ENVIRON["REFUTE_KNOWN"], k, "\n");    for (i = 1; i <= n; i++) if (k[i] != "") ok[k[i]] = 1
-      n = split(ENVIRON["REFUTE_ANSWERED"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") done[a[i]] = 1
-      split("OWNER MEMBER COLLABORATOR", w, " ");  for (i in w) writer[w[i]] = 1
-    }
-    # A reply header, as _render_replies writes it: login MIDDOT assoc MIDDOT ts MIDDOT kind.
-    # Splitting on the middot keeps this independent of what a login or a timestamp contains.
-    index($0, " \xc2\xb7 ") > 0 {
-      n = split($0, f, " \xc2\xb7 ")
-      if (n >= 4) { login = f[1]; assoc = f[2]; next }
-    }
-    # The marker the author types. A leading quote is ALLOWED and expected: an author answering a
-    # finding quotes the grammar back, which is how all three public-api#24 rebuttals were written.
-    match($0, /\[refuted:[A-Za-z0-9_-]+\]/) {
-      marker = substr($0, RSTART, RLENGTH)
-      id = marker; sub(/^\[refuted:/, "", id); sub(/\]$/, "", id)
-      reason = substr($0, RSTART + RLENGTH)
-      gsub(/^[ \t:-]+|[ \t]+$/, "", reason)
-      if (login == "")        { print "skip " id ": no reply header seen before the marker" > "/dev/stderr"; next }
-      if (!(assoc in writer)) { print "skip " id ": " login " is " assoc ", not a writer" > "/dev/stderr"; next }
-      if (!(id in ok))        { print "skip " id ": names no finding in this review" > "/dev/stderr"; next }
-      if (id in done)         { print "skip " id ": already answered in this review" > "/dev/stderr"; next }
-      if (reason == "")       { print "skip " id ": the marker carries no reason" > "/dev/stderr"; next }
-      if (length(reason) > max) reason = substr(reason, 1, max) " [... truncated ...]"
-      done[id] = 1                      # one record per id even if the author repeats the marker
-      printf "%s\t%s\t%s\n", id, login, reason
-    }
-  ' <<< "$replies" > "$tmp"
+  # Write access is memoised through two plain strings: macOS ships bash 3.2, which has no
+  # associative arrays. One query per distinct login, never one per marker.
+  local rf_ok="" rf_no="" rid rlogin rassoc rreason done_ids=""
+  while IFS=$'\t' read -r rlogin rassoc rid rreason; do
+    [[ -n "$rid" ]] || continue
+    if [[ " $done_ids " == *" $rid "* ]]; then
+      continue                                  # one record per id even if the marker repeats
+    elif _id_listed "$rid" "$refuted"; then
+      echo "skip $rid: already refuted in this review" >&2; continue
+    elif ! _id_listed "$rid" "$ids"; then
+      echo "skip $rid: names no finding in this review" >&2; continue
+    elif [[ -z "$rreason" ]]; then
+      echo "skip $rid: the marker carries no reason" >&2; continue
+    fi
+    # A REJECT-ONLY pre-filter. It can never grant anything -- nobody forges a weaker identity --
+    # so it only avoids an API call for an association that cannot hold write access.
+    case "$rassoc" in
+      OWNER | MEMBER | COLLABORATOR) ;;
+      *) echo "skip $rid: $rlogin is $rassoc, not a writer" >&2; continue ;;
+    esac
+    if [[ " $rf_ok " == *" $rlogin "* ]]; then
+      :
+    elif [[ " $rf_no " == *" $rlogin "* ]]; then
+      continue
+    elif _has_write_access "$rf_host" "$rf_owner" "$rf_repo" "$rlogin"; then
+      rf_ok="$rf_ok $rlogin"
+    else
+      rf_no="$rf_no $rlogin"
+      echo "skip $rid: ${rf_owner}/${rf_repo} gives $rlogin no write access (GitHub said $rassoc)" >&2
+      continue
+    fi
+    (( ${#rreason} > REFUTE_REASON_MAX )) && rreason="${rreason:0:REFUTE_REASON_MAX} [... truncated ...]"
+    done_ids="$done_ids $rid"
+    printf '%s\t%s\t%s\n' "$rid" "$rlogin" "$rreason" >> "$tmp"
+  done <<< "$cand"
 
   if [[ ! -s "$tmp" ]]; then
     rm -f "$tmp"
@@ -1348,20 +1464,37 @@ cmd_refute() { # <scratch> -> writes records; prints one line per record, exit 3
   # a single awk pass so a failure cannot leave a half-written record behind.
   local out; out="$(mktemp)" || die "cannot create temp file" 1
   awk -v recs="$tmp" '
-    { lines[NR] = $0 }
-    END {
-      last = 0
-      for (i = 1; i <= NR; i++) {
-        if (lines[i] ~ /^```/) fence = !fence
-        else if (!fence && lines[i] == "## Review") last = i
-      }
-      for (i = 1; i <= NR; i++) print lines[i]
+    function flush(  r, f) {
       while ((getline r < recs) > 0) {
         split(r, f, "\t")
         print ""
         print "> [refuted:" f[1] "] " f[3]
         print "> — via human:" f[2]
       }
+    }
+    { lines[NR] = $0 }
+    END {
+      # The END OF THE REVIEW CHANNEL, which is what every consumer reads -- not EOF. `last` was
+      # computed here and then never used, so the records went to EOF while this comment claimed
+      # otherwise (fable-rd1-r4). They coincide only while `## Review` is the final section; a
+      # scratch that ever grows a section after it would have had its records written OUTSIDE the
+      # channel, where `_table` cannot see them and the retirement would silently not bind.
+      last = 0
+      for (i = 1; i <= NR; i++) {
+        if (lines[i] ~ /^```/) fence = !fence
+        else if (!fence && lines[i] == "## Review") last = i
+      }
+      stop = NR + 1
+      if (last > 0) {
+        fence = 0
+        for (i = last + 1; i <= NR; i++) {
+          if (lines[i] ~ /^```/) { fence = !fence; continue }
+          if (!fence && lines[i] ~ /^## /) { stop = i; break }
+        }
+      }
+      for (i = 1; i < stop; i++) print lines[i]
+      flush()
+      for (i = stop; i <= NR; i++) print lines[i]
     }
   ' "$scratch" > "$out" || { rm -f "$tmp" "$out"; die "could not write refutation records" 1; }
   mv "$out" "$scratch"
@@ -1564,6 +1697,8 @@ main() {
     replies-record)  cmd_replies_record "$@" ;;
     replies-ids)     cmd_replies_ids "$@" ;;
     select-replies)  _select_replies "$@" ;;
+    refutations)     cmd_refutations "$@" ;;
+    _refutations_for_test) _refutations_of_replies "$@" ;;
     fetch-replies)   _fetch_replies "$@" ;;
     carried)         cmd_carried "$@" ;;
     refute)          cmd_refute "$@" ;;
