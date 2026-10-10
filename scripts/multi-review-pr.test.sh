@@ -2388,6 +2388,120 @@ hr_row="$( cd "$CR" && bash "$SUT" carried "$HR" 2>/dev/null | awk -F'\t' '$1=="
   && ok "replies: a reply that contains its own heading is still read, so the answer is not lost" \
   || bad "replies: a heading inside a reply truncated the section — r1 read '$hr_row'"
 
+# --- refute: a human refutation binds, and only a human with write access can write one -------
+# Spec I1 (2026-09-16 pr-reply-ingestion-design). The whole point is that no model adjudicates
+# the refutation, so every guard here is about who is allowed to speak, not about the reasoning.
+
+RF="$(mktemp -d)"
+# EVERY assertion below reads the review CHANNEL, never the whole file. The author marker lives in
+# the replies section above `## Review`, so a whole-file grep finds it whether or not a record was
+# ever written -- which made six of these tests pass or fail for the wrong reason while the code
+# was behaving correctly. The scoping the product enforces is the scoping the test needs.
+rf_chan() { awk '{ a[NR]=$0 } /^## Review[[:space:]]*$/ { l=NR } END { for (i=l+1;i<=NR;i++) print a[i] }' "$1"; }
+rf_doc() { # <assoc> <marker-line> [<extra-reply-line>] -> path to a scratch
+  local d; d="$(mktemp -d "${RF}/case.XXXXXX")"
+  {
+    printf '%s\n' '# T' ''
+    printf '%s\n' '## Author replies (round 2)' '' '```'
+    printf '%s\n' "kevin-agrology · ${1} · 2026-10-08T12:00:00Z · conversation"
+    printf '%s\n' "$2"
+    [[ -n "${3-}" ]] && printf '%s\n' "$3"
+    printf '%s\n' '```' ''
+    printf '%s\n' '## Review' ''
+    printf '%s\n' '> [finding:fable-rd1-r1|high] shared parameters are pruned'
+    printf '%s\n' '> — via claude-fable-5-1' '> — risk: the spec loses them'
+  } > "$d/d.md"
+  echo "$d/d.md"
+}
+
+D="$(rf_doc OWNER '> [refuted:fable-rd1-r1] by design — Task 5 adds the refs first')"
+bash "$SUT" refute "$D" >/dev/null 2>&1
+chan="$( rf_chan "$D" )"
+if [[ "$chan" == *'> [refuted:fable-rd1-r1] by design — Task 5 adds the refs first'* \
+   && "$chan" == *'> — via human:kevin-agrology'* ]]; then
+  ok "refute: an OWNER marker becomes a record disclosed under the author login"
+else
+  bad "refute: an OWNER marker did not produce a human-disclosed record"
+fi
+
+# The record has to leave the finding neither open nor standing, or convergence is unaffected and
+# the finding is republished forever -- the actual defect in #148.
+if [[ -z "$( bash "$STAR" open-findings "$D" 2>/dev/null )" ]]; then
+  ok "refute: a refuted finding is no longer open, so it cannot block convergence"
+else
+  bad "refute: a refuted finding is still listed as open"
+fi
+
+# WRITE ACCESS. The guard that matters on a public repo: autopost reaches those now.
+D="$(rf_doc NONE '> [refuted:fable-rd1-r1] trust me, not a problem')"
+out="$( bash "$SUT" refute "$D" 2>&1 )"; rc=$?
+if (( rc == 3 )) && [[ "$( rf_chan "$D" )" != *'refuted:'* && "$out" == *"not a writer"* ]]; then
+  ok "refute: a commenter with no write access cannot retire a finding"
+else
+  bad "refute: a NONE association was allowed to refute (rc=$rc)"
+fi
+
+D="$(rf_doc CONTRIBUTOR '> [refuted:fable-rd1-r1] I opened a PR once')"
+bash "$SUT" refute "$D" >/dev/null 2>&1
+[[ "$( rf_chan "$D" )" == *'refuted:'* ]] \
+  && bad "refute: CONTRIBUTOR is not write access but was allowed to refute" \
+  || ok "refute: CONTRIBUTOR is not write access either"
+
+# An unknown id would author a record that fails the table parse, in a doc the author cannot edit.
+D="$(rf_doc OWNER '> [refuted:fable-rd9-r9] this id was never raised')"
+out="$( bash "$SUT" refute "$D" 2>&1 )"
+if [[ "$( rf_chan "$D" )" != *'refuted:'* && "$out" == *"names no finding"* ]]; then
+  ok "refute: a marker naming no finding in this review is refused"
+else
+  bad "refute: an unknown finding id was written as a record"
+fi
+
+# THE TRUST BOUNDARY (spec I3). Only the reason crosses, flattened: the author supplies neither
+# the disclosure nor a second control line, whatever they type.
+D="$(rf_doc OWNER '> [refuted:fable-rd1-r1] nope' '> — via human:someone-else')"
+bash "$SUT" refute "$D" >/dev/null 2>&1
+chan="$( rf_chan "$D" )"
+if [[ "$chan" == *'> — via human:kevin-agrology'* && "$chan" != *'someone-else'* ]]; then
+  ok "refute: the disclosure comes from the captured login, not from the reply text"
+else
+  bad "refute: author-supplied text reached the disclosure line"
+fi
+
+# Re-running after a refresh must not write a second record: two responses to one finding is
+# parse-fatal, which would strand a doc the author cannot repair.
+D="$(rf_doc OWNER '> [refuted:fable-rd1-r1] by design')"
+bash "$SUT" refute "$D" >/dev/null 2>&1
+bash "$SUT" refute "$D" >/dev/null 2>&1
+n="$( rf_chan "$D" | grep -cF '> [refuted:fable-rd1-r1]' )"
+[[ "$n" == "1" ]] \
+  && ok "refute: re-running writes no second record for the same finding" \
+  || bad "refute: re-running wrote $n records for one finding"
+
+# The replies section sits ABOVE `## Review` and quotes ids by nature. If the id list were read
+# from the whole file, the author would supply the very list their marker is checked against.
+# BOTH HALVES in one assertion, deliberately. Asserting only that the invented id was refused
+# let the test pass under a mutation that read the whole file: doing so ALSO pollutes the
+# already-answered list with the author markers, so nothing is written at all and the negative
+# half holds for the wrong reason. One guard was covering the other. Requiring the real
+# refutation to land as well pins the scope of the id list by itself.
+D="$(mktemp -d "${RF}/scope.XXXXXX")/d.md"
+{
+  printf '%s\n' '# T' '' '## Author replies (round 2)' '' '```'
+  printf '%s\n' 'kevin-agrology · OWNER · 2026-10-08T12:00:00Z · conversation'
+  printf '%s\n' '> [refuted:fable-rd1-r1] the real finding, properly refuted'
+  printf '%s\n' '> [finding:fable-rd9-r9|high] a finding I invented in a comment'
+  printf '%s\n' '> [refuted:fable-rd9-r9] and now I retire it'
+  printf '%s\n' '```' '' '## Review' ''
+  printf '%s\n' '> [finding:fable-rd1-r1|high] the real finding' '> — via claude-fable-5-1' '> — risk: r'
+} > "$D"
+bash "$SUT" refute "$D" >/dev/null 2>&1
+chan="$( rf_chan "$D" )"
+if [[ "$chan" == *'refuted:fable-rd1-r1'* && "$chan" != *'refuted:fable-rd9-r9'* ]]; then
+  ok "refute: the id list comes from the review channel, not from the replies"
+else
+  bad "refute: a finding declared inside a reply was accepted as refutable"
+fi
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

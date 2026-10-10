@@ -3910,6 +3910,79 @@ grep -qE '^fable-rd1-r1	1	low	no-citation	' <<<"$out" \
   && ok "resolve-candidates: a plain English backtick is not treated as a code citation" \
   || bad "resolve-candidates: an English word counted as a citation — got '$out'"
 
+# --- the human-refutation record (spec I1) ----------------------------------------------------
+# `[refuted:]` is the one record disclosed under a human identity, and the identity rule runs in
+# BOTH directions. Each case is asserted through `open-findings`, which exits 2 on a parse
+# failure, because the parse is what every later consumer depends on.
+
+rf_star() { # <response-line> <via-line> -> path
+  local d; d="$(mktemp -d "${WORK}/rf.XXXXXX")"
+  { printf '%s\n' '# Doc' '' '## Review' ''
+    printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+    printf '%s\n' "$1" "$2"
+  } > "$d/d.md"; echo "$d/d.md"
+}
+
+D="$(rf_star '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology')"
+out="$( bash "$SUT" open-findings "$D" 2>&1 )"; rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+  ok "refuted: a human-disclosed record parses and retires the finding"
+else
+  bad "refuted: a valid record did not retire the finding (rc=$rc, out='$out')"
+fi
+
+# A model must not be able to retire a finding nobody with write access refuted.
+D="$(rf_star '> [refuted:fable-rd1-r1] I retire this myself' '> — via claude-opus-5')"
+out="$( bash "$SUT" open-findings "$D" 2>&1 )"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *'must be disclosed as "human:<login>"'* ]]; then
+  ok "refuted: a model-authored refutation is parse-fatal"
+else
+  bad "refuted: a model authored a refutation unchallenged (rc=$rc)"
+fi
+
+# And the other direction: a human identity on any other verb would launder author text into a
+# primary verdict, which is what issue 103 forbids.
+D="$(rf_star '> [agree:fable-rd1-r1] sure' '> — via human:kevin-agrology')"
+out="$( bash "$SUT" open-findings "$D" 2>&1 )"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *'must not be disclosed under a human identity'* ]]; then
+  ok "refuted: a human identity on an agree is parse-fatal"
+else
+  bad "refuted: an agree was accepted under a human identity (rc=$rc)"
+fi
+
+# A seeded refutation would hand a secondary the author rebuttal; a returned one would let a
+# reviewer retire a finding. blind-check and channel-check cover the two directions.
+D="$(rf_star '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology')"
+bash "$SUT" blind-check "$D" >/dev/null 2>&1 \
+  && bad "refuted: blind-check accepted a copy carrying a refutation" \
+  || ok "refuted: blind-check refuses a seed carrying a refutation"
+
+SD="$(mktemp -d "${WORK}/rfc.XXXXXX")"
+{ printf '%s\n' '# Doc' '' '## Review' ''
+  printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+} > "$SD/seed.md"
+cp "$SD/seed.md" "$SD/copy.md"
+printf '%s\n' '> [refuted:fable-rd1-r1] I say so' '> — via human:kevin-agrology' >> "$SD/copy.md"
+bash "$SUT" channel-check --seed "$SD/seed.md" "$SD/copy.md" >/dev/null 2>&1 \
+  && bad "refuted: channel-check admitted a reviewer that authored a refutation" \
+  || ok "refuted: channel-check refuses a reviewer-authored refutation"
+
+# CONVERGENCE. Two things have to hold at once, and they pull in opposite directions: the record
+# must COVER the finding (or the review can never converge with one outstanding), and the human
+# login must not count as a second primary identity (or a review carrying any refutation can
+# never converge at all -- retiring a finding would block the gate instead of clearing it).
+RC="${WORK}/conv-refuted.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 1/2 -->'; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$RC"
+mkcopy "${RC}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra' \
+                     '> [finding:r2|med] beta'  '> — via gpt-5.5' '> — risk: rb'
+bash "$SUT" merge --round 1 "$RC" "${RC}.codex" >/dev/null 2>&1
+{ echo '> [agree:codex-rd1-r1]'; echo '> — via claude-opus-4-8'; } >> "$RC"
+{ echo '> [refuted:codex-rd1-r2] by design'; echo '> — via human:kevin-agrology'; } >> "$RC"
+sed -i.bak 's/awaiting-primary/converged/' "$RC" && rm -f "${RC}.bak"
+bash "$SUT" check-converged "$RC" >/dev/null 2>&1 \
+  && ok "refuted: a refutation covers its finding and is not a second primary" \
+  || bad "refuted: a doc carrying a refutation could not converge"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

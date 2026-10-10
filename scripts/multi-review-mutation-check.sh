@@ -1089,6 +1089,61 @@ mutations() {
     '  elif [[ "$arg" =~ ^[[:space:]]*([Pp][Rr])?[[:space:]]*#?([0-9]+)[[:space:]]*$ ]]; then' \
     '  elif [[ "$arg" =~ ^[[:space:]]*([Pp][Rr])?[[:space:]]*#?([0-9]+) ]]; then'
 
+  # --- the human-refutation record (spec I1, issue #148 part 2) ---
+  # A `[refuted:]` record retires a finding permanently with no model adjudicating it, so every
+  # guard here protects an authority boundary rather than a behaviour. Each one is the difference
+  # between the engineer own decision binding and anyone with a keyboard retiring findings.
+
+  # WRITE ACCESS. The one that matters on a public repo, and autopost reaches those now: without
+  # it a drive-by comment retires a finding by typing the right string.
+  mutate 'pr/refute-requires-write-access' 'scripts/multi-review-pr.sh' replace \
+    'CONTRIBUTOR is not write access but was allowed to refute' 'multi-review-pr.test.sh' \
+    '      if (!(assoc in writer)) { print "skip " id ": " login " is " assoc ", not a writer" > "/dev/stderr"; next }' \
+    '      if (0) { next }'
+
+  # A record naming an unraised id fails the table parse with "response to unknown finding id",
+  # and it lands in a document the author cannot edit -- so the review is stuck, not merely wrong.
+  mutate 'pr/refute-known-id' 'scripts/multi-review-pr.sh' replace \
+    'an unknown finding id was written as a record' 'multi-review-pr.test.sh' \
+    '      if (!(id in ok))        { print "skip " id ": names no finding in this review" > "/dev/stderr"; next }' \
+    '      if (0) { next }'
+
+  # Idempotency. `refute` runs every round after `refresh`, and a second record for one finding is
+  # parse-fatal ("multiple responses to finding") -- again in a doc the author cannot repair.
+  mutate 'pr/refute-one-record-per-finding' 'scripts/multi-review-pr.sh' replace \
+    're-running wrote' 'multi-review-pr.test.sh' \
+    '      if (id in done)         { print "skip " id ": already answered in this review" > "/dev/stderr"; next }' \
+    '      if (0) { next }'
+
+  # The id list must come from the REVIEW CHANNEL. Read the whole file and the replies section --
+  # which is author-controlled and quotes ids by nature -- supplies the very list the marker is
+  # checked against, so an author can declare a finding and retire it in the same comment.
+  mutate 'pr/refute-ids-from-review-channel' 'scripts/multi-review-pr.sh' replace \
+    'a finding declared inside a reply was accepted as refutable' 'multi-review-pr.test.sh' \
+    '  chan="$(_review_channel "$scratch")"' \
+    '  chan="$(cat "$scratch")"'
+
+  # A model must not retire a finding nobody with write access refuted. Lose this and the primary
+  # can close its own inconvenient findings under a record that claims human authority.
+  mutate 'star/refuted-needs-human-disclosure' 'scripts/multi-review-star.sh' replace \
+    'a model authored a refutation unchallenged' 'multi-review-star.test.sh' \
+    '            if (m !~ /^human:.+/) fail("refuted:" pi " must be disclosed as \"human:<login>\", not " m)' \
+    '            if (0) fail("unreachable")'
+
+  # The other direction: a human disclosure on any other verb launders author text into a primary
+  # verdict, which is what issue 103 forbids.
+  mutate 'star/human-disclosure-refuted-only' 'scripts/multi-review-star.sh' replace \
+    'an agree was accepted under a human identity' 'multi-review-star.test.sh' \
+    '          } else if (m ~ /^human:/) {' \
+    '          } else if (0) {'
+
+  # And the record must not count as a second primary identity, or a review carrying any
+  # refutation can never converge: retiring a finding would block the gate instead of clearing it.
+  mutate 'star/converged-ignores-human-responder' 'scripts/multi-review-star.sh' replace \
+    'a doc carrying a refutation could not converge' 'multi-review-star.test.sh' \
+    '  awk -F'"'"'\t'"'"' '"'"'NF>=4 && $4!="" && $4 !~ /^human:/ {print $4}'"'"'' \
+    '  awk -F'"'"'\t'"'"' '"'"'NF>=4 && $4!="" {print $4}'"'"''
+
   # --- blind-copy guard (#39) ---
   # Independence is the property the star model rests on, and seeding is the one step done by hand.
   # Lose the record scan and a copy carrying the previous round's findings dispatches as "blind":
@@ -1096,7 +1151,7 @@ mutations() {
   # still pass while the gate reports N INDEPENDENT secondaries.
   mutate 'star/blind-check-records' 'scripts/multi-review-star.sh' replace \
     "a copy carrying round 1's findings passed as blind" 'multi-review-star.test.sh' \
-    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|refuted|no-findings)[]:]' || true)\"" \
     '  records=""'
 
   # The footer is an independent tell: it mirrors the merged manifest, so its presence alone proves
@@ -1120,7 +1175,7 @@ mutations() {
   # exact blind spot #50 exists to close, and every other guard still passes.
   mutate 'star/blind-check-no-findings' 'scripts/multi-review-star.sh' replace \
     "a copy carrying a previous round's [no-findings] passed as blind (issue #50)" 'multi-review-star.test.sh' \
-    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|refuted|no-findings)[]:]' || true)\"" \
     "  records=\"\$(printf '%s\\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved)[]:]' || true)\""
 
   # Without the die, a copy that claims it found nothing while appending findings merges those
@@ -2854,12 +2909,12 @@ mutations() {
   # primary's.
   mutate 'star/channel-check-reviewer-agree' 'scripts/multi-review-star.sh' replace \
     'channel-check admitted a copy that authored a primary-only agree line' 'multi-review-star.test.sh' \
-    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved|refuted):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
     "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true"
 
   mutate 'star/channel-check-reviewer-dispute' 'scripts/multi-review-star.sh' replace \
     'channel-check admitted a copy that authored a primary-only dispute line' 'multi-review-star.test.sh' \
-    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved|refuted):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
     "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true"
 
   # `[observation]` also pins the EXACT match. Widening it to the `[]:]` class the id-bearing
@@ -2868,7 +2923,7 @@ mutations() {
   # malformed-line one, so this entry proves the exactness, not merely the presence, of the tag.
   mutate 'star/channel-check-reviewer-observation' 'scripts/multi-review-star.sh' replace \
     'channel-check refused a turn over an [observation:-shaped line that is not the marker' 'multi-review-star.test.sh' \
-    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
+    "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved|refuted):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true" \
     "  review_section \"\$copy\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved|observation)[]:]' 2>/dev/null | LC_ALL=C sort > \"\$cprim\" || true"
 
   # The SEED-side capture is deliberately redundant behind the copy-side one above: `comm -13`
@@ -2877,7 +2932,7 @@ mutations() {
   # here — the same reasoning as star/channel-check-signal-strict-seed.
   mutate 'star/channel-check-primary-capture-seed' 'scripts/multi-review-star.sh' replace \
     'SURVIVES-BY-DESIGN' 'multi-review-star.test.sh' \
-    "  review_section \"\$base\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$sprim\" || true" \
+    "  review_section \"\$base\" | strip_fences /dev/stdin | grep -E '^> \\[(agree|dispute|resolved|refuted):|^> \\[observation]' 2>/dev/null | LC_ALL=C sort > \"\$sprim\" || true" \
     "  review_section \"\$base\" | strip_fences /dev/stdin | grep -E '^> \\[(finding):' 2>/dev/null | LC_ALL=C sort > \"\$sprim\" || true"
 
   # EARLIER-ROUND-ONLY (fable-rd1-r4 + codex-rd1-r1, two vendors independently). A record on a
@@ -2986,7 +3041,7 @@ mutations() {
   # `[agree:]` already in this class: the defect AND the fact the primary closed it.
   mutate 'star/blind-check-resolved' 'scripts/multi-review-star.sh' replace \
     'blind-check passed a copy carrying a resolved record' 'multi-review-star.test.sh' \
-    "  records=\"\$(printf '%s\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)\"" \
+    "  records=\"\$(printf '%s\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|resolved|refuted|no-findings)[]:]' || true)\"" \
     "  records=\"\$(printf '%s\n' \"\$live\" | grep -E '^> \\[(finding|agree|dispute|observation|no-findings)[]:]' || true)\""
 
   # The verify/merge handoff check. Without it a contradictory record first surfaces at publish
