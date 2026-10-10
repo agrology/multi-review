@@ -1857,12 +1857,14 @@ mkstub() {
   printf '%s\n' "${1//CXMODEL/$CXMODEL}" > "${WORK}/cxbin/payload.json"
   cat > "${WORK}/cxbin/sqlite3" <<'STUB'
 #!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/queries.log"
 case "$*" in
   *"thread_id in (select distinct thread_id"*) cat "$(dirname "$0")/payload.json" ;;
   *) echo '[]' ;;
 esac
 STUB
   chmod +x "${WORK}/cxbin/sqlite3"
+  : > "${WORK}/cxbin/queries.log"
 }
 cxrun() { PATH="${WORK}/cxbin:$PATH" MULTI_REVIEW_CODEX_HOME="$CXH" bash "$SUT" codex-report "$COPY" 2>/dev/null; }
 
@@ -1922,7 +1924,15 @@ brief="$(cxrun)"
   || bad "codex-report: delivered our own brief as a recovered turn — got '$brief'"
 
 # fable-rd1-r1: the basename repeats every round, so the select is bounded by the copy's `.seed`
-# mtime — the dispatch floor. Without a seed there is no floor and the recovery must not run.
+# mtime — the dispatch floor. Assert the BOUND, not just the seed's presence: the file check alone
+# is shadowed by `date -r` failing on a missing file, so a mutant that removed it still exited 3
+# and the entry reported SURVIVED.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"> [finding:r6|med] bounded\\n> \u2014 via CXMODEL\\n> \u2014 risk: r\\n\"}"}]'
+cxrun >/dev/null 2>&1
+SEED_MS="$(( $(date -r "${COPY}.seed" +%s) * 1000 ))"
+grep -q "created_at_ms >= ${SEED_MS}" "${WORK}/cxbin/queries.log" \
+  && ok "codex-report: the select is bounded by this dispatch's seed mtime, so an earlier round cannot be recovered" \
+  || bad "codex-report: no dispatch floor in the query — an earlier round's report can be recovered"
 mv "${COPY}.seed" "${COPY}.seed.off"
 ( cxrun >/dev/null 2>&1 ) \
   && bad "codex-report: ran with no dispatch floor, so an earlier round could be recovered" \

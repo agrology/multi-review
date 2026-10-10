@@ -1386,13 +1386,13 @@ mutations() {
     '    { endblock() }' \
     '    { print }'
 
-  # Dropped, a recovered report is accepted on the strength of any text in the thread: the helper
-  # must find the protocol's own grammar, or it would deliver a provider's prose -- or an empty
-  # turn -- as findings.
-  mutate 'reviewer/codex-report-needs-grammar' 'scripts/multi-review-reviewer.sh' replace \
-    'delivered quoted prose as findings' 'multi-review-reviewer.test.sh' \
-    '    /^> \[finding:/ {' \
-    '    /^> / {'
+  # RETIRED: reviewer/codex-report-needs-grammar, superseded by codex-report-copy-scoped-ids.
+  # It mutated the block-opening pattern to `/^> /`, which does not loosen the grammar check --
+  # it makes every continuation line open a new block, so legitimate blocks break apart and the
+  # recovery delivers nothing. The gate went red through "did not recover the thread findings",
+  # which is a different guard, and the runner called it MISCREDITED. The property it meant to
+  # protect (a recovered block must carry the protocol's own grammar) is the `id != ""` clause of
+  # the id-shape line below: a prose line yields no id and is dropped there.
 
   # Dropped, a finding the provider QUOTED from the live document is couriered as its own: either
   # verify-vendor quarantines the whole recovered turn on a mixed disclosure, or that finding
@@ -1403,13 +1403,21 @@ mutations() {
     '      okvia = 1'
 
   # Dropped, a NAMESPACED id is accepted -- and a secondary never writes one, so it is by
-  # construction another reviewer's finding quoted out of the document. Also drops the
-  # deliver-once rule: the same block recorded two or three times fails channel-check on a
-  # duplicate finding id, losing the turn one step later than #151 did.
+  # construction another reviewer's finding quoted out of the document. The `id != ""` clause in
+  # the same expression is what requires the protocol's grammar at all.
   mutate 'reviewer/codex-report-copy-scoped-ids' 'scripts/multi-review-reviewer.sh' replace \
     'couriered a foreign finding' 'multi-review-reviewer.test.sh' \
-    '      okid = (id != "" && id !~ /-rd[0-9]+-/ && !(id in seen))' \
+    '      okid = (id != "" && id !~ /-rd[0-9]+-/)' \
     '      okid = 1'
+
+  # Dropped, the same block recorded two or three times is delivered that many times, and
+  # channel-check fails the copy on a duplicate finding id -- losing the turn one step later than
+  # #151 did. Its own entry because it was one expression with the id-shape rule, and a single
+  # mutation then went red through whichever assertion ran first (MISCREDITED).
+  mutate 'reviewer/codex-report-deliver-once' 'scripts/multi-review-reviewer.sh' replace \
+    'duplicate blocks would fail channel-check' 'multi-review-reviewer.test.sh' \
+    '      if (nb > 0 && okid && okvia && !(id in seen)) { for (i = 1; i <= nb; i++) print buf[i]; seen[id] = 1 }' \
+    '      if (nb > 0 && okid && okvia) { for (i = 1; i <= nb; i++) print buf[i]; seen[id] = 1 }'
 
   # Dropped, the thread also yields the `userMessage` we SENT -- the brief, which quotes the
   # finding grammar in full -- so the protocol's own example text comes back as the provider's
@@ -1421,10 +1429,12 @@ mutations() {
 
   # Dropped, nothing bounds the select to THIS dispatch: the copy basename repeats every round, so
   # a round where the provider did nothing recovers the previous round's findings as a fresh turn.
+  # The FLOOR in the query, not the seed file's presence: removing the file check alone leaves
+  # `date -r` failing on the missing file, so the helper still exits 3 and that mutant SURVIVED.
   mutate 'reviewer/codex-report-round-bound' 'scripts/multi-review-reviewer.sh' replace \
-    'ran with no dispatch floor' 'multi-review-reviewer.test.sh' \
-    '  [[ -f "$seed" ]] || return 3' \
-    '  true'
+    'no dispatch floor in the query' 'multi-review-reviewer.test.sh' \
+    '    "select item_json from thread_items where thread_id in (select distinct thread_id from thread_items where instr(item_json, '"'"'${base//\'"'"'/\'"'"'\'"'"'}'"'"') > 0) and created_at_ms >= ${since}000 order by rollout_ordinal desc limit 400;" \' \
+    '    "select item_json from thread_items where thread_id in (select distinct thread_id from thread_items where instr(item_json, '"'"'${base//\'"'"'/\'"'"'\'"'"'}'"'"') > 0) order by rollout_ordinal desc limit 400;" \'
 
   # Dropped, the temp-dir restriction is a pattern match again, and the pattern admits `..` -- so
   # provider text names a path that resolves anywhere and the helper reads it out.

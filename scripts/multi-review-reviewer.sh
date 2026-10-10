@@ -1248,17 +1248,17 @@ _secondary_blocks() { # <expected-model>
       return (c > 0) ? substr(t, 1, c - 1) : ""
     }
     function endblock(   i) {
-      if (nb > 0 && okid && okvia) { for (i = 1; i <= nb; i++) print buf[i]; seen[id] = 1 }
+      if (nb > 0 && okid && okvia && !(id in seen)) { for (i = 1; i <= nb; i++) print buf[i]; seen[id] = 1 }
       nb = 0; okid = 0; okvia = 0; id = ""
     }
     /^> \[finding:/ {
       endblock(); id = id_of($0)
-      okid = (id != "" && id !~ /-rd[0-9]+-/ && !(id in seen))
+      okid = (id != "" && id !~ /-rd[0-9]+-/)
       buf[++nb] = $0; next
     }
     /^> \[no-findings\]/ {
       endblock(); id = "[no-findings]"
-      okid = !(id in seen)
+      okid = 1
       buf[++nb] = $0; next
     }
     nb > 0 && index($0, "> \xe2\x80\x94 via ") == 1 {
