@@ -607,8 +607,25 @@ mutations() {
   # distinguishing anything.
   mutate 'pr/carried-replies-bounded' 'scripts/multi-review-pr.sh' replace \
     'reply column read the review channel' 'multi-review-pr.test.sh' \
-    '    grab && /^## / { grab = 0 }' \
-    '    grab && /^## never-matches/ { grab = 0 }'
+    '    grab && !fence && /^## / { grab = 0 }' \
+    '    grab && !fence && /^## never-matches/ { grab = 0 }'
+
+  # Dropped, a column-1 heading inside a REPLY truncates the ingested section, discarding that
+  # reply and every one after it -- so a finding the author did answer reads `reply:unnamed` and
+  # keeps its "not re-checked" label. Found by codex, whose sandbox blocked it from writing the
+  # finding into its own copy; recovered from the companion thread afterwards.
+  mutate 'pr/carried-replies-fenced' 'scripts/multi-review-pr.sh' replace \
+    'heading inside a reply truncated the section' 'multi-review-pr.test.sh' \
+    '    grab && run($0) {' \
+    '    grab && 0 {'
+
+  # Dropped, a FAILED comment endpoint reads as an empty one again: the fetch returns a partial
+  # result built from the surviving channel, splices it, and advances the watermark past replies
+  # it never read. Also codex, also recovered after the fact -- and found by no other reviewer.
+  mutate 'pr/replies-channel-failure-is-fatal' 'scripts/multi-review-pr.sh' replace \
+    'failed endpoint was substituted' 'multi-review-pr.test.sh' \
+    "            --jq '[.[] | . + {kind: \"conversation\"}]' 2>/dev/null)\" || return 1" \
+    "            --jq '[.[] | . + {kind: \"conversation\"}]' 2>/dev/null)\" || conv='[]'"
 
   # Dropped, the ns-id match has no boundary and ns-ids are a PREFIX FAMILY: a reply naming
   # `<p>-rd1-r10` marks `<p>-rd1-r1` answered too, so a finding the author never addressed is

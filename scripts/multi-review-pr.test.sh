@@ -2318,6 +2318,76 @@ NOMARK="${CR}/no-marker.md"; grep -v '^<!-- multi-review: ' "$C2" > "$NOMARK"
   && bad "carried: ran on a document with no round marker" \
   || ok "carried: a document with no round marker fails loudly rather than guessing"
 
+# --- findings codex produced but could not write: its sandbox blocked the assigned copy -----
+# Recovered from the companion thread after the fact. Both were real, and one was found by no
+# other reviewer in either round of either PR.
+
+# codex pr149-r2: a FAILED comment endpoint must not read as an empty one. `|| echo '[]'` made
+# them identical, so a transient error on the conversation channel produced a partial result that
+# spliced and advanced the watermark past replies it never read -- lost permanently.
+cat > "${WORK}/bin/gh" <<'GH'
+#!/bin/sh
+case "$*" in
+  *issues*) echo "api error: 502" >&2; exit 1 ;;
+  *pulls*) printf '%s\n' '[{"user":{"login":"kevin","type":"User"},"id":9,"created_at":"2026-10-08T12:00:00Z","body":"an inline reply","kind":"inline on f.sh"}]' ;;
+esac
+GH
+chmod +x "${WORK}/bin/gh"
+half="$(PATH="${WORK}/bin:$PATH" bash "$SUT" select-replies agrology public-api 24 "" "[]" 2>/dev/null)"; rc=$?
+(( rc != 0 )) \
+  && ok "select-replies: a failed comment endpoint fails the whole fetch, it is not an empty channel" \
+  || bad "select-replies: a failed endpoint was substituted with [] and returned a partial result (rc=$rc)"
+[[ -z "$half" ]] \
+  && ok "select-replies: nothing is emitted when a channel could not be read" \
+  || bad "select-replies: emitted a partial selection — '$half'"
+# ...and the round therefore ingests nothing rather than marking the unread channel as seen.
+cat > "${STUB}/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "diff" ]]; then printf '%s\n' 'diff --git a/f b/f' '+added'; exit 0; fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  case " $* " in
+    *" body "*)                 printf '%s\n' 'B'; exit 0 ;;
+    *"title,url,author"*)       printf '%s\t%s\t%s\t%s\n' 'T' 'https://github.com/o/r/pull/14' 'bob' 'b'; exit 0 ;;
+    *"headRefOid,baseRefName"*) printf '%s\t%s\n' 'H1' 'main'; exit 0 ;;
+    *"headRefOid"*)             printf '%s\n' 'H1'; exit 0 ;;
+  esac
+fi
+if [[ "$1" == "api" ]]; then
+  case "$2" in
+    *issues*) echo "api error: 502" >&2; exit 1 ;;
+    *) printf '%s\n' '[{"user":{"login":"kevin","type":"User"},"id":9,"created_at":"2026-10-08T12:00:00Z","body":"an inline reply","kind":"inline on f.sh"}]'; exit 0 ;;
+  esac
+fi
+echo "unexpected gh call: $*" >&2; exit 3
+STUBEOF
+chmod +x "${STUB}/gh"
+( cd "$WORK" && PATH="${STUB}:$PATH" bash "$SUT" ingest o r 14 ) >/dev/null 2>&1
+I4="${WORK}/.multi-review/reviews/o/r/pr-14.md"
+grep -q '^## Author replies' "$I4" \
+  && bad "replies: spliced a section built from one channel while the other had failed" \
+  || ok "replies: a failed channel leaves the document untouched"
+bash "$SUT" replies-record "$I4" >/dev/null 2>&1 \
+  && bad "replies: advanced the watermark over a channel it never read" \
+  || ok "replies: no watermark is recorded when a channel failed"
+
+# codex pr150-r1: a column-1 heading inside a REPLY truncated the ingested section, so a finding
+# the author did answer read reply:unnamed and kept its "not re-checked" label.
+HR="${CR}/pr-headingreply.md"
+sed 's/pull\/150/pull\/151/' "$C2" > "$HR"
+cp "${C2}.records" "${HR}.records" 2>/dev/null || true
+cat > "${CR}/heading-in-reply.txt" <<'RP'
+kevin-agrology · 2026-10-09T10:00:00Z · conversation
+## Why this is by design
+
+plan Task 5 adds the refs for fable-rd1-r1
+RP
+bash "$SUT" replace-replies "$HR" "${CR}/heading-in-reply.txt" 2 >/dev/null 2>&1
+set_round "$HR" 2
+hr_row="$( cd "$CR" && bash "$SUT" carried "$HR" 2>/dev/null | awk -F'\t' '$1=="fable-rd1-r1"{print $6}' )"
+[[ "$hr_row" == "reply:named" ]] \
+  && ok "replies: a reply that contains its own heading is still read, so the answer is not lost" \
+  || bad "replies: a heading inside a reply truncated the section — r1 read '$hr_row'"
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"
