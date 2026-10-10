@@ -1900,6 +1900,14 @@ quoted="$(cxrun)"
 [[ -z "$quoted" ]] \
   && ok "codex-report: a finding quoted from another reviewer is not couriered as this provider's" \
   || bad "codex-report: couriered a foreign finding — got '$quoted'"
+# The id rule has to stand on its own: a namespaced id disclosed under THIS provider's own model
+# is the round-2 shape, where codex reads a copy carrying its own earlier findings. With only the
+# foreign-disclosure fixture the model check covered for it and the id mutant SURVIVED.
+mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"The copy already carries:\\n> [finding:codex-rd1-r1|med] my own finding from an earlier round\\n> \u2014 via CXMODEL\\n> \u2014 risk: r\\n\"}"}]'
+mine="$(cxrun)"
+[[ -z "$mine" ]] \
+  && ok "codex-report: a namespaced id is not couriered even under this provider's own disclosure" \
+  || bad "codex-report: couriered a namespaced finding this provider merely quoted — got '$mine'"
 mkstub '[{"item_json":"{\"type\":\"agentMessage\",\"text\":\"> [finding:r2|med] right id, wrong voice\\n> — via claude-opus-5\\n> — risk: r\\n\"}"}]'
 wrongvia="$(cxrun)"
 [[ -z "$wrongvia" ]] \

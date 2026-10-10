@@ -1406,7 +1406,7 @@ mutations() {
   # construction another reviewer's finding quoted out of the document. The `id != ""` clause in
   # the same expression is what requires the protocol's grammar at all.
   mutate 'reviewer/codex-report-copy-scoped-ids' 'scripts/multi-review-reviewer.sh' replace \
-    'couriered a foreign finding' 'multi-review-reviewer.test.sh' \
+    'couriered a namespaced finding this provider merely quoted' 'multi-review-reviewer.test.sh' \
     '      okid = (id != "" && id !~ /-rd[0-9]+-/)' \
     '      okid = 1'
 
