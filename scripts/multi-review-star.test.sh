@@ -3910,6 +3910,148 @@ grep -qE '^fable-rd1-r1	1	low	no-citation	' <<<"$out" \
   && ok "resolve-candidates: a plain English backtick is not treated as a code citation" \
   || bad "resolve-candidates: an English word counted as a citation — got '$out'"
 
+# --- the human-refutation record (spec I1) ----------------------------------------------------
+# `[refuted:]` is the one record disclosed under a human identity, and the identity rule runs in
+# BOTH directions. Each case is asserted through `open-findings`, which exits 2 on a parse
+# failure, because the parse is what every later consumer depends on.
+
+rf_star() { # <response-line> <via-line> -> path
+  local d; d="$(mktemp -d "${WORK}/rf.XXXXXX")"
+  { printf '%s\n' '# Doc' '' '## Review' ''
+    printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+    printf '%s\n' "$1" "$2"
+  } > "$d/d.md"; echo "$d/d.md"
+}
+
+D="$(rf_star '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology')"
+out="$( bash "$SUT" open-findings "$D" 2>&1 )"; rc=$?
+if (( rc == 0 )) && [[ -z "$out" ]]; then
+  ok "refuted: a human-disclosed record parses and retires the finding"
+else
+  bad "refuted: a valid record did not retire the finding (rc=$rc, out='$out')"
+fi
+
+# A model must not be able to retire a finding nobody with write access refuted.
+D="$(rf_star '> [refuted:fable-rd1-r1] I retire this myself' '> — via claude-opus-5')"
+out="$( bash "$SUT" open-findings "$D" 2>&1 )"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *'must be disclosed as "human:<login>"'* ]]; then
+  ok "refuted: a model-authored refutation is parse-fatal"
+else
+  bad "refuted: a model authored a refutation unchallenged (rc=$rc)"
+fi
+
+# And the other direction: a human identity on any other verb would launder author text into a
+# primary verdict, which is what issue 103 forbids.
+D="$(rf_star '> [agree:fable-rd1-r1] sure' '> — via human:kevin-agrology')"
+out="$( bash "$SUT" open-findings "$D" 2>&1 )"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *'must not be disclosed under a human identity'* ]]; then
+  ok "refuted: a human identity on an agree is parse-fatal"
+else
+  bad "refuted: an agree was accepted under a human identity (rc=$rc)"
+fi
+
+# A seeded refutation would hand a secondary the author rebuttal; a returned one would let a
+# reviewer retire a finding. blind-check and channel-check cover the two directions.
+D="$(rf_star '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology')"
+bash "$SUT" blind-check "$D" >/dev/null 2>&1 \
+  && bad "refuted: blind-check accepted a copy carrying a refutation" \
+  || ok "refuted: blind-check refuses a seed carrying a refutation"
+
+SD="$(mktemp -d "${WORK}/rfc.XXXXXX")"
+{ printf '%s\n' '# Doc' '' '## Review' ''
+  printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+} > "$SD/seed.md"
+cp "$SD/seed.md" "$SD/copy.md"
+printf '%s\n' '> [refuted:fable-rd1-r1] I say so' '> — via human:kevin-agrology' >> "$SD/copy.md"
+bash "$SUT" channel-check --seed "$SD/seed.md" "$SD/copy.md" >/dev/null 2>&1 \
+  && bad "refuted: channel-check admitted a reviewer that authored a refutation" \
+  || ok "refuted: channel-check refuses a reviewer-authored refutation"
+
+# CONVERGENCE. Two things have to hold at once, and they pull in opposite directions: the record
+# must COVER the finding (or the review can never converge with one outstanding), and the human
+# login must not count as a second primary identity (or a review carrying any refutation can
+# never converge at all -- retiring a finding would block the gate instead of clearing it).
+RC="${WORK}/conv-refuted.md"
+{ echo "# Doc"; echo '<!-- multi-review: awaiting-primary · round 1/2 -->'; echo '<!-- multi-review-mode: star -->'; echo; echo "## Review"; echo; } > "$RC"
+mkcopy "${RC}.codex" '> [finding:r1|high] alpha' '> — via gpt-5.5' '> — risk: ra' \
+                     '> [finding:r2|med] beta'  '> — via gpt-5.5' '> — risk: rb'
+bash "$SUT" merge --round 1 "$RC" "${RC}.codex" >/dev/null 2>&1
+{ echo '> [agree:codex-rd1-r1]'; echo '> — via claude-opus-4-8'; } >> "$RC"
+{ echo '> [refuted:codex-rd1-r2] by design'; echo '> — via human:kevin-agrology'; } >> "$RC"
+sed -i.bak 's/awaiting-primary/converged/' "$RC" && rm -f "${RC}.bak"
+bash "$SUT" check-converged "$RC" >/dev/null 2>&1 \
+  && ok "refuted: a refutation covers its finding and is not a second primary" \
+  || bad "refuted: a doc carrying a refutation could not converge"
+
+# COEXISTENCE. A refutation is a RETIREMENT, not a response, so it must bind on a finding that
+# already carries an `[agree:]` -- which is EVERY finding a reply can concern, because a reply
+# names a finding from an earlier round and convergence requires that round to have answered it.
+# Treating it as a response made the feature unreachable and parse-fatal on the only real shape
+# (fable-rd1-r1), while every test passed against the one state that never occurs.
+# ANCHORED, deliberately. `compose-inline` only emits a finding that is agreed AND anchored, so
+# an unanchored fixture emits nothing whatever the state is -- the inline assertion below would
+# then pass with the override removed, which is exactly what the mutation sweep reported
+# (MISCREDITED: the gate went red, but via a different assertion).
+RFX="$(mktemp -d "${WORK}/rfx.XXXXXX")/d.md"
+{ printf '%s\n' '# Doc' '' '## Review' ''
+  printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+  printf '%s\n' '> — at scripts/x.sh:12'
+  printf '%s\n' '' '> [agree:fable-rd1-r1] confirmed' '> — via claude-opus-5'
+  printf '%s\n' '' '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology'
+} > "$RFX"
+row="$( bash "$SUT" _table_for_test "$RFX" 2>&1 )"; rc=$?
+if (( rc == 0 )) && [[ "$( awk -F'\t' '{print $3"|"$4"|"$11"|"$12}' <<< "$row" )" \
+      == 'refuted|claude-opus-5|human:kevin-agrology|by design' ]]; then
+  ok "refuted: a retirement coexists with the agree it overrides, and both are kept"
+else
+  bad "refuted: agree + refuted on one finding did not parse (rc=$rc, row='$row')"
+fi
+
+# Two refutations of one finding is still an error -- that is the idempotency the old rule was
+# trying to express before it over-reached into agree and dispute.
+RFY="$(mktemp -d "${WORK}/rfy.XXXXXX")/d.md"
+{ printf '%s\n' '# Doc' '' '## Review' ''
+  printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+  printf '%s\n' '' '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology'
+  printf '%s\n' '' '> [refuted:fable-rd1-r1] again' '> — via human:maint'
+} > "$RFY"
+out="$( bash "$SUT" open-findings "$RFY" 2>&1 )"; rc=$?
+if (( rc == 2 )) && [[ "$out" == *'multiple refutations of finding'* ]]; then
+  ok "refuted: a second refutation of one finding is parse-fatal"
+else
+  bad "refuted: two refutations of one finding were accepted (rc=$rc)"
+fi
+
+# PUBLISHED, AND SHOWN AT THE GATE. The reason is captured precisely so the author and the next
+# primary can see WHY a finding is settled, and it reached neither: `refuted` appeared nowhere in
+# compose-review or gate-summary, so a retired finding was indistinguishable from one that never
+# existed and a review whose findings were all refuted published "No findings." (fable-rd1-r6).
+body="$( bash "$SUT" compose-review "$RFX" claude-opus-5 2>&1 )"
+if [[ "$body" == *'Retired by a refutation from someone with write access (1)'* \
+   && "$body" == *'retired by human:kevin-agrology: by design'* && "$body" != *'No findings.'* ]]; then
+  ok "refuted: the retirement and its reason reach the published review"
+else
+  bad "refuted: the published review does not mention the retirement"
+fi
+
+# ...and it must NOT be posted as an inline comment the author still owes work on.
+inl="$( bash "$SUT" compose-inline "$RFX" 2>/dev/null )"
+[[ -z "$inl" ]] \
+  && ok "refuted: a retired finding gets no inline comment" \
+  || bad "refuted: a retired finding was still posted inline"
+
+RFG="${RFX%/d.md}/gate.md"
+{ printf '%s\n' '# Doc' '<!-- multi-review: converged · round 1/2 -->' '<!-- multi-review-mode: star · reviewers: fable -->' '' '## Review' ''
+  printf '%s\n' '> [finding:fable-rd1-r1|high] a finding' '> — via claude-fable-5-1' '> — risk: r'
+  printf '%s\n' '' '> [refuted:fable-rd1-r1] by design' '> — via human:kevin-agrology'
+} > "$RFG"
+gs="$( bash "$SUT" gate-summary "$RFG" claude-opus-5 2>&1 )"
+if [[ "$gs" == *'Retired by a human refutation (1)'* && "$gs" == *'retired by human:kevin-agrology: by design'* ]]; then
+  ok "refuted: the gate shows what a human retired before the publish is approved"
+else
+  bad "refuted: the gate summary is silent about the retirement"
+fi
+
 echo
 if (( fails > 0 )); then echo "FAILED: $fails"; exit 1; fi
 echo "all passed"

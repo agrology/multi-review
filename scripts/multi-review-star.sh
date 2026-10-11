@@ -502,13 +502,13 @@ cmd_available() {
 }
 
 # _table <doc> : print "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk" per finding
-# (state: open|agreed|dissent). Parses ONLY the last ## Review section (review_section), fences
+# (state: open|agreed|dissent|refuted). Parses ONLY the last ## Review section (review_section), fences
 # stripped. Verbs are finding|agree|dispute (star has N secondaries + primary, so there is no
 # 2-model cap — that is peer.sh's rule). Enforces the self-response guard: a primary must not
 # respond to a finding disclosed under its own model id. On any grammar violation, prints an
 # error to stderr and exits 2. Pure awk (portable associative arrays); control line + its
 # required "> — via" line are consumed as a pair.
-_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tevidence\twitness" per finding
+_table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tevidence\twitness\trefuter\trefutation" per finding
   local doc="${1:?doc}" ufl rstart
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
   ufl="$(review_section "$doc" | unterminated_fence_line /dev/stdin)"
@@ -519,7 +519,7 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
   review_section "$doc" | strip_fences /dev/stdin | awk '
     function fail(m){ print "multi-review-star: " m > "/dev/stderr"; exit 2 }
     function parse(line,   s, c, rest, b, p) {
-      if (line !~ /^> \[(finding|agree|dispute):[A-Za-z0-9_-]+([|][^]]*)?]/) return 0
+      if (line !~ /^> \[(finding|agree|dispute|refuted):[A-Za-z0-9_-]+([|][^]]*)?]/) return 0
       s = substr(line, 4)
       c = index(s, ":"); V = substr(s, 1, c-1)
       rest = substr(s, c+1)
@@ -535,6 +535,16 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
         if (line ~ /^> — via /) {
           m = line; sub(/^> — via[ ]*/, "", m); gsub(/^[ \t]+|[ \t]+$/, "", m)
           if (m == "") fail("missing model id after " pv ":" pi)
+          # A refuted record makes the engineer authority mechanical (spec I1), so it is the ONE
+          # record disclosed under a human identity. Both directions are fatal: a model-authored
+          # refutation would retire a finding nobody with write access ever refuted, and a human
+          # disclosure on any other verb would launder author text into a primary verdict, which
+          # is what issue 103 forbids.
+          if (pv == "refuted") {
+            if (m !~ /^human:.+/) fail("refuted:" pi " must be disclosed as \"human:<login>\", not " m)
+          } else if (m ~ /^human:/) {
+            fail(pv ":" pi " must not be disclosed under a human identity: " m)
+          }
           if (pv == "finding") {
             if (psev != "high" && psev != "med" && psev != "low") fail("finding " pi " needs a |high, |med, or |low severity tag")
             if (pi in raiser) fail("duplicate finding id: " pi)
@@ -542,6 +552,17 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
             if (stripped == "") fail("empty concern for finding: " pi)
             raiser[pi] = m; fwhy[pi] = pwhy; fsev[pi] = psev; order[++n] = pi
             awaiting_risk = 1; risk_for = pi        # a finding must be followed by its risk line
+          } else if (pv == "refuted") {
+            if (psev != "") fail("severity tag not allowed on " pv ": " pi)
+            # A RETIREMENT, not a response -- it does not occupy the one response slot below, and
+            # a finding may carry both. Treating it as a response made the feature unreachable:
+            # a reply always concerns a finding raised in an earlier round, convergence requires
+            # every merged finding to carry an agree or dispute before the round that ingests
+            # replies even runs, so the response slot is ALWAYS taken by the time a refutation
+            # can arrive. Refuting then failed as a duplicate response, and the only state the
+            # tests exercised was the one state that never occurs (fable-rd1-r1).
+            if (pi in refuter) fail("multiple refutations of finding: " pi)
+            refuter[pi] = m; rfwhy[pi] = pwhy
           } else {
             if (psev != "") fail("severity tag not allowed on " pv ": " pi)
             if (pi in rverb) fail("multiple responses to finding: " pi)
@@ -590,14 +611,20 @@ _table() { # <doc> -> "id\traiser\tstate\tresponder\tconcern\twhy\tsev\trisk\tev
       if (pend) fail("control line " pv ":" pi " not followed by a \"> — via <model>\" line")
       if (awaiting_risk) fail("finding " risk_for " not followed by a \"> — risk: <risk>\" line")
       for (id in rverb) if (!(id in raiser)) fail("response to unknown finding id: " id)
+      for (id in refuter) if (!(id in raiser)) fail("refutation of unknown finding id: " id)
       for (i = 1; i <= n; i++) {
         id = order[i]
         if (id in rverb && rmodel[id] == raiser[id]) fail("self-response on finding: " id)
+        # A refutation OVERRIDES whatever the primary said: spec I1 makes the engineer authority
+        # mechanical, so a finding a writer retired is settled however it was adjudicated. It is
+        # therefore not open (coverage is satisfied), not agreed (no inline comment, no resolve
+        # worklist row) and not dissent.
         state = "open"
-        if (rverb[id] == "agree") state = "agreed"
+        if (id in refuter) state = "refuted"
+        else if (rverb[id] == "agree") state = "agreed"
         else if (rverb[id] == "dispute") state = "dissent"
         resp = (id in rmodel) ? rmodel[id] : ""
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id], rwit[id]
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, raiser[id], state, resp, fwhy[id], rwhy[id], fsev[id], frisk[id], fev[id], rwit[id], refuter[id], rfwhy[id]
       }
     }
   '
@@ -1035,7 +1062,7 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
       print ""
     }
     BEGIN {
-      n=0; agreed_n=0; dissent_n=0; open_n=0; fixed_n=0; nsec=0
+      n=0; agreed_n=0; dissent_n=0; open_n=0; fixed_n=0; refuted_n=0; nsec=0
       nr = split(ENVIRON["RSV"], rrec, "\n")
       for (ri = 1; ri <= nr; ri++) {
         if (rrec[ri] == "") continue
@@ -1046,10 +1073,12 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
     NF < 3 { next }
     {
       id=$1; raiser=$2; state=$3; resp=$4; concern=$5; dwhy=$6; sev=$7; risk=$8
+      refuter=$11; rfwhy=$12
       if (raiser != "" && raiser != primary && !(raiser in secseen)) { secseen[raiser]=1; seclist[++nsec]=raiser }
       emoji = (sev=="high") ? "🔴" : (sev=="med") ? "🟠" : (sev=="low") ? "🟡" : ""
       line = emoji " " sev " — " concern " — risk: " risk
-      if (state == "dissent")   line = line " — flagged by " raiser "; " resp " disputes: " dwhy
+      if (state == "refuted")   line = line " — retired by " refuter ": " rfwhy
+      else if (state == "dissent")   line = line " — flagged by " raiser "; " resp " disputes: " dwhy
       else if (state == "open") line = line " — raised by " raiser ", no response yet"
       # An agreed finding with a resolved record is NOT part of the open worklist. Leaving it in
       # the agreed list is the whole of issue #88: it tells the author to fix what they fixed.
@@ -1061,10 +1090,11 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
       else if (state == "dissent") dissent_n++
       else if (state == "open")    open_n++
       else if (state == "fixed")   fixed_n++
+      else if (state == "refuted") refuted_n++
     }
     END {
       printf "## Multi-review\n\n"
-      if (agreed_n == 0 && dissent_n == 0 && open_n == 0 && fixed_n == 0) {
+      if (agreed_n == 0 && dissent_n == 0 && open_n == 0 && fixed_n == 0 && refuted_n == 0) {
         printf "No findings.\n\n"
       } else {
         if (agreed_n  > 0) { printf "**Agreed findings (%d)**\n", agreed_n;  emit("agreed") }
@@ -1073,6 +1103,11 @@ cmd_compose_review() { # <doc> <primary-model> -> neutral star review body on st
         # Last among the finding sections: what the author still has to act on comes first, and
         # what the review is reporting closed is confirmation rather than work.
         if (fixed_n   > 0) { printf "**Fixed during review (%d)**\n", fixed_n; emit("fixed") }
+        # Retired by a human refutation (spec I1). Without this section the record reached no
+        # reader at all: the reason is captured precisely so the author and the next primary can
+        # see WHY a finding is settled, and a review whose findings were all refuted published
+        # "No findings." (fable-rd1-r6). Last, because it is the one block that asks for nothing.
+        if (refuted_n > 0) { printf "**Retired by a refutation from someone with write access (%d)**\n", refuted_n; emit("refuted") }
       }
       # Primary observations (issue #63). Each line carries its OWN via (codex-rd1-r1): nothing
       # restricts [observation] to the primary — cmd_observations requires a via line and never
@@ -1219,8 +1254,8 @@ cmd_channel_check() {
   # id-bearing markers use. It carries no id, so under that class a malformed `[observation: …]`
   # beside real findings would refuse a turn that must be admitted: fable-rd2-r4 harm, the same way
   # it bit `[no-findings]` (see star/channel-check-signal-strict).
-  review_section "$base" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$sprim" || true
-  review_section "$copy" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$cprim" || true
+  review_section "$base" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved|refuted):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$sprim" || true
+  review_section "$copy" | strip_fences /dev/stdin | grep -E '^> \[(agree|dispute|resolved|refuted):|^> \[observation]' 2>/dev/null | LC_ALL=C sort > "$cprim" || true
 
   # Compare ADDITIONS (comm), not net counts: a net count lets a reviewer that deletes a
   # pre-existing line offset one misplaced finding of its own back to zero (fable-rd1-r5).
@@ -1344,7 +1379,7 @@ cmd_blind_check() { # <copy> -> 0 blind, 1 carries a prior round (offenders on s
   # responses/observations/resolutions. Any one of them means this copy is not blind. A leaked
   # `[resolved:]` is strictly worse than a bare `[agree:]` — it names a defect AND tells the
   # secondary the primary already closed it (issue #88).
-  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|resolved|no-findings)[]:]' || true)"
+  records="$(printf '%s\n' "$live" | grep -E '^> \[(finding|agree|dispute|observation|resolved|refuted|no-findings)[]:]' || true)"
   # The footer mirrors the merged manifest, so its presence alone proves the copy was merged into.
   # ANCHORED to the footer's real shape — a whole line, opening at column 1 and closing on the same
   # line — the way merge and _structural_consistency already count it. An unanchored substring also
@@ -1739,6 +1774,17 @@ cmd_merge() {
     || die "merge: staged doc committed but its manifest did not — run: $(basename "$0") verify '$doc'" 1
 }
 
+# _model_responders < table -> the responder id of every finding answered by a MODEL.
+#
+# A standalone function so the human exclusion is one quote-free call site the mutation table can
+# target. `human:<login>` is excluded because it is not a primary identity: the refutation record
+# is authored by the ingester on the engineer behalf (spec I1), so counting it would make every
+# refuted finding a second responder and no review carrying one could converge -- retiring a
+# finding would block the gate instead of clearing it.
+_model_responders() {
+  awk -F'\t' 'NF>=4 && $4!="" {print $4}'
+}
+
 cmd_check_converged() {
   local doc="${1:?doc}" mstate t
   [[ -f "$doc" ]] || die "doc not found: $doc" 1
@@ -1769,7 +1815,15 @@ cmd_check_converged() {
   #     non-empty responder ids (column 4) across all findings; more than one -> not converged.
   #     Zero is fine (zero findings -> zero responders; coverage already forbids a partial mix).
   local distinct_responders
-  distinct_responders="$(printf '%s\n' "$t" | awk -F'\t' 'NF>=4 && $4!="" {print $4}' | sort -u | grep -c .)"
+  #     A refutation contributes NO responder identity, and the separation is enforced where it
+  #     belongs -- in `_table`, which fills column 4 from the agree/dispute record only and carries
+  #     the refuter in a column of its own. This used to filter `human:` out here instead, which
+  #     stopped working the moment the refuter left column 4: the filter became unreachable, and a
+  #     mutation entry pointed at it proved nothing (it survived its own sweep). The invariant it
+  #     was defending still matters -- counting a refuter would make every refuted finding a second
+  #     responder, so no review carrying one could converge and retiring a finding would block the
+  #     gate instead of clearing it -- so it is pinned on `_table`'s own line now.
+  distinct_responders="$(_model_responders <<< "$t" | sort -u | grep -c .)"
   [[ "$distinct_responders" -le 1 ]] || exit 1
 
   exit 0
@@ -1829,9 +1883,10 @@ cmd_gate_summary() {
     function emit(want,   lvl,i,levels){ split("high med low",levels," ");
       for(lvl=1;lvl<=3;lvl++) for(i=1;i<=n;i++) if(st[i]==want && sv[i]==levels[lvl]) print txt[i] }
     NF { n++; id[n]=$1; raiser[n]=$2; st[n]=$3; resp[n]=$4; concern[n]=$5; why[n]=$6; sv[n]=$7; risk[n]=$8
-      if($3=="agreed")a++; else if($3=="dissent")d++
+      if($3=="agreed")a++; else if($3=="dissent")d++; else if($3=="refuted")rf++
       emoji=(sv[n]=="high")?"🔴":(sv[n]=="med")?"🟠":"🟡"
       if($3=="dissent") txt[n]=emoji " " sv[n] " — " concern[n] " (via " raiser[n] ") — primary disputes: " why[n]
+      else if($3=="refuted") txt[n]=emoji " " sv[n] " — " concern[n] " (via " raiser[n] ") — retired by " $11 ": " $12
       else txt[n]=emoji " " sv[n] " — " concern[n] " (via " raiser[n] ")"
     }
     END {
@@ -1839,6 +1894,9 @@ cmd_gate_summary() {
       # prefixes, which is blind to a reviewer that reviewed and raised nothing.
       printf "Primary agreed with %d findings, DISPUTED %d (of %d across %d secondaries).\n\n", a+0, d+0, n+0, nsec+0
       if(d>0){ print "Disputes (high→low):"; emit("dissent"); print "" }
+      # A human with write access retired these, so the gate shows them BEFORE the publish: the
+      # count changes what the reader is approving, and the reason is the only record of why.
+      if(rf>0){ printf "Retired by a human refutation (%d) — settled, not for the primary to re-open:\n", rf+0; emit("refuted"); print "" }
     }'
 
   # Findings agreed earlier and recorded fixed since (issue #88). The gate is where a human decides
